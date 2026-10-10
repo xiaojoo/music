@@ -181,6 +181,9 @@ fun VideoFeed(
            照短视频 App 的做法：每张卡自己盖一张首帧海报，只有"当前页且第一帧已到"才把海报淡掉，
            露出底下的真画面。海报按 uri 缓存，来回滑不重新解帧。 */
         var frameOut by remember { mutableStateOf(true) }
+        var surfaceRef by remember { mutableStateOf<TextureView?>(null) }
+        // 滑出去那一页要铺的画面：抓的是它被换掉那一刻屏幕上的真帧，不是这一条的第 0 帧
+        var leaving by remember { mutableStateOf(-1 to null as ImageBitmap?) }
         // 播放器真正落在第几页：这是"画面此刻到底是不是这一页的"的唯一凭据
         var playerIdx by remember { mutableIntStateOf(controller.currentMediaItemIndex) }
         val posters = remember { mutableMapOf<String, ImageBitmap?>() }
@@ -270,6 +273,17 @@ fun VideoFeed(
             snapshotFlow { pagerState.settledPage }
                 .collect { page ->
                     if (controller.currentMediaItemIndex != page) {
+                        // 抓真帧：TextureView.getBitmap 是把已经画好的那一帧拷出来，不解码
+                        // 半尺寸抓：整幅 1080x2099 是 9MB 一张，实测把 jank 从 0.73% 顶到 4.27%；
+                        // 它只用来在 120ms 的淡出里铺一下，糊一点看不出来
+                        val shot = runCatching {
+                            surfaceRef?.let { v ->
+                                val w = (v.width / 2).coerceAtLeast(1)
+                                val h = (v.height / 2).coerceAtLeast(1)
+                                v.getBitmap(w, h)?.asImageBitmap()
+                            }
+                        }.getOrNull()
+                        leaving = playerIdx to shot
                         frameOut = false
                         controller.seekToDefaultPosition(page)
                     }
@@ -446,7 +460,7 @@ fun VideoFeed(
                         factory = { ctx ->
                             // ARFL 在 FIT 下会把自身量成内容比例那么小，所以外面再套一层铺满的框
                             // 把它居中放，否则转 90° 之后画面既偏一边又留一大截空
-                            val surface = TextureView(ctx)
+                            val surface = TextureView(ctx).also { surfaceRef = it }
                             val arfl = AspectRatioFrameLayout(ctx).apply {
                                 keepScreenOn = true
                                 addView(
@@ -486,7 +500,10 @@ fun VideoFeed(
                         },
                         onRelease = { v ->
                             (v.getChildAt(0) as? AspectRatioFrameLayout)
-                                ?.let { (it.getChildAt(0) as? TextureView)?.let { t -> controller.clearVideoTextureView(t) } }
+                                ?.let { (it.getChildAt(0) as? TextureView)?.let { t ->
+                                    controller.clearVideoTextureView(t)
+                                    if (surfaceRef === t) surfaceRef = null
+                                } }
                         }
                     )
                 }
@@ -516,7 +533,10 @@ fun VideoFeed(
             /* 只有"这一页是当前页 + 播放器也已经落到这一页 + 第一帧已到"三个条件同时成立，
                才把海报淡掉露出真画面。少任何一条都继续盖着 ——
                落位那一拍 currentPage 先翻、seek 还没发，此时露出来的是一张被解码器清黑的空帧。 */
-            val showPoster = !(page == pagerState.currentPage && page == playerIdx && frameOut)
+            /* 淡出只看"播放器落在这页 + 首帧已到"，不看 currentPage：currentPage 在手指拖到
+               48.5% 时就翻了（实测），带上它会让正在滑出去的那一页当场被自己的第 0 帧海报盖回去，
+               那就是"闪过上一视频的一帧"。滑出去的这一页该继续露出共用画面上的活视频。 */
+            val showPoster = !(page == playerIdx && frameOut)
             val posterA by animateFloatAsState(if (showPoster) 1f else 0f, tween(120), label = "poster")
             // 这一层不能涂黑：它在画面那一层上面，涂了就把画面盖住了
             Box(modifier = Modifier.fillMaxSize()) {
@@ -524,6 +544,7 @@ fun VideoFeed(
                    上一条竖屏、这一条横屏时，透出来的画面正好落在"本该是黑边"的地方，
                    看着就是上下闪一帧别人的画面。所以海报要连一层黑底一起进、一起出。 */
                 val pb = poster
+                val shot = if (page == leaving.first) leaving.second else null
                 Box(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = posterA }) {
                     // 打底：第一帧还没到的那一段时间必须是不透明的，否则会透出共用 surface 的上一条
                     Box(modifier = Modifier.fillMaxSize().background(Color.Black))
@@ -568,6 +589,18 @@ fun VideoFeed(
                                 )
                             }
                         }
+                    }
+                    if (shot != null) {
+                        // 这一页正在滑出去：铺它被换掉那一刻屏幕上的真帧。
+                        // 铺第 0 帧静帧就是他看到的"闪过上一视频的一帧"
+                        Image(
+                            bitmap = shot,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            // 抓的是整块画面（竖屏撑满时它比屏幕宽），要按"看得见的那一块"裁回来，
+                            // 用 Fit 会缩进一圈黑边
+                            contentScale = ContentScale.Crop
+                        )
                     }
                 }
                 // 单击切播放/暂停，长按开底部抽屉（跟抖音同一套手势）
