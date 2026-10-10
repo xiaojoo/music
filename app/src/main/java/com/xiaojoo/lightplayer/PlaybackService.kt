@@ -29,9 +29,13 @@ class PlaybackService : MediaSessionService() {
             ExoPlayer.PreloadConfiguration(/* targetPreloadDurationUs= */ 3_000_000L)
         )
 
-        mediaSession = MediaSession.Builder(this, player).build()
-
+        // 播放器池：会话只认一个 Player，所以会话挂的是 HubPlayer，成员在它后面。
+        // 现在池里只有一个成员（第一步只求链路通），后面加成员时队列由 Hub 广播保持同构。
+        pool = listOf(player)
+        mediaSession = MediaSession.Builder(this, HubPlayer(pool)).build()
     }
+
+    private var pool: List<ExoPlayer> = emptyList()
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
