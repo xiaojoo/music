@@ -264,9 +264,10 @@ fun VideoFeed(
         // 只有"这次进来落到的那一页"回到上次的进度；自己滑过去的条从头播
         var resumePending by remember { mutableStateOf(true) }
         LaunchedEffect(controller, pagerState) {
-            // 用 currentPage 不用 settledPage：前者在手指拖过半时就翻，后者要等落位动画跑完。
-            // 等落位的话，滑进来的那一页要先空站着一条动画的时间才开始播。
-            snapshotFlow { pagerState.currentPage }
+            // 只能等落位：整页只有一块共用画面，拖过半就换条的话，滑出去那一页不再是"当前页"，
+            // 它自己的第 0 帧海报会立刻盖回来 —— 就是"闪过上一视频的一帧"。
+            // 想两者都要，得每页一块自己的画面（播放器池那条路）。
+            snapshotFlow { pagerState.settledPage }
                 .collect { page ->
                     if (controller.currentMediaItemIndex != page) {
                         frameOut = false
