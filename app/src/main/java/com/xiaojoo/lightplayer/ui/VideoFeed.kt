@@ -227,11 +227,17 @@ fun VideoFeed(
         // 进度条：currentPosition / duration 不是 Compose state，只能自己隔一会儿问一次
         var posMs by remember { mutableLongStateOf(0L) }
         var durMs by remember { mutableLongStateOf(0L) }
+        /* 每页自己的进度。进度条是每页各画一条，但 posMs/durMs 只有一个、读的是"正在播那条"，
+           直接共用就会在滑进来的那一页上先画出上一页走了多远（实测 3630/86714 = 4.2%）再归零。 */
+        val pagePos = remember { mutableStateMapOf<String, Pair<Long, Long>>() }
         var scrubbing by remember { mutableStateOf(false) }
         LaunchedEffect(isPlaying, pagerState.currentPage) {
             while (isActive) {
                 durMs = controller.duration.coerceAtLeast(0L)
                 if (!scrubbing) posMs = controller.currentPosition
+                videos.getOrNull(controller.currentMediaItemIndex)?.uri?.toString()?.let {
+                    pagePos[it] = posMs to durMs
+                }
                 delay(if (isPlaying) 250L else 1000L)
             }
         }
@@ -258,7 +264,9 @@ fun VideoFeed(
         // 只有"这次进来落到的那一页"回到上次的进度；自己滑过去的条从头播
         var resumePending by remember { mutableStateOf(true) }
         LaunchedEffect(controller, pagerState) {
-            snapshotFlow { pagerState.settledPage }
+            // 用 currentPage 不用 settledPage：前者在手指拖过半时就翻，后者要等落位动画跑完。
+            // 等落位的话，滑进来的那一页要先空站着一条动画的时间才开始播。
+            snapshotFlow { pagerState.currentPage }
                 .collect { page ->
                     if (controller.currentMediaItemIndex != page) {
                         frameOut = false
@@ -619,11 +627,15 @@ fun VideoFeed(
                             Spacer(Modifier.height(2.dp))
                         }
                     }
+                    /* 这一页自己的进度：正在播的那页用实时值，其它页用它自己存下的那份
+                       （没播过就是 0），不然滑进来的那一下会先画出上一页走了多远再归零 */
+                    val own = if (page == playerIdx) posMs to durMs
+                    else pagePos[key] ?: (0L to t.durationMs)
                     /* 时间不再预留格子：线是贴底画的，上面多一行字不会把线顶走，
                        信息行自己往上让即可。字号按参考图量：数字墨高 41px，25sp 渲出 42px。 */
                     if (scrubbing) {
                         Text(
-                            text = MediaLibrary.fmtDuration(posMs) + " / " + MediaLibrary.fmtDuration(durMs),
+                            text = MediaLibrary.fmtDuration(own.first) + " / " + MediaLibrary.fmtDuration(own.second),
                             color = Color.White.copy(alpha = 0.90f),
                             fontSize = 25.sp,
                             textAlign = TextAlign.Center,
@@ -634,8 +646,8 @@ fun VideoFeed(
                     }
                     // 左右到边、下沿贴导航栏；高 16dp=44px 刚好容得下半径 19px 的滑块
                     FeedScrub(
-                        fraction = if (durMs > 0) posMs.toFloat() / durMs.toFloat() else 0f,
-                        enabled = durMs > 0,
+                        fraction = if (own.second > 0) own.first.toFloat() / own.second.toFloat() else 0f,
+                        enabled = page == playerIdx && own.second > 0,
                         expanded = scrubbing,
                         onDragStart = { scrubbing = true },
                         onDrag = { f -> posMs = (f * durMs).toLong() },
