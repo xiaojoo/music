@@ -16,3 +16,13 @@ __pycache__/
 third_party/
 *.mp4
 *.mkv
+
+# 探针脚本与量具产物：本机调试用，不再进版本库（历史里仍有，按他说的不管）
+_*.py
+_*.png
+evidence_*.png
+st[0-9]*.txt
+shots/
+frp/
+w_?.png
+z_*.png
