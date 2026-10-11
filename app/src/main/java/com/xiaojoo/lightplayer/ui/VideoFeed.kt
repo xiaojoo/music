@@ -94,6 +94,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
 import androidx.media3.ui.AspectRatioFrameLayout
 import com.xiaojoo.lightplayer.PlayerPool
+import com.xiaojoo.lightplayer.hasQueueAs
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import com.xiaojoo.lightplayer.data.PlayHistory
 import com.xiaojoo.lightplayer.data.Track
@@ -118,7 +119,7 @@ private val SheetPad = 12.dp
 @OptIn(UnstableApi::class)
 @Composable
 fun VideoFeed(
-    videos: List<Track>,
+    library: List<Track>,
     controller: MediaController?,
     permissionGranted: Boolean,
     onAskPermission: () -> Unit,
@@ -145,10 +146,10 @@ fun VideoFeed(
             }
             return@Box
         }
-        if (controller == null || videos.isEmpty() || PlayerPool.members().isEmpty()) {
+        if (controller == null || library.isEmpty() || PlayerPool.members().isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    text = if (videos.isEmpty()) "这台机器上没扫到本地视频" else "正在连接播放服务…",
+                    text = if (library.isEmpty()) "这台机器上没扫到本地视频" else "正在连接播放服务…",
                     color = Color(0xFF9A9A9A),
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
@@ -158,6 +159,12 @@ fun VideoFeed(
             return@Box
         }
 
+        /* 页表跟队列走，不跟扫库结果走：队列面板删过、拖过一条，这一页就照队列摆。
+           以前页表固定取扫库结果，重新进这一页就把他那一步整个覆盖回去了
+           （实测：面板里删掉一条，退出面板重进视频页，那条又回来了）。
+           队列里装的不是这批视频（冷进这一页、或在放歌）时才用扫库结果铺一遍。
+           只在进这一页时算一次：面板只能在视频页没挂着的时候打开，页表不会在半路变。 */
+        val videos = remember(controller, library) { queuePages(controller, library) ?: library }
         /* 进来落在哪一条，有两个来源：
            - 播放器此刻就停在这批视频里的某一条（在别的页听着声音）→ 必须落回这一条，
              按"上次看的"另起一条等于把正在播的换掉、重头再播；
@@ -185,13 +192,16 @@ fun VideoFeed(
            滑出去的那一页继续露它自己那一格的活画面：既不用抓帧铺顶（抓一次实测把 jank 从
            0.73% 顶到 4.27%），也不会有上一条串到这一页来。 */
         val slots = remember(controller) { PlayerPool.members().map { FeedSlot(it) } }
+        // 出声的那一页，也是"我们上一次 commit 给会话的那一页"：进度条只在这一格能拖，
+        // 换成员那一下的回声也靠它认（见 onMediaItemTransition 里那条自激抑制）
+        var active by remember { mutableIntStateOf(startPage) }
         // 海报按 uri 缓存，来回滑不重新解帧
         val posters = remember { mutableMapOf<String, ImageBitmap?>() }
         // 每条的模糊垫图，按 uri 缓存。用 state map 存：垫图一到位底下那层就要立刻重画
         val blurs = remember { mutableStateMapOf<String, ImageBitmap>() }
         // 片源自带的编码黑边（归一化的内容框 l,t,r,b）；没有黑边的条目不落这里
         val borders = remember { mutableStateMapOf<String, FloatArray>() }
-        // 会话（通知栏、别的页）看到的那一个 Player = 当前成员；换成员时 HubPlayer 自己补发状态
+        // 会话（通知栏、别的页）看到的那一个 Player = 当前成员；换成员走 MediaSession.setPlayer
         val scope = rememberCoroutineScope()
         DisposableEffect(controller) {
             val l = object : Player.Listener {
@@ -208,7 +218,9 @@ fun VideoFeed(
                 override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                     if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) return
                     val i = controller.currentMediaItemIndex
-                    if (i != pagerState.settledPage) {
+                    // active 是"我们上一次 commit 给会话的那一页"：等于它就说明这条切换
+                    // 是我们自己换成员换出来的回声，不能再拿它去滚页（否则和上面那圈自激同构）
+                    if (i != active && i != pagerState.settledPage) {
                         scope.launch { pagerState.animateScrollToPage(i) }
                     }
                 }
@@ -255,30 +267,18 @@ fun VideoFeed(
         }
 
         LaunchedEffect(videos, controller) {
-            val hub = PlayerPool.hub() ?: return@LaunchedEffect
+            if (PlayerPool.current() == null) return@LaunchedEffect
             val items = videos.map { MediaItem.fromUri(it.uri) }
-            /* 直接对门面设队列：同进程、同步、一次广播到三个成员。
-               走 MediaController 是异步的 —— 上一轮就因此踩了：落位逻辑在"成员手里还没有队列"
-               的时刻去 seek，那一下被夹到第 0 条，于是邻页把第 0 条的画面画了出来。
-               对齐与否读成员本体：会话那份镜像里的 MediaItem 不带 uri，比不出真相，
-               而且每个 getMediaItemAt 都是一次跨进程往返（成员这边是本地调用）。 */
-            val queued = PlayerPool.members().all { m ->
-                m.mediaItemCount == items.size &&
-                    items.indices.all { i ->
-                        m.getMediaItemAt(i).localConfiguration?.uri == items[i].localConfiguration?.uri
-                    }
-            }
-            if (!queued) {
-                hub.setMediaItems(items)
-                hub.prepare()
-                hub.pause()
+            /* 对齐与否读成员本体：会话那份镜像里的 MediaItem 不带 uri，比不出真相。 */
+            if (!PlayerPool.members().all { hasQueueAs(it, items) }) {
+                // 同步打到每个成员（走会话是异步的，会慢一拍，见 PlayerPool.setQueue 那段注释）
+                PlayerPool.setQueue(items)
+                PlayerPool.current()?.pause()
             }
         }
 
         // 只有"这次进来落到的那一页"回到上次的进度；自己滑过去的条从头播
         var resumePending by remember { mutableStateOf(true) }
-        // 出声的那一页；进度条只在这一格上能拖
-        var active by remember { mutableIntStateOf(startPage) }
         /* 连播放完一条时，我们会把那个成员按停在它自己那一页的最后一帧 —— 那一下 pause 不是他按的，
            "还要不要接着播"这个意图得留给下一页（单实例时是 Media3 自己翻页，不存在这件事）。 */
         var carryPlay by remember { mutableStateOf(false) }
@@ -288,20 +288,25 @@ fun VideoFeed(
                "下一条早就位"靠的是下面那段邻条提前解码，不是提前换。 */
             snapshotFlow { pagerState.settledPage }
                 .collect { page ->
-                    val hub = PlayerPool.hub() ?: return@collect
+                    val cur = PlayerPool.current() ?: return@collect
                     // 只有"这一页 + 左右邻"是活的；传整个队列会把邻格分到第 0、1 页上去
                     val live = listOf(page - 1, page, page + 1).filter { it in videos.indices }
-                    val s = reassign(slots, page, live, hub.member()) ?: return@collect
+                    val s = reassign(slots, page, live, cur) ?: return@collect
                     // 这个成员手里还没拿到这一串队列：现在 seek 会被夹到第 0 条，
                     // 等下一回落位再说
                     if (s.member.mediaItemCount != videos.size) return@collect
-                    // 正在出声的那个成员要留在眼前这一页，换的只是"会话认哪一个"
-                    if (s.member !== hub.member()) hub.use(s.member)
                     active = page
+                    /* 顺序必须是"先把它对到这一页，再交给会话"。
+                       反过来（先 setPlayer 再 seek）会自激：会话从新播放器重建 PlayerInfo 时，
+                       看到的是一个还停在别页下标的播放器，于是给 controller 发一次"条目切换"，
+                       而下面那条"pager 跟着播放器走"的监听又会去滚页 → 又换成员 → 又发一次。
+                       实测这样转了 50 圈（A→B→C→A 轮转）。 */
                     if (s.member.currentMediaItemIndex != page) {
                         // 必须走 seekToDefaultPosition：seekTo(page, TIME_UNSET) 会把这个成员打进 IDLE
                         s.member.seekToDefaultPosition(page)
                     }
+                    // 正在出声的那个成员要留在眼前这一页，换的只是"会话认哪一个"
+                    PlayerPool.use(s.member)
                     val play = wantPlay || carryPlay
                     carryPlay = false
                     if (play) s.member.play() else s.member.pause()
@@ -830,6 +835,24 @@ private fun reassign(
         free.moveTo(q)
     }
     return s
+}
+
+/**
+ * 队列里装的就是这批视频时，按队列给出页表；不是就回 null，让视频页拿扫库结果铺一遍。
+ *
+ * 逐条比 uri、不比条数：面板删一条会让条数也变，拖一次顺序只变次序。两种都是"队列说了算"，
+ * 而页表若固定跟着扫库结果走，重新进这一页就把他那一步覆盖回去了（删掉的那条自己回来）。
+ */
+private fun queuePages(c: MediaController, library: List<Track>): List<Track>? {
+    val n = c.mediaItemCount
+    if (n == 0 || n > library.size) return null
+    val byUri = library.associateBy { it.uri }
+    val out = ArrayList<Track>(n)
+    for (i in 0 until n) {
+        val t = c.getMediaItemAt(i).localConfiguration?.uri?.let { byUri[it] } ?: return null
+        out.add(t)
+    }
+    return out
 }
 
 /** 抽屉里那几行的数据与回调，底部壳和左侧壳共用 */

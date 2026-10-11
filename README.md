@@ -58,7 +58,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 app/                主模块：MediaStore 扫库 + Compose 播控 + MediaSessionService（后台播放、通知栏）
 ffmpeg-decoder/     从 media3 1.11.1 的 decoder_ffmpeg 改编；静态库从工程根 third_party/ffmpeg 取
-tools/              构建与调试脚本（gen_hubplayer.py 从 javap 生成 HubPlayer 的 122 个转发方法）
+tools/              构建与调试脚本（FFmpeg 静态库的三步重建见上）
 docs/               device_codecs.md = 参考机解码能力实测；chatgpt_design.md = 最初那份方案；
                     ffmpeg_decoder_README.md = 解码器模块说明
 ```

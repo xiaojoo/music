@@ -10,8 +10,12 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        // 池由 PlayerPool 建（成员表要给视频页直接读），会话只认一个 Player，挂的是包好的门面
-        mediaSession = MediaSession.Builder(this, PlayerPool.ensure(this)).build()
+        // 池由 PlayerPool 建；会话先挂在第一个成员上，换"眼前这一页"时由 PlayerPool.use() 调
+        // MediaSession.setPlayer 转过去（media3 官方给的就是这条转移入口）
+        PlayerPool.ensure(this)
+        val s = MediaSession.Builder(this, PlayerPool.sessionPlayer()).build()
+        mediaSession = s
+        PlayerPool.attach(s)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
