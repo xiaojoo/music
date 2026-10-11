@@ -386,7 +386,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                 )
 
                 AppTab.Video -> VideoFeed(
-                    videos = videoTracks,
+                    library = videoTracks,
                     controller = controller,
                     permissionGranted = mediaGranted,
                     onAskPermission = onAskMediaPermission,
