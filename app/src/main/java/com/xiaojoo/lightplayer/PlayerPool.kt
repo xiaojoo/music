@@ -1,7 +1,9 @@
 package com.xiaojoo.lightplayer
 
 import android.content.Context
+import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -18,6 +20,7 @@ import androidx.media3.exoplayer.ExoPlayer
  * （会话的代理），够不到成员本身 —— 每页绑自己的 TextureView 必须拿到真 ExoPlayer，
  * 成员表因此在同进程这份单例里留一份给 UI 直接读。
  */
+@OptIn(UnstableApi::class)
 object PlayerPool {
 
     /** 3 = 眼前 + 上一条 + 下一条。再多这台机的并发硬解不一定给，也没页可摆 */
