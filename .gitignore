@@ -12,7 +12,7 @@ backup/
 __pycache__/
 *.log
 
-# 第三方二进制与夹具：体积大，可由 _build_ffmpeg.sh / 设备重新取得
+# 第三方二进制与夹具：体积大，可由 tools/wsl_build_ffmpeg_arm64.sh 重编 / 设备重新取得
 third_party/
 *.mp4
 *.mkv

@@ -1,7 +1,7 @@
 import re, io
 
 # 从 javap 的 androidx.media3.common.Player 抽象方法表生成 HubPlayer 的转发实现。
-# 路由规则写死在这里，改接口时重跑本脚本即可（tools_gen_hubplayer.py）。
+# 路由规则写死在这里，改接口时重跑本脚本即可（tools/gen_hubplayer.py）。
 PRIM = {
     "void": "Unit", "int": "Int", "long": "Long", "float": "Float", "double": "Double",
     "boolean": "Boolean", "byte": "Byte", "short": "Short",

@@ -33,7 +33,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * 这一层把每次调用转给"当前成员"，并把当前成员的回调转给会话。
  *
  * 下面这一大片转发不是偷懒没写完：Kotlin 的 `by` 在构造时就把代理存死了（HubDelegationTest 量过），
- * 换 var 不改转发目标，所以只能逐个写。这份实现由 tools_gen_hubplayer.py 从 Player 接口生成，
+ * 换 var 不改转发目标，所以只能逐个写。这份实现由 tools/gen_hubplayer.py 从 Player 接口生成，
  * 升级 media3 后重跑那个脚本即可。路由只有三种：
  *   队列/配置类 setter -> 广播给每个成员（保证各成员队列同构，下标语义不变）
  *   状态类 getter、播放命令、画面绑定 -> 只给当前成员

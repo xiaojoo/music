@@ -14,7 +14,7 @@ set(ffmpeg_binaries "${FFMPEG_ROOT}/android-libs/${ANDROID_ABI}")
 
 if(NOT EXISTS "${ffmpeg_binaries}/libavcodec.a")
     message(FATAL_ERROR
-        "找不到 ${ffmpeg_binaries}/libavcodec.a —— 先用 WSL 里的 NDK 编 FFmpeg（脚本 _build_ff_arm64.sh），再把三个 .a 放进 third_party/ffmpeg/android-libs/${ANDROID_ABI}/")
+        "找不到 ${ffmpeg_binaries}/libavcodec.a —— 先用 WSL 里的 NDK 编 FFmpeg（脚本 tools/wsl_build_ffmpeg_arm64.sh），再把三个 .a 放进 third_party/ffmpeg/android-libs/${ANDROID_ABI}/")
 endif()
 
 foreach(ffmpeg_lib avutil swresample avcodec)
