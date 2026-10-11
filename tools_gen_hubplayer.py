@@ -24,7 +24,7 @@ CONFIG = {
     "setTrackSelectionParameters", "setVolume", "setPlaybackSuppressionEnabled",
     "setDeviceVolume", "adjustDeviceVolume", "setDeviceMuted", "setTunnelingEnabled",
 }
-LISTENERS = {"addListener", "removeListener"}
+LISTENERS = {"addListener", "removeListener"}  # 这两个手写（要按成员分道门，见 HubPlayer.gate）
 # 生命周期：释放必须打到每个成员，否则池里会漏一个活着的解码器
 LIFECYCLE = {"release"}
 # Java 侧标了 @Nullable 的参数：Kotlin 覆写时必须写成可空
@@ -91,8 +91,8 @@ for ln in lines:
     if r != "Unit" and name in NULLABLE_RET:
         r += "?"
     if name in LISTENERS:
-        body.append("    override fun %s(%s) { members.forEach { it.%s(%s) } }" % (name, sig_in, name, call))
-    elif name in QUEUE or name in CONFIG or name in LIFECYCLE:
+        continue  # 这两个手写：事件要按成员分道门，只有当前成员的那道才转给会话（HubPlayer.gate）
+    if name in QUEUE or name in CONFIG or name in LIFECYCLE:
         body.append("    override fun %s(%s)%s { members.forEach { it.%s(%s) } }" %
                     (name, sig_in, "" if r == "Unit" else ": " + r, name, call))
     else:
@@ -100,63 +100,16 @@ for ln in lines:
                     (name, sig_in, "" if r == "Unit" else ": " + r, name, call))
     seen.add(name)
 
-head = '''package com.xiaojoo.lightplayer
-
-import android.net.Uri
-import android.os.Bundle
-import android.os.Looper
-import android.view.SurfaceHolder
-import android.view.SurfaceView
-import android.view.TextureView
-import androidx.media3.common.MediaMetadata
-import androidx.media3.common.text.CueGroup
-import androidx.media3.common.util.Size
-import android.view.Surface
-import androidx.annotation.OptIn
-import androidx.media3.common.AudioAttributes
-import androidx.media3.common.DeviceInfo
-import androidx.media3.common.MediaItem
-import androidx.media3.common.Metadata
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.PlaybackParameters
-import androidx.media3.common.Player
-import androidx.media3.common.Timeline
-import androidx.media3.common.TrackGroup
-import androidx.media3.common.TrackSelectionParameters
-import androidx.media3.common.Tracks
-import androidx.media3.common.VideoSize
-import androidx.media3.common.text.Cue
-import androidx.media3.exoplayer.ExoPlayer
-import java.util.concurrent.CopyOnWriteArrayList
-
-/**
- * 会话只能挂一个 Player，播放器池要几个实例同时活着（下一条提前解码好，滑动时不必重开解码器）。
- * 这一层把每次调用转给"当前成员"，并把每个成员的回调统一转给会话。
- *
- * 下面这一大片转发不是偷懒没写完：Kotlin 的 `by` 在构造时就把代理存死了（HubDelegationTest 量过），
- * 换 var 不改转发目标，所以只能逐个写。这份实现由 tools_gen_hubplayer.py 从 Player 接口生成，
- * 升级 media3 后重跑那个脚本即可。路由只有三种：
- *   队列/配置类 setter -> 广播给每个成员（保证各成员队列同构，下标语义不变）
- *   监听器 -> 每个成员都挂（换成员时不补挂也不会漏事件）
- *   其余（状态类 getter、播放命令、画面绑定）-> 只给当前成员
- */
-@OptIn(androidx.media3.common.util.UnstableApi::class)
-class HubPlayer(
-    private val members: List<ExoPlayer>
-) : Player by members.first() {
-
-    private var current: ExoPlayer = members.first()
-
-    fun member(): ExoPlayer = current
-
-    /** 换到池里的另一个成员；两边都停在各自的位置，这里只管"谁在响、谁在画" */
-    fun use(next: ExoPlayer) {
-        if (next === current) return
-        current = next
-    }
-'''
+# 类头（imports / 字段 / use() / gate() / resync() / init / 手写的 addListener+removeListener）
+# 不在本脚本里存第二份：从现有文件取"第一条生成的转发之前"那一段原样留着，
+# 升级 media3 后重跑本脚本只换转发体，手写那扇门不会被冲掉。
+TARGET = "app/src/main/java/com/xiaojoo/lightplayer/HubPlayer.kt"
+FIRST_GEN = "    override fun getApplicationLooper"
+old = io.open(TARGET, encoding="utf-8").read().splitlines(True)
+cut = next(i for i, ln in enumerate(old) if ln.startswith(FIRST_GEN))
+head = "".join(old[:cut]).rstrip("\n")
 out = head + "\n" + "\n".join(body) + "\n}\n"
-io.open("app/src/main/java/com/xiaojoo/lightplayer/HubPlayer.kt", "w", encoding="utf-8", newline="\n").write(out)
+io.open(TARGET, "w", encoding="utf-8", newline="\n").write(out)
 print("生成 %d 个转发，队列广播 %d 个，配置广播 %d 个" %
       (len(body), len(QUEUE & seen), len(CONFIG & seen)))
 print("画面类走当前成员:", sorted(SURFACE & seen))

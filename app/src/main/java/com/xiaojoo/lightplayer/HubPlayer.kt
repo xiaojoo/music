@@ -25,37 +25,109 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.text.Cue
 import androidx.media3.exoplayer.ExoPlayer
+import java.lang.reflect.Proxy
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * 会话只能挂一个 Player，播放器池要几个实例同时活着（下一条提前解码好，滑动时不必重开解码器）。
- * 这一层把每次调用转给"当前成员"，并把每个成员的回调统一转给会话。
+ * 这一层把每次调用转给"当前成员"，并把当前成员的回调转给会话。
  *
  * 下面这一大片转发不是偷懒没写完：Kotlin 的 `by` 在构造时就把代理存死了（HubDelegationTest 量过），
  * 换 var 不改转发目标，所以只能逐个写。这份实现由 tools_gen_hubplayer.py 从 Player 接口生成，
  * 升级 media3 后重跑那个脚本即可。路由只有三种：
  *   队列/配置类 setter -> 广播给每个成员（保证各成员队列同构，下标语义不变）
- *   监听器 -> 每个成员都挂（换成员时不补挂也不会漏事件）
- *   其余（状态类 getter、播放命令、画面绑定）-> 只给当前成员
+ *   状态类 getter、播放命令、画面绑定 -> 只给当前成员
+ *   事件 -> 只有当前成员的事件出得去（见 gate）
  */
 @OptIn(androidx.media3.common.util.UnstableApi::class)
 class HubPlayer(
     private val members: List<ExoPlayer>
 ) : Player by members.first() {
 
+    private val targets = CopyOnWriteArrayList<Player.Listener>()
+
     private var current: ExoPlayer = members.first()
 
     fun member(): ExoPlayer = current
 
-    /** 换到池里的另一个成员；两边都停在各自的位置，这里只管"谁在响、谁在画" */
+    /**
+     * 换到池里的另一个成员。顺序是"先认新的、再放旧的"：
+     * pause 旧成员会一串事件，那时 current 已经是新的，门就把它们挡住了；
+     * 而 ExoPlayer 在 pause 时交回音频焦点，新成员随后 play 才拿得到。
+     */
     fun use(next: ExoPlayer) {
         if (next === current) return
+        val prev = current
         current = next
+        prev.pause()
+        resync()
+    }
+
+    override fun addListener(listener: Player.Listener) {
+        if (!targets.contains(listener)) targets.add(listener)
+    }
+
+    override fun removeListener(listener: Player.Listener) {
+        targets.remove(listener)
+    }
+
+    /**
+     * 每个成员一道门：只让"当前成员"的事件过去。
+     * 预览成员一直在 seek/prepare/缓冲，事件比正在响的那条还密 —— 直接挂到会话那侧，
+     * 界面读到的就是预览成员的"已暂停""缓冲中"，把真正在播的那条判成没播
+     * （编译、门禁都看不出，只有屏幕上看得出来）。
+     * Player.Listener 全是 default void 方法，用动态代理逐个转发：比手写四十个覆写少错，
+     * media3 以后新增回调也不会漏。
+     */
+    private fun gate(owner: ExoPlayer): Player.Listener =
+        Proxy.newProxyInstance(
+            Player.Listener::class.java.classLoader,
+            arrayOf(Player.Listener::class.java)
+        ) { proxy, method, args ->
+            when {
+                method.declaringClass == Any::class.java -> when (method.name) {
+                    "equals" -> args?.firstOrNull() === proxy
+                    "hashCode" -> System.identityHashCode(proxy)
+                    else -> "HubPlayer.gate"
+                }
+                owner === current -> {
+                    // 转发时"是谁发的"要写门面自己：会话那侧的监听会核对来源
+                    val a = args?.copyOf()
+                    if (a != null && a.isNotEmpty() && a[0] is Player) a[0] = this
+                    targets.forEach { t ->
+                        runCatching { if (a == null) method.invoke(t) else method.invoke(t, *a) }
+                    }
+                    null
+                }
+                else -> null
+            }
+        } as Player.Listener
+
+    /**
+     * 换成员后补发一轮状态：新成员的这些量早就稳定了，它不会自己重发，
+     * 而会话只在收到事件时才重算对外发布的 PlayerInfo —— 不补就停在旧成员的值上。
+     */
+    private fun resync() {
+        val p = current
+        targets.forEach { l ->
+            runCatching {
+                l.onTimelineChanged(p.currentTimeline, Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED)
+                l.onTracksChanged(p.currentTracks)
+                l.onMediaItemTransition(p.currentMediaItem, Player.MEDIA_ITEM_TRANSITION_REASON_SEEK)
+                l.onMediaMetadataChanged(p.mediaMetadata)
+                l.onPlaybackStateChanged(p.playbackState)
+                l.onPlayWhenReadyChanged(p.playWhenReady, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+                l.onIsPlayingChanged(p.isPlaying)
+                l.onVideoSizeChanged(p.videoSize)
+            }
+        }
+    }
+
+    init {
+        members.forEach { it.addListener(gate(it)) }
     }
 
     override fun getApplicationLooper(): Looper = current.getApplicationLooper()
-    override fun addListener(p0: Player.Listener) { members.forEach { it.addListener(p0) } }
-    override fun removeListener(p0: Player.Listener) { members.forEach { it.removeListener(p0) } }
     override fun setMediaItems(p0: List<MediaItem>) { members.forEach { it.setMediaItems(p0) } }
     override fun setMediaItems(p0: List<MediaItem>, p1: Boolean) { members.forEach { it.setMediaItems(p0, p1) } }
     override fun setMediaItems(p0: List<MediaItem>, p1: Int, p2: Long) { members.forEach { it.setMediaItems(p0, p1, p2) } }

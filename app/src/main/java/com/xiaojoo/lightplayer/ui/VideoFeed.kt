@@ -54,7 +54,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -90,8 +89,10 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
 import androidx.media3.ui.AspectRatioFrameLayout
+import com.xiaojoo.lightplayer.PlayerPool
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import com.xiaojoo.lightplayer.data.PlayHistory
 import com.xiaojoo.lightplayer.data.Track
@@ -107,8 +108,11 @@ private val SheetPad = 12.dp
 
 /**
  * 本地视频竖滑全屏。
- * 关键约束：整个 App 只有一个播放器实例（在 PlaybackService 里），
- * 所以这里不换内核，只把队列换成视频列表，翻页 = 切媒体项。
+ * 一条片子占池里一个成员、一块自己的画面（PlayerPool 里三个实例）：
+ * 眼前这一条出声，上下邻条提前解码好第一帧但不响。
+ * 翻页 = 换"会话的当前成员"，不再往同一个播放器里换媒体项 ——
+ * 单实例那套里，下一条还没出第一帧的那 0.13–0.39s，共用画面上留的就是上一条的最后一帧，
+ * 那一下"闪"是架构自带的，藏不掉（藏了就黑，露了就串）。
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -140,7 +144,7 @@ fun VideoFeed(
             }
             return@Box
         }
-        if (controller == null || videos.isEmpty()) {
+        if (controller == null || videos.isEmpty() || PlayerPool.members().isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
                     text = if (videos.isEmpty()) "这台机器上没扫到本地视频" else "正在连接播放服务…",
@@ -176,24 +180,18 @@ fun VideoFeed(
            isPlaying 会假 false 一小会儿，于是"滑下一条先闪一下暂停"。
            playWhenReady 是"要不要播"的意图，跨条目不变，只有他按暂停/播完才会翻 false。 */
         var wantPlay by remember { mutableStateOf(controller.playWhenReady) }
-        /* 共用一个 surface 的代价：整屏只有一块画面，滑动时"正在出去的那页"和"正要进来的那页"
-           看到的是同一帧 —— 就是上一条串到这一页来了。
-           照短视频 App 的做法：每张卡自己盖一张首帧海报，只有"当前页且第一帧已到"才把海报淡掉，
-           露出底下的真画面。海报按 uri 缓存，来回滑不重新解帧。 */
-        var frameOut by remember { mutableStateOf(true) }
-        var surfaceRef by remember { mutableStateOf<TextureView?>(null) }
-        // 滑出去那一页要铺的画面：抓的是它被换掉那一刻屏幕上的真帧，不是这一条的第 0 帧
-        var leaving by remember { mutableStateOf(-1 to null as ImageBitmap?) }
-        // 播放器真正落在第几页：这是"画面此刻到底是不是这一页的"的唯一凭据
-        var playerIdx by remember { mutableIntStateOf(controller.currentMediaItemIndex) }
+        /* 一条片子一个成员、一块自己的画面。格子里的 page 是"这一格现在服务第几页"，-1 = 空着。
+           滑出去的那一页继续露它自己那一格的活画面：既不用抓帧铺顶（抓一次实测把 jank 从
+           0.73% 顶到 4.27%），也不会有上一条串到这一页来。 */
+        val slots = remember(controller) { PlayerPool.members().map { FeedSlot(it) } }
+        // 海报按 uri 缓存，来回滑不重新解帧
         val posters = remember { mutableMapOf<String, ImageBitmap?>() }
         // 每条的模糊垫图，按 uri 缓存。用 state map 存：垫图一到位底下那层就要立刻重画
         val blurs = remember { mutableStateMapOf<String, ImageBitmap>() }
         // 片源自带的编码黑边（归一化的内容框 l,t,r,b）；没有黑边的条目不落这里
         val borders = remember { mutableStateMapOf<String, FloatArray>() }
-        // 初值直接取播放器现在的宽高：从 0 开始会让头几帧按"1:1 方块"排版（见下面 onVideoSizeChanged）
-        var vidW by remember { mutableIntStateOf(controller.videoSize.width) }
-        var vidH by remember { mutableIntStateOf(controller.videoSize.height) }
+        // 会话（通知栏、别的页）看到的那一个 Player = 当前成员；换成员时 HubPlayer 自己补发状态
+        val scope = rememberCoroutineScope()
         DisposableEffect(controller) {
             val l = object : Player.Listener {
                 override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
@@ -202,106 +200,137 @@ fun VideoFeed(
                     // 队列到头停在 ENDED 时 Media3 不把 playWhenReady 翻回去，这里自己收
                     if (state == Player.STATE_ENDED) wantPlay = false
                 }
-                override fun onVideoSizeChanged(size: VideoSize) {
-                    // 换条目时 Media3 会先报一次 0x0，再在出第一帧前报真正的宽高。
-                    // 收进 0x0 会让 fitBox 退回"宽高比 1:1"的兜底，画面就被拉成方块 ——
-                    // 落下一条的那一下抖动和拉伸都是它。0x0 一律不接，留着上一条的宽高。
-                    if (size.width > 0 && size.height > 0) {
-                        vidW = size.width
-                        vidH = size.height
-                    }
-                }
-                override fun onRenderedFirstFrame() {
-                    frameOut = true
-                }
+                /* 从这一页外头换的条（耳机/通知栏/媒体键的上一曲下一曲）：出声的那个成员自己
+                   往前走了，可它那块画面就挂在原来这一格上 —— 看着像跟上了，底下那行标题和进度
+                   还是上一条的。所以播放器落到第几条，pager 就滚到第几页。
+                   连播(AUTO)走另一条路：那个成员要按停在原来那一格的最后一帧，不能让它自己走。 */
                 override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
-                    playerIdx = controller.currentMediaItemIndex
+                    if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) return
+                    val i = controller.currentMediaItemIndex
+                    if (i != pagerState.settledPage) {
+                        scope.launch { pagerState.animateScrollToPage(i) }
+                    }
                 }
             }
             controller.addListener(l)
             isPlaying = controller.isPlaying
             wantPlay = controller.playWhenReady && controller.playbackState != Player.STATE_ENDED
-            playerIdx = controller.currentMediaItemIndex
-            vidW = controller.videoSize.width
-            vidH = controller.videoSize.height
             onDispose { controller.removeListener(l) }
         }
+        // 每个成员的事只落在它自己那一格上：这一条的宽高、这一条的第一帧
+        DisposableEffect(slots) {
+            val ls = slots.map { s ->
+                object : Player.Listener {
+                    override fun onVideoSizeChanged(size: VideoSize) {
+                        // 换条目时 Media3 会先报一次 0x0，收进 0x0 会让 fitBox 退回"1:1 方块"兜底，
+                        // 画面就被拉一下 —— 0x0 一律不接，留着这一格原来的宽高
+                        if (size.width > 0 && size.height > 0) {
+                            s.vidW = size.width
+                            s.vidH = size.height
+                        }
+                    }
+                    override fun onRenderedFirstFrame() { s.firstFrame = true }
+                }
+            }
+            slots.forEachIndexed { i, s -> s.member.addListener(ls[i]) }
+            onDispose { slots.forEachIndexed { i, s -> s.member.removeListener(ls[i]) } }
+        }
 
-        // 进度条：currentPosition / duration 不是 Compose state，只能自己隔一会儿问一次
-        var posMs by remember { mutableLongStateOf(0L) }
-        var durMs by remember { mutableLongStateOf(0L) }
-        /* 每页自己的进度。进度条是每页各画一条，但 posMs/durMs 只有一个、读的是"正在播那条"，
-           直接共用就会在滑进来的那一页上先画出上一页走了多远（实测 3630/86714 = 4.2%）再归零。 */
-        val pagePos = remember { mutableStateMapOf<String, Pair<Long, Long>>() }
+        /* 每格自己的进度：这一格落在第几页，就抄它自己那个成员的进度。
+           整屏共用一个 posMs 的时候，滑进来的那一页会先画出上一页走了多远（实测 3630/86714=4.2%）
+           再归零。currentPosition / duration 不是 Compose state，只能自己隔一会儿问一次。 */
         var scrubbing by remember { mutableStateOf(false) }
-        LaunchedEffect(isPlaying, pagerState.currentPage) {
+        LaunchedEffect(slots, isPlaying) {
             while (isActive) {
-                durMs = controller.duration.coerceAtLeast(0L)
-                if (!scrubbing) posMs = controller.currentPosition
-                videos.getOrNull(controller.currentMediaItemIndex)?.uri?.toString()?.let {
-                    pagePos[it] = posMs to durMs
+                slots.forEach { s ->
+                    // 只在这一格确实停在它那一页时才抄：否则画的是这条片子的别的位置
+                    if (s.page >= 0 && !scrubbing && s.member.currentMediaItemIndex == s.page) {
+                        s.posMs = s.member.currentPosition
+                        s.durMs = s.member.duration.coerceAtLeast(0L)
+                    }
                 }
                 delay(if (isPlaying) 250L else 1000L)
             }
         }
 
-        LaunchedEffect(frameOut) {
-            if (!frameOut) {
-                delay(700L)
-                frameOut = true
-            }
-        }
-
         LaunchedEffect(videos, controller) {
-            val alreadyQueued = controller.mediaItemCount == videos.size &&
-                videos.indices.all { i ->
-                    controller.getMediaItemAt(i).localConfiguration?.uri == videos[i].uri
-                }
-            if (!alreadyQueued) {
-                controller.setMediaItems(videos.map { MediaItem.fromUri(it.uri) })
-                controller.prepare()
-                controller.pause()
+            val hub = PlayerPool.hub() ?: return@LaunchedEffect
+            val items = videos.map { MediaItem.fromUri(it.uri) }
+            /* 直接对门面设队列：同进程、同步、一次广播到三个成员。
+               走 MediaController 是异步的 —— 上一轮就因此踩了：落位逻辑在"成员手里还没有队列"
+               的时刻去 seek，那一下被夹到第 0 条，于是邻页把第 0 条的画面画了出来。
+               对齐与否读成员本体：会话那份镜像里的 MediaItem 不带 uri，比不出真相，
+               而且每个 getMediaItemAt 都是一次跨进程往返（成员这边是本地调用）。 */
+            val queued = PlayerPool.members().all { m ->
+                m.mediaItemCount == items.size &&
+                    items.indices.all { i ->
+                        m.getMediaItemAt(i).localConfiguration?.uri == items[i].localConfiguration?.uri
+                    }
+            }
+            if (!queued) {
+                hub.setMediaItems(items)
+                hub.prepare()
+                hub.pause()
             }
         }
 
         // 只有"这次进来落到的那一页"回到上次的进度；自己滑过去的条从头播
         var resumePending by remember { mutableStateOf(true) }
-        LaunchedEffect(controller, pagerState) {
-            // 只能等落位：整页只有一块共用画面，拖过半就换条的话，滑出去那一页不再是"当前页"，
-            // 它自己的第 0 帧海报会立刻盖回来 —— 就是"闪过上一视频的一帧"。
-            // 想两者都要，得每页一块自己的画面（播放器池那条路）。
+        // 出声的那一页；进度条只在这一格上能拖
+        var active by remember { mutableIntStateOf(startPage) }
+        /* 连播放完一条时，我们会把那个成员按停在它自己那一页的最后一帧 —— 那一下 pause 不是他按的，
+           "还要不要接着播"这个意图得留给下一页（单实例时是 Media3 自己翻页，不存在这件事）。 */
+        var carryPlay by remember { mutableStateOf(false) }
+        LaunchedEffect(slots, controller) {
+            /* 换成员等落位，不提前到"拖过半"：每一条都有自己的画面了，滑出去那一页露的是它自己
+               那一格的活画面，提早换的只是"谁在出声"，手指还没松声音就先跳走，没有好处。
+               "下一条早就位"靠的是下面那段邻条提前解码，不是提前换。 */
             snapshotFlow { pagerState.settledPage }
                 .collect { page ->
-                    if (controller.currentMediaItemIndex != page) {
-                        // 抓真帧：TextureView.getBitmap 是把已经画好的那一帧拷出来，不解码
-                        // 半尺寸抓：整幅 1080x2099 是 9MB 一张，实测把 jank 从 0.73% 顶到 4.27%；
-                        // 它只用来在 120ms 的淡出里铺一下，糊一点看不出来
-                        val shot = runCatching {
-                            surfaceRef?.let { v ->
-                                val w = (v.width / 2).coerceAtLeast(1)
-                                val h = (v.height / 2).coerceAtLeast(1)
-                                v.getBitmap(w, h)?.asImageBitmap()
-                            }
-                        }.getOrNull()
-                        leaving = playerIdx to shot
-                        frameOut = false
-                        controller.seekToDefaultPosition(page)
+                    val hub = PlayerPool.hub() ?: return@collect
+                    // 只有"这一页 + 左右邻"是活的；传整个队列会把邻格分到第 0、1 页上去
+                    val live = listOf(page - 1, page, page + 1).filter { it in videos.indices }
+                    val s = reassign(slots, page, live, hub.member()) ?: return@collect
+                    // 这个成员手里还没拿到这一串队列：现在 seek 会被夹到第 0 条，
+                    // 等下一回落位再说
+                    if (s.member.mediaItemCount != videos.size) return@collect
+                    // 正在出声的那个成员要留在眼前这一页，换的只是"会话认哪一个"
+                    if (s.member !== hub.member()) hub.use(s.member)
+                    active = page
+                    if (s.member.currentMediaItemIndex != page) {
+                        // 必须走 seekToDefaultPosition：seekTo(page, TIME_UNSET) 会把这个成员打进 IDLE
+                        s.member.seekToDefaultPosition(page)
+                    }
+                    val play = wantPlay || carryPlay
+                    carryPlay = false
+                    if (play) s.member.play() else s.member.pause()
+                    /* 上下邻条提前解码到第一帧（不出声）：滑过去的时候它自己那一格已经有画面，
+                       那 0.13–0.39s 的"重开容器 + 起解码器"就整个不在滑动路径上。
+                       幂等键是"它现在落在第几页"，不是"READY 没" —— 只认 READY 会在它刚起缓冲时
+                       被下一次 seek+prepare 打断，一次都到不了头（这一坑踩过）。 */
+                    for (q in intArrayOf(page - 1, page + 1)) {
+                        if (q !in videos.indices) continue
+                        val n = slots.firstOrNull { it.page == q } ?: continue
+                        if (n === s) continue
+                        if (n.member.mediaItemCount != videos.size) continue
+                        if (n.member.currentMediaItemIndex != q) n.member.seekToDefaultPosition(q)
+                        if (n.member.playbackState == Player.STATE_IDLE) n.member.prepare()
                     }
                     if (resumePending) {
                         resumePending = false
                         // 正在播的这一条不回头找存档进度：那会把声音往回拽最多两秒
-                        if (!(controller.isPlaying && controller.currentMediaItemIndex == page))
+                        if (!(s.member.isPlaying && s.member.currentMediaItemIndex == page))
                             videos.getOrNull(page)?.let { t ->
                                 val p = PlayHistory.posOf(context, t.uri)
                                 // 快到结尾的就当看完了，下次从头给，免得进来停在最后一帧
                                 if (p > 0 && (t.durationMs <= 0 || p < t.durationMs - 5000)) {
-                                    controller.seekTo(page, p)
+                                    s.member.seekTo(page, p)
                                 }
                             }
                     }
                     // 进来/翻到的那一页不自动开播（他要默认暂停），
-                    // 只有本来就在播（手动滑页、连播推进）时才把这条记进已播
-                    if (controller.isPlaying) {
+                    // 只有本来就要播（手动滑页、连播推进）时才把这条记进已播
+                    if (play) {
                         videos.getOrNull(page)?.let { PlayHistory.record(context, it) }
                     }
                 }
@@ -309,11 +338,12 @@ fun VideoFeed(
 
         /* 进度每两秒存一次。currentPosition 不是 Compose state，观察不到变化，
            所以这里用轮询读，不用 snapshotFlow（那条链之前一次都没跑过）。 */
-        LaunchedEffect(controller) {
+        LaunchedEffect(slots, active) {
             while (true) {
                 delay(2000)
-                val t = videos.getOrNull(controller.currentMediaItemIndex) ?: continue
-                if (controller.isPlaying) PlayHistory.savePos(context, t.uri, controller.currentPosition)
+                val s = slots.firstOrNull { it.page == active } ?: continue
+                val t = videos.getOrNull(s.page) ?: continue
+                if (s.member.isPlaying) PlayHistory.savePos(context, t.uri, s.member.currentPosition)
             }
         }
         // 离开这一页时补存一次，否则最后那两秒会丢
@@ -326,25 +356,33 @@ fun VideoFeed(
 
         /* 播完一条自动滚到下一条；关了连播就停在最后画面。
            这里必须用 Player.Listener：playbackState / currentPosition 不是 Compose state，
-           snapshotFlow 观察不到它们，之前那样写整条链一次都没跑过。 */
-        val scope = rememberCoroutineScope()
-        DisposableEffect(controller, autoNext) {
-            val l = object : Player.Listener {
-                // 播完一条时 Media3 会自己把队列推到下一条，STATE_ENDED 只在队列最后一条才出现，
-                // 所以连播要听条目切换这个事件，而不是等播放状态变成结束
-                override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
-                    if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) return
-                    val i = controller.currentMediaItemIndex
-                    if (autoNext) {
-                        scope.launch { pagerState.animateScrollToPage(i) }
-                    } else if (i > 0) {
-                        controller.seekTo(i - 1, Long.MAX_VALUE)   // 退回上一条的最后一帧停住
-                        controller.pause()
+           snapshotFlow 观察不到它们，之前那样写整条链一次都没跑过。
+           池里每个成员各挂一道：Media3 一到条目末尾会自己把这个成员推到下一条，
+           可它的画面还挂在原来那一格上 —— 一推就把下一条的画面画进这一格（就是串画面）。
+           所以立刻把它放下来、按回自己这一页的最后一帧停住；翻页交给 pager，
+           下一条由它自己那个已经解码好的成员出声。 */
+        DisposableEffect(slots, autoNext) {
+            val ls = slots.map { s ->
+                object : Player.Listener {
+                    override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                        if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) return
+                        val p = s.page
+                        val to = s.member.currentMediaItemIndex
+                        // 这一条放完了，"他还要接着播"这个意图交给下一页（下一页要换成员，
+                        // 而换成员那一下我们按 playWhenReady 决定放不放 —— 上面刚 pause 过它）
+                        carryPlay = autoNext && s.member.playWhenReady
+                        s.member.pause()
+                        // 画面停在这一页自己的最后一帧：Long.MAX_VALUE 会夹到这一条末尾，
+                        // 不能写 TIME_UNSET（那会把这个成员直接打进 IDLE）
+                        if (p in videos.indices && to != p) s.member.seekTo(p, Long.MAX_VALUE)
+                        if (autoNext && to in videos.indices && to != p) {
+                            scope.launch { pagerState.animateScrollToPage(to) }
+                        }
                     }
                 }
             }
-            controller.addListener(l)
-            onDispose { controller.removeListener(l) }
+            slots.forEachIndexed { i, s -> s.member.addListener(ls[i]) }
+            onDispose { slots.forEachIndexed { i, s -> s.member.removeListener(ls[i]) } }
         }
 
         LaunchedEffect(speed) { controller.setPlaybackSpeed(speed) }
@@ -391,9 +429,11 @@ fun VideoFeed(
             }
         }
 
-        /* 全屏 = 横屏的片子把屏幕躺过来；竖屏的片子不转屏。 */
-        LaunchedEffect(fullscreen, vidW, vidH) {
-            val landscapeClip = vidW > 0 && vidH > 0 && vidW > vidH
+        /* 全屏 = 横屏的片子把屏幕躺过来；竖屏的片子不转屏。
+           尺寸看"出声那一格"的，不再有一整屏共用的画面了。 */
+        val aSlot = slots.firstOrNull { it.page == active }
+        LaunchedEffect(fullscreen, aSlot?.vidW, aSlot?.vidH) {
+            val landscapeClip = aSlot != null && aSlot.vidW > 0 && aSlot.vidH > 0 && aSlot.vidW > aSlot.vidH
             (context as? Activity)?.requestedOrientation =
                 if (fullscreen && landscapeClip) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -403,116 +443,12 @@ fun VideoFeed(
         }
 
         val inLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-        /* surface 底下这层：当前页的放大模糊版，专门填画面框以外的上下两条。
-           画面按原始比例放（不裁），多出来的地方原来是黑的，现在是这条片子自己的颜色。 */
-        val settledBlur = videos.getOrNull(pagerState.settledPage)?.uri?.toString()?.let { blurs[it] }
-        /* 整屏只有一个出图 View（一个 surface）：每页各建一个的话，新页 surface 还没出帧、
-           旧的已经摘掉 player，翻页就黑一下。这里让它跟着翻页偏移一起上下走，
-           画面和卡片还是绑在一起滑的（抖音那个手感）。
-           转 90°/270° 时把这一层的宽高对调再转，转完正好铺满竖屏那一格。 */
-        key(controller) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                val pageH = with(LocalDensity.current) { maxHeight.toPx() }
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .offset {
-                            IntOffset(0, (-pagerState.currentPageOffsetFraction * pageH).toInt())
-                        }
-                ) {
-                    settledBlur?.let {
-                        Image(
-                            bitmap = it,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.45f))
-                    )
-                }
-                val swapped = rotation % 180 != 0
-                val boxW: Dp = if (swapped) maxHeight else maxWidth
-                val boxH: Dp = if (swapped) maxWidth else maxHeight
-                /* 黑边只在没转的时候裁：转 90° 时宽高对调，那档的尺寸本来就没算对（挂着的那条待办），
-                   不跟这层叠 */
-                val border = if (rotation == 0) borders[videos.getOrNull(playerIdx)?.uri?.toString()] else null
-                // 竖屏片撑满整格（画面比这一格更高），裁剪框要按撑满后的缩放算
-                val tall = vidW > 0 && vidH > vidW
-                val fb = fitBox(boxW, boxH, vidW, vidH, border, fills = tall)
-                val offX = with(LocalDensity.current) { fb.dx.toPx() }
-                val offY = with(LocalDensity.current) { fb.dy.toPx() }
-                Box(
-                    modifier = Modifier
-                        .size(fb.clipW, fb.clipH)
-                        .offset { IntOffset(0, (-pagerState.currentPageOffsetFraction * pageH).toInt()) }
-                        .graphicsLayer { rotationZ = rotation.toFloat() }
-                        .clipToBounds(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AndroidView(
-                        modifier = Modifier
-                            .requiredSize(boxW, boxH)
-                            .offset { IntOffset(offX.roundToInt(), offY.roundToInt()) },
-                        factory = { ctx ->
-                            // ARFL 在 FIT 下会把自身量成内容比例那么小，所以外面再套一层铺满的框
-                            // 把它居中放，否则转 90° 之后画面既偏一边又留一大截空
-                            val surface = TextureView(ctx).also { surfaceRef = it }
-                            val arfl = AspectRatioFrameLayout(ctx).apply {
-                                keepScreenOn = true
-                                addView(
-                                    surface,
-                                    FrameLayout.LayoutParams(
-                                        FrameLayout.LayoutParams.MATCH_PARENT,
-                                        FrameLayout.LayoutParams.MATCH_PARENT
-                                    )
-                                )
-                                controller.setVideoTextureView(surface)
-                            }
-                            FrameLayout(ctx).apply {
-                                keepScreenOn = true
-                                addView(
-                                    arfl,
-                                    FrameLayout.LayoutParams(
-                                        FrameLayout.LayoutParams.MATCH_PARENT,
-                                        FrameLayout.LayoutParams.MATCH_PARENT,
-                                        Gravity.CENTER
-                                    )
-                                )
-                                tag = arfl
-                            }
-                        },
-                        update = { v ->
-                            // 藏画面必须设在 View 自己的 alpha 上：TextureView 的内容由视图层合成，
-                            // Compose 那层 graphicsLayer.alpha 对它不起作用（门设了等于没设）
-                            v.alpha = if (frameOut) 1f else 0f
-                            (v.tag as? AspectRatioFrameLayout)?.let { a ->
-                                // 竖屏片撑满整格高度（宽度超出就左右截断）；
-                                // 横屏片不裁，按原始比例放，多出来的上下两条由底下那层模糊去填
-                                a.resizeMode =
-                                    if (tall) AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                    else AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                if (vidW > 0 && vidH > 0) a.setAspectRatio(vidW.toFloat() / vidH.toFloat())
-                            }
-                        },
-                        onRelease = { v ->
-                            (v.getChildAt(0) as? AspectRatioFrameLayout)
-                                ?.let { (it.getChildAt(0) as? TextureView)?.let { t ->
-                                    controller.clearVideoTextureView(t)
-                                    if (surfaceRef === t) surfaceRef = null
-                                } }
-                        }
-                    )
-                }
-            }
-        }
 
         VerticalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
             val t = videos[page]
             val key = t.uri.toString()
+            // 这一页分到的那一格（没分到就只铺海报，不会串到别人的画面）
+            val s = slots.firstOrNull { it.page == page }
             val poster by produceState<ImageBitmap?>(initialValue = posters[key], key1 = key) {
                 if (value == null) {
                     val b = withContext(Dispatchers.IO) { firstFrame(context, t.uri, 720) }
@@ -530,53 +466,154 @@ fun VideoFeed(
                     value = b
                 }
             }
-            /* 只有"这一页是当前页 + 播放器也已经落到这一页 + 第一帧已到"三个条件同时成立，
-               才把海报淡掉露出真画面。少任何一条都继续盖着 ——
-               落位那一拍 currentPage 先翻、seek 还没发，此时露出来的是一张被解码器清黑的空帧。 */
-            /* 淡出只看"播放器落在这页 + 首帧已到"，不看 currentPage：currentPage 在手指拖到
-               48.5% 时就翻了（实测），带上它会让正在滑出去的那一页当场被自己的第 0 帧海报盖回去，
-               那就是"闪过上一视频的一帧"。滑出去的这一页该继续露出共用画面上的活视频。 */
-            val showPoster = !(page == playerIdx && frameOut)
-            val posterA by animateFloatAsState(if (showPoster) 1f else 0f, tween(120), label = "poster")
-            // 这一层不能涂黑：它在画面那一层上面，涂了就把画面盖住了
-            Box(modifier = Modifier.fillMaxSize()) {
-                /* 海报是 Fit 画的，画面框以外是透明 —— 底下那块共用 surface 会从这里透出来。
-                   上一条竖屏、这一条横屏时，透出来的画面正好落在"本该是黑边"的地方，
-                   看着就是上下闪一帧别人的画面。所以海报要连一层黑底一起进、一起出。 */
+            /* 这一格的第一帧到了才把海报淡掉。一条片子一个成员一块画面之后，
+               "这一页此刻显示的是不是这一条"只看它自己那个成员的第一帧 ——
+               不用再猜"共用画面现在放的是哪一页"，也不用抓帧铺顶。
+               换页/换成员那一下由下面 AndroidView 的重绑把 firstFrame 收回 false。 */
+            val live = s != null && s.firstFrame
+            val posterA by animateFloatAsState(if (live) 0f else 1f, tween(120), label = "poster")
+            /* 第一帧回调偶发不来（这台机上见过）：确实在放了还一直盖着海报就等于没画面，兜一下。
+               只在"这一格的成员真的在放"时兜，不会把空 surface 露出来。 */
+            if (s != null && !s.firstFrame) {
+                LaunchedEffect(s, page) {
+                    delay(900L)
+                    if (s.member.isPlaying) s.firstFrame = true
+                }
+            }
+            /* contentAlignment 必须是 Center：这一格的画面比屏幕小的时候（横屏片、
+               或转 90° 后按原始比例不裁的那一档），默认左上角会让它贴着顶、
+               空全留到下边 —— 看着就像"只占了原来的高度"。 */
+            BoxWithConstraints(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
                 val pb = poster
-                val shot = if (page == leaving.first) leaving.second else null
-                Box(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = posterA }) {
-                    // 打底：第一帧还没到的那一段时间必须是不透明的，否则会透出共用 surface 的上一条
-                    Box(modifier = Modifier.fillMaxSize().background(Color.Black))
-                    // 底下那层模糊是"当前页"的，滑进来的这一页必须自带一张，否则会透出上一条
-                    pbBlur?.let {
-                        Image(
-                            bitmap = it,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                    }
+                // 最底下：这一条自己的放大模糊 + 45% 黑，专门填画面框以外的上下两条，不跟着海报淡掉
+                pbBlur?.let {
+                    Image(
+                        bitmap = it,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.45f))
+                )
+                /* 这一页自己的画面（转 90°/270° 时把框的宽高对调再转，转完正好铺满竖屏那一格）。
+                   原来那套"整屏一个出图 View、跟着翻页偏移每帧位移"整个删了：
+                   每帧位移一张 1080x2100 的 TextureView 要重排，而它露出的正是上一条的最后一帧。 */
+                if (s != null) {
+                    /* 黑边只在没转的时候裁：黑边是按没转的帧扫出来的，转 90° 换轴后要重量 */
+                    val rb = rotBox(
+                        maxWidth, maxHeight, s.vidW, s.vidH,
+                        if (rotation == 0) borders[key] else null, rotation
+                    )
+                    val offX = with(LocalDensity.current) { rb.dx.toPx() }
+                    val offY = with(LocalDensity.current) { rb.dy.toPx() }
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.45f))
-                    )
+                            .size(rb.boxW, rb.boxH)
+                            .graphicsLayer { rotationZ = rotation.toFloat() }
+                            .clipToBounds(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AndroidView(
+                            modifier = Modifier
+                                .requiredSize(rb.picW, rb.picH)
+                                .offset { IntOffset(offX.roundToInt(), offY.roundToInt()) },
+                            factory = { ctx ->
+                                // ARFL 在 FIT 下会把自身量成内容比例那么小，所以外面再套一层铺满的框
+                                // 把它居中放，否则转 90° 之后画面既偏一边又留一大截空
+                                val surface = TextureView(ctx)
+                                val arfl = AspectRatioFrameLayout(ctx).apply {
+                                    keepScreenOn = true
+                                    addView(
+                                        surface,
+                                        FrameLayout.LayoutParams(
+                                            FrameLayout.LayoutParams.MATCH_PARENT,
+                                            FrameLayout.LayoutParams.MATCH_PARENT
+                                        )
+                                    )
+                                }
+                                FrameLayout(ctx).apply {
+                                    keepScreenOn = true
+                                    addView(
+                                        arfl,
+                                        FrameLayout.LayoutParams(
+                                            FrameLayout.LayoutParams.MATCH_PARENT,
+                                            FrameLayout.LayoutParams.MATCH_PARENT,
+                                            Gravity.CENTER
+                                        )
+                                    )
+                                    tag = arfl
+                                }
+                            },
+                            update = { v ->
+                                val tv = (v.tag as? AspectRatioFrameLayout)?.getChildAt(0) as? TextureView
+                                // 绑表面认"这一格现在服务第几页"：换页要重绑，重绑就得重新等第一帧
+                                if (tv != null && (s.boundPage != page || s.view !== tv)) {
+                                    s.view?.let { old -> if (old !== tv) s.member.clearVideoTextureView(old) }
+                                    s.view = tv
+                                    s.boundPage = page
+                                    s.appliedRatio = 0f
+                                    s.firstFrame = false
+                                    // 直接绑到这个成员上，不走 MediaController：
+                                    // 会话那侧只有一个 Player，而这里三个成员要同时各自出画面
+                                    s.member.setVideoTextureView(tv)
+                                }
+                                (v.tag as? AspectRatioFrameLayout)?.let { a ->
+                                    // 裁不裁由上面那个 Box 的 clipToBounds 定（框已经按"转完之后"的形状算好了），
+                                    // 所以这里一律 FIT：画面按原始比例正好铺满这一格。
+                                    // 这两个 setter 都会 requestLayout，而这一页每 250ms 就重组一次
+                                    // （轮询进度）—— 无条件设回去等于每 250ms 重排一次整棵画面子树。
+                                    val mode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    if (a.resizeMode != mode) a.resizeMode = mode
+                                    if (s.vidW > 0 && s.vidH > 0) {
+                                        val r = s.vidW.toFloat() / s.vidH.toFloat()
+                                        if (r != s.appliedRatio) {
+                                            s.appliedRatio = r
+                                            a.setAspectRatio(r)
+                                        }
+                                    }
+                                }
+                            },
+                            onRelease = { v ->
+                                val tv = (v.tag as? AspectRatioFrameLayout)?.getChildAt(0) as? TextureView
+                                if (tv != null && s.view === tv) {
+                                    s.member.clearVideoTextureView(tv)
+                                    s.view = null
+                                    s.boundPage = -1
+                                }
+                            }
+                        )
+                    }
+                }
+                /* 海报层：第一帧没到就整层盖着，连一层不透明的黑底一起进、一起出 ——
+                   少了那层黑底，会从画面框以外的透明处透出这一格还没出帧的空 surface。 */
+                Box(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = posterA }) {
+                    Box(modifier = Modifier.fillMaxSize().background(Color.Black))
                     if (pb != null) {
-                        // 海报跟真画面用同一套几何：有黑边就一起裁掉，否则淡出那一下会跳 15px
-                        val br = borders[key]
+                        /* 海报跟真画面共用 rotBox 那一套几何：同一档旋转、同一套"转完之后"的形状判断。
+                           两边算法差一点，淡出那一下就会看见画面跳位/跳角度（黑边也一起裁，
+                           否则跳 15px —— 那条已经量过）。 */
                         BoxWithConstraints(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                         ) {
-                            val pf = fitBox(
-                                maxWidth, maxHeight, pb.width, pb.height, br,
-                                fills = pb.height > pb.width
+                            val pf = rotBox(
+                                maxWidth, maxHeight, pb.width, pb.height,
+                                if (rotation == 0) borders[key] else null, rotation
                             )
                             val ox = with(LocalDensity.current) { pf.dx.toPx() }
                             val oy = with(LocalDensity.current) { pf.dy.toPx() }
                             Box(
-                                modifier = Modifier.size(pf.clipW, pf.clipH).clipToBounds(),
+                                modifier = Modifier
+                                    .size(pf.boxW, pf.boxH)
+                                    .graphicsLayer { rotationZ = rotation.toFloat() }
+                                    .clipToBounds(),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Image(
@@ -589,18 +626,6 @@ fun VideoFeed(
                                 )
                             }
                         }
-                    }
-                    if (shot != null) {
-                        // 这一页正在滑出去：铺它被换掉那一刻屏幕上的真帧。
-                        // 铺第 0 帧静帧就是他看到的"闪过上一视频的一帧"
-                        Image(
-                            bitmap = shot,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            // 抓的是整块画面（竖屏撑满时它比屏幕宽），要按"看得见的那一块"裁回来，
-                            // 用 Fit 会缩进一圈黑边
-                            contentScale = ContentScale.Crop
-                        )
                     }
                 }
                 // 单击切播放/暂停，长按开底部抽屉（跟抖音同一套手势）
@@ -624,7 +649,7 @@ fun VideoFeed(
                         }
                 )
                 // 暂停时屏幕中央给一个三角，底下垫半透黑圆底（黑画面上白三角没有圆底会糊掉）
-                if (!wantPlay && page == pagerState.currentPage) {
+                if (!wantPlay && page == active) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.Center)
@@ -661,10 +686,11 @@ fun VideoFeed(
                             Spacer(Modifier.height(2.dp))
                         }
                     }
-                    /* 这一页自己的进度：正在播的那页用实时值，其它页用它自己存下的那份
-                       （没播过就是 0），不然滑进来的那一下会先画出上一页走了多远再归零 */
-                    val own = if (page == playerIdx) posMs to durMs
-                    else pagePos[key] ?: (0L to t.durationMs)
+                    /* 这一页自己的进度 = 这一格自己那个成员的进度。整屏共用一份的时候，
+                       滑进来的那一下会先画出上一页走了多远（实测 4.2%）再归零。
+                       邻条还没解码好的那一段时间，用曲库里已有的时长顶着。 */
+                    val own = if (s != null) s.posMs to s.durMs.coerceAtLeast(t.durationMs)
+                    else 0L to t.durationMs
                     /* 时间不再预留格子：线是贴底画的，上面多一行字不会把线顶走，
                        信息行自己往上让即可。字号按参考图量：数字墨高 41px，25sp 渲出 42px。 */
                     if (scrubbing) {
@@ -681,14 +707,18 @@ fun VideoFeed(
                     // 左右到边、下沿贴导航栏；高 16dp=44px 刚好容得下半径 19px 的滑块
                     FeedScrub(
                         fraction = if (own.second > 0) own.first.toFloat() / own.second.toFloat() else 0f,
-                        enabled = page == playerIdx && own.second > 0,
+                        // 只有出声那一格能拖：拖邻条那一格会把没在放的那条按走
+                        enabled = s != null && page == active && own.second > 0,
                         expanded = scrubbing,
                         onDragStart = { scrubbing = true },
-                        onDrag = { f -> posMs = (f * durMs).toLong() },
+                        onDrag = { f -> if (s != null) s.posMs = (f * own.second).toLong() },
                         onDragEnd = { f ->
-                            controller.seekTo((f * durMs).toLong())
+                            if (s != null) {
+                                s.member.seekTo((f * own.second).toLong())
+                                s.posMs = s.member.currentPosition
+                                // 拖动换位置算一次" seek 完成"，第一帧还落在同一格里，不用重新等
+                            }
                             scrubbing = false
-                            posMs = controller.currentPosition
                         },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -735,6 +765,65 @@ fun VideoFeed(
             else VideoBottomSheet(onDismiss = { moreOpen = false }, actions = actions)
         }
     }
+}
+
+/**
+ * 池里的一个成员 = 一块画面。它一次只服务一页（page），滑远了就放开（-1）。
+ * 格子里记的全是"这一格自己的"：这一条的宽高、这一条的第一帧到没到、这一条走到哪儿。
+ * 原来整屏共用一份画面状态，那正是"闪一下上一条"的根 —— 这里不留任何全局画面状态。
+ */
+private class FeedSlot(val member: ExoPlayer) {
+    var page by mutableIntStateOf(-1)
+    var view by mutableStateOf<TextureView?>(null)
+    // 这个 surface 当前绑给这一格时的页号：换页要重绑、要重新等第一帧
+    var boundPage by mutableIntStateOf(-1)
+    var firstFrame by mutableStateOf(false)
+    /* 宽高从成员身上取，不能从 0 起步：onVideoSizeChanged 只在"变了"的时候发，
+       一条已经 READY 的片子换到另一格上时它不会再发一次 —— 留着 0 就让 fitBox 退回
+       "宽高比 1:1"的兜底，画面被排成正方形（他报的"只占了原来的高度"就是这个）。 */
+    var vidW by mutableIntStateOf(member.videoSize.width)
+    var vidH by mutableIntStateOf(member.videoSize.height)
+    var posMs by mutableLongStateOf(0L)
+    var durMs by mutableLongStateOf(0L)
+    // 上一次真正设给这块画面的宽高比：setter 会 requestLayout，值没变就别碰它
+    var appliedRatio = 0f
+
+    fun moveTo(to: Int) {
+        if (page == to) return
+        view?.let { member.clearVideoTextureView(it) }
+        view = null
+        boundPage = -1
+        appliedRatio = 0f
+        firstFrame = false
+        vidW = member.videoSize.width
+        vidH = member.videoSize.height
+        posMs = 0L
+        durMs = 0L
+        page = to
+    }
+}
+
+/**
+ * 落到 page 这一页时重新分格子：这一页 + 左右邻各占一个成员。两条规矩 ——
+ *  - 正在出声的那个成员要留在眼前这一页（进这一页时把它挪走等于声音断一下重来）；
+ *  - 一个成员一次只服务一页，不在屏幕附近的那一格先放开。
+ * 格子不够时邻页宁可不分：那一页只有海报，也不会串到别人的画面。
+ */
+private fun reassign(
+    slots: List<FeedSlot>, page: Int, live: List<Int>, cur: ExoPlayer
+): FeedSlot? {
+    slots.forEach { if (it.page !in live) it.moveTo(-1) }
+    val s = slots.firstOrNull { it.page == page }
+        ?: slots.firstOrNull { it.member === cur && it.page < 0 }
+        ?: slots.firstOrNull { it.page < 0 }
+        ?: return null
+    s.moveTo(page)
+    live.filter { it != page }.forEach { q ->
+        if (slots.any { it.page == q }) return@forEach
+        val free = slots.firstOrNull { it.page < 0 } ?: return@forEach
+        free.moveTo(q)
+    }
+    return s
 }
 
 /** 抽屉里那几行的数据与回调，底部壳和左侧壳共用 */
@@ -1044,6 +1133,35 @@ internal fun fitBox(
         picH = picH,
         dx = picW * (0.5f - (l + r) / 2f),
         dy = picH * (0.5f - (t + b) / 2f)
+    )
+}
+
+/**
+ * 旋转档的几何。先在**屏幕空间**按"转完之后是什么形状"算框（源宽高按 90/270 对调），
+ * 再把要转的那个框换成它的转置 —— 因为 graphicsLayer 是把这一整层转 90° 摆回竖屏的。
+ *
+ * 为什么必须换轴：原来用没转的宽高比判"撑满还是留黑"，9:16 转完其实是 16:9，
+ * 按旧形状去 ZOOM 就把画面放大到屏幕的 3.5 倍、左右砍掉 71%（他报的"像被截断"）；
+ * 反过来 16:9 转完是 9:16，按旧形状走 FIT 就上下各空 90px（他报的"没铺满"）。
+ */
+internal class RotBox(
+    val boxW: Dp, val boxH: Dp, val picW: Dp, val picH: Dp, val dx: Dp, val dy: Dp
+)
+
+internal fun rotBox(
+    pageW: Dp, pageH: Dp, srcW: Int, srcH: Int, border: FloatArray?, rotation: Int
+): RotBox {
+    val swapped = rotation % 180 != 0
+    val w = if (swapped) srcH else srcW
+    val h = if (swapped) srcW else srcH
+    val fb = fitBox(pageW, pageH, w, h, border, fills = w > 0 && h > w)
+    return RotBox(
+        boxW = if (swapped) fb.clipH else fb.clipW,
+        boxH = if (swapped) fb.clipW else fb.clipH,
+        picW = if (swapped) fb.picH else fb.picW,
+        picH = if (swapped) fb.picW else fb.picH,
+        dx = if (swapped) fb.dy else fb.dx,
+        dy = if (swapped) fb.dx else fb.dy
     )
 }
 
