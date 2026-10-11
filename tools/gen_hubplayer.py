@@ -38,6 +38,25 @@ SURFACE = {
     "clearVideoTextureView", "getSurface", "getSurfaceSize",
 }
 
+# 废弃方法（键 = 方法名 + 参数个数）：不照抄调用，按官方语义转写到非废弃的那条上。
+# media3 1.11.1 里这些方法在 Player 上是 abstract（javap 过），必须实现，不能不写；
+# 而它们的官方含义就是"另一条的同义调用"，所以转写比原样转发更对（也不靠注解压警告）。
+# 值里 {0} 是实参占位符 —— 只换"调哪条方法"，**路由（广播 / 只给当前成员）仍由下面的
+# QUEUE/CONFIG/LIFECYCLE 判定决定**，别在这里写死 current，否则配置类会漏掉别的成员。
+CALL = {
+    ("getCurrentWindowIndex", 0): "getCurrentMediaItemIndex()",
+    ("getNextWindowIndex", 0): "getNextMediaItemIndex()",
+    ("getPreviousWindowIndex", 0): "getPreviousMediaItemIndex()",
+    ("isCurrentWindowDynamic", 0): "isCurrentMediaItemDynamic()",
+    ("isCurrentWindowLive", 0): "isCurrentMediaItemLive()",
+    ("isCurrentWindowSeekable", 0): "isCurrentMediaItemSeekable()",
+    # 无 flags 的那几个重载 = 带 flags 的版本传 0（media3 文档原话）
+    ("setDeviceVolume", 1): "setDeviceVolume({0}, 0)",
+    ("increaseDeviceVolume", 0): "increaseDeviceVolume(0)",
+    ("decreaseDeviceVolume", 0): "decreaseDeviceVolume(0)",
+    ("setDeviceMuted", 1): "setDeviceMuted({0}, 0)",
+}
+
 def jtype(t):
     t = t.strip()
     m = re.match(r"^(java\.util\.(List|Set))<(.*)>$", t)
@@ -92,12 +111,17 @@ for ln in lines:
         r += "?"
     if name in LISTENERS:
         continue  # 这两个手写：事件要按成员分道门，只有当前成员的那道才转给会话（HubPlayer.gate）
+    # 这一条方法调用长什么样：默认原样转发，废弃的按 CALL 换成非废弃那条。
+    # 只换"调哪条方法"，路由（广播 / 只给当前成员）仍由下面 QUEUE/CONFIG 判定 —— 
+    # 之前把 setDeviceVolume 的转写写成 current.xxx，把"配置广播给三个成员"这条不变量打穿了。
+    key = (name, len(args))
+    inv = CALL[key].format(*[n for _, n in args]) if key in CALL else "%s(%s)" % (name, call)
     if name in QUEUE or name in CONFIG or name in LIFECYCLE:
-        body.append("    override fun %s(%s)%s { members.forEach { it.%s(%s) } }" %
-                    (name, sig_in, "" if r == "Unit" else ": " + r, name, call))
+        body.append("    override fun %s(%s)%s { members.forEach { it.%s } }" %
+                    (name, sig_in, "" if r == "Unit" else ": " + r, inv))
     else:
-        body.append("    override fun %s(%s)%s = current.%s(%s)" %
-                    (name, sig_in, "" if r == "Unit" else ": " + r, name, call))
+        body.append("    override fun %s(%s)%s = current.%s" %
+                    (name, sig_in, "" if r == "Unit" else ": " + r, inv))
     seen.add(name)
 
 # 类头（imports / 字段 / use() / gate() / resync() / init / 手写的 addListener+removeListener）

@@ -102,7 +102,10 @@ class MainActivity : ComponentActivity() {
         checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 }
 
-@OptIn(UnstableApi::class)
+/* media3 的 UnstableApi 挂的是 androidx 的 @RequiresOptIn，Kotlin 的 @OptIn 认不出它
+   （写上去编译期直接告诉你"没效果"，lint 也照样报 UnsafeOptInUsageError）。
+   要用就得用 androidx 那个；这里写全限定名，避免 import 后把 kotlin.OptIn 遮蔽掉。 */
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 private fun rememberBarState(controller: MediaController?): BarState {
     val playing = remember { mutableStateOf(false) }

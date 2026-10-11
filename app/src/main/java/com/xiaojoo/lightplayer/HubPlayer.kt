@@ -126,7 +126,6 @@ class HubPlayer(
     init {
         members.forEach { it.addListener(gate(it)) }
     }
-
     override fun getApplicationLooper(): Looper = current.getApplicationLooper()
     override fun setMediaItems(p0: List<MediaItem>) { members.forEach { it.setMediaItems(p0) } }
     override fun setMediaItems(p0: List<MediaItem>, p1: Boolean) { members.forEach { it.setMediaItems(p0, p1) } }
@@ -191,11 +190,11 @@ class HubPlayer(
     override fun getCurrentManifest(): Any? = current.getCurrentManifest()
     override fun getCurrentTimeline(): Timeline = current.getCurrentTimeline()
     override fun getCurrentPeriodIndex(): Int = current.getCurrentPeriodIndex()
-    override fun getCurrentWindowIndex(): Int = current.getCurrentWindowIndex()
+    override fun getCurrentWindowIndex(): Int = current.getCurrentMediaItemIndex()
     override fun getCurrentMediaItemIndex(): Int = current.getCurrentMediaItemIndex()
-    override fun getNextWindowIndex(): Int = current.getNextWindowIndex()
+    override fun getNextWindowIndex(): Int = current.getNextMediaItemIndex()
     override fun getNextMediaItemIndex(): Int = current.getNextMediaItemIndex()
-    override fun getPreviousWindowIndex(): Int = current.getPreviousWindowIndex()
+    override fun getPreviousWindowIndex(): Int = current.getPreviousMediaItemIndex()
     override fun getPreviousMediaItemIndex(): Int = current.getPreviousMediaItemIndex()
     override fun getCurrentMediaItem(): MediaItem? = current.getCurrentMediaItem()
     override fun getMediaItemCount(): Int = current.getMediaItemCount()
@@ -205,12 +204,12 @@ class HubPlayer(
     override fun getBufferedPosition(): Long = current.getBufferedPosition()
     override fun getBufferedPercentage(): Int = current.getBufferedPercentage()
     override fun getTotalBufferedDuration(): Long = current.getTotalBufferedDuration()
-    override fun isCurrentWindowDynamic(): Boolean = current.isCurrentWindowDynamic()
+    override fun isCurrentWindowDynamic(): Boolean = current.isCurrentMediaItemDynamic()
     override fun isCurrentMediaItemDynamic(): Boolean = current.isCurrentMediaItemDynamic()
-    override fun isCurrentWindowLive(): Boolean = current.isCurrentWindowLive()
+    override fun isCurrentWindowLive(): Boolean = current.isCurrentMediaItemLive()
     override fun isCurrentMediaItemLive(): Boolean = current.isCurrentMediaItemLive()
     override fun getCurrentLiveOffset(): Long = current.getCurrentLiveOffset()
-    override fun isCurrentWindowSeekable(): Boolean = current.isCurrentWindowSeekable()
+    override fun isCurrentWindowSeekable(): Boolean = current.isCurrentMediaItemSeekable()
     override fun isCurrentMediaItemSeekable(): Boolean = current.isCurrentMediaItemSeekable()
     override fun isPlayingAd(): Boolean = current.isPlayingAd()
     override fun getCurrentAdGroupIndex(): Int = current.getCurrentAdGroupIndex()
@@ -238,13 +237,13 @@ class HubPlayer(
     override fun getDeviceInfo(): DeviceInfo = current.getDeviceInfo()
     override fun getDeviceVolume(): Int = current.getDeviceVolume()
     override fun isDeviceMuted(): Boolean = current.isDeviceMuted()
-    override fun setDeviceVolume(p0: Int) { members.forEach { it.setDeviceVolume(p0) } }
+    override fun setDeviceVolume(p0: Int) { members.forEach { it.setDeviceVolume(p0, 0) } }
     override fun setDeviceVolume(p0: Int, p1: Int) { members.forEach { it.setDeviceVolume(p0, p1) } }
-    override fun increaseDeviceVolume() = current.increaseDeviceVolume()
+    override fun increaseDeviceVolume() = current.increaseDeviceVolume(0)
     override fun increaseDeviceVolume(p0: Int) = current.increaseDeviceVolume(p0)
-    override fun decreaseDeviceVolume() = current.decreaseDeviceVolume()
+    override fun decreaseDeviceVolume() = current.decreaseDeviceVolume(0)
     override fun decreaseDeviceVolume(p0: Int) = current.decreaseDeviceVolume(p0)
-    override fun setDeviceMuted(p0: Boolean) { members.forEach { it.setDeviceMuted(p0) } }
+    override fun setDeviceMuted(p0: Boolean) { members.forEach { it.setDeviceMuted(p0, 0) } }
     override fun setDeviceMuted(p0: Boolean, p1: Int) { members.forEach { it.setDeviceMuted(p0, p1) } }
     override fun setAudioAttributes(p0: AudioAttributes, p1: Boolean) { members.forEach { it.setAudioAttributes(p0, p1) } }
 }

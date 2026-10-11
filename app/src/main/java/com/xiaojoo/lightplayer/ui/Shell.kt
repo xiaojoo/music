@@ -1,5 +1,6 @@
 package com.xiaojoo.lightplayer.ui
 
+import android.content.ClipData
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -35,11 +36,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.Dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -63,6 +65,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -834,7 +837,8 @@ fun TrackListPage(
     var sortOpen by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<Track?>(null) }
     var menuTop by remember { mutableStateOf(0) }
-    val clip = LocalClipboardManager.current
+    val clip = LocalClipboard.current
+    val clipScope = rememberCoroutineScope()
     val ctx = LocalContext.current
     val q = query.trim()
     val sorted = ListSort.apply(tracks, sort)
@@ -863,7 +867,9 @@ fun TrackListPage(
                 }
                 MenuDivider()
                 MenuLine("复制歌名") {
-                    clip.setText(AnnotatedString(picked.name))
+                    clipScope.launch {
+                        clip.setClipEntry(ClipEntry(ClipData.newPlainText("LightPlayer", picked.name)))
+                    }
                     android.widget.Toast.makeText(ctx, "已复制歌名", android.widget.Toast.LENGTH_SHORT).show()
                     menuFor = null
                 }

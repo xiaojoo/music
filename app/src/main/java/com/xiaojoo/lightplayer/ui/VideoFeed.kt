@@ -1,6 +1,7 @@
 package com.xiaojoo.lightplayer.ui
 
 import android.app.Activity
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -74,11 +75,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.Image
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -731,7 +732,7 @@ fun VideoFeed(
         if (moreOpen) {
             // 抽屉是对着"眼前这一页"操作的，不是播放器正在放的那一条
             val cur = videos.getOrNull(pagerState.currentPage)
-            val clip = LocalClipboardManager.current
+            val clip = LocalClipboard.current
             val actions = VideoMoreActions(
                 speed = speed,
                 fullscreen = fullscreen,
@@ -743,14 +744,19 @@ fun VideoFeed(
                 onAutoNext = { autoNext = !autoNext },
                 onCopyName = {
                     cur?.let {
-                        clip.setText(AnnotatedString(it.name))
+                        scope.launch {
+                            clip.setClipEntry(ClipEntry(ClipData.newPlainText("LightPlayer", it.name)))
+                        }
                         toast(context, "已复制视频名")
                     }
                     moreOpen = false
                 },
                 onCopyAddress = {
                     cur?.let {
-                        clip.setText(AnnotatedString(absolutePath(context, it.uri)))
+                        val path = absolutePath(context, it.uri)
+                        scope.launch {
+                            clip.setClipEntry(ClipEntry(ClipData.newPlainText("LightPlayer", path)))
+                        }
                         toast(context, "已复制视频地址")
                     }
                     moreOpen = false
