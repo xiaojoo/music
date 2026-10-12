@@ -7,12 +7,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
-// 参考图实测：轨道厚 6px=2dp、已播与未播只差 ΔB=7（即同一支灰），两端各有一个小圆点。
+// 参考图实测：整条是一根胶囊（两端圆头收尾，没有独立端点），厚 10px=4.9dp；
+// 已播/未播同一支颜色只变深浅（22% 对 7%），滑块是只比条厚 0.5dp 的实心小圆。
 // material3 的 Slider 这个版本没有 trackHeight 参数，画不出这个形状，所以自绘。
 @Composable
 fun ScrubBar(
@@ -22,7 +25,8 @@ fun ScrubBar(
     onDrag: (Float) -> Unit,
     onDragEnd: (Float) -> Unit,
     modifier: Modifier = Modifier,
-    trackColor: Color = Tokens.Track,
+    idleColor: Color = Tokens.TrackIdle,
+    playedColor: Color = Tokens.TrackPlayed,
     thumbColor: Color = Tokens.InkStrong
 ) {
     Canvas(
@@ -50,16 +54,12 @@ fun ScrubBar(
             }
     ) {
         val cy = size.height / 2f
+        val th = Tokens.Dimen.TrackHeight.toPx()
         val r = Tokens.Dimen.ThumbSize.toPx() / 2f
-        drawCircle(trackColor, radius = r, center = Offset(r, cy))
-        drawCircle(trackColor, radius = r, center = Offset(size.width - r, cy))
-        drawLine(
-            color = trackColor,
-            start = Offset(r, cy),
-            end = Offset(size.width - r, cy),
-            strokeWidth = Tokens.Dimen.TrackHeight.toPx()
-        )
+        val top = cy - th / 2f
         val x = r + fraction.coerceIn(0f, 1f) * (size.width - 2f * r)
-        drawCircle(thumbColor, radius = r * 1.2f, center = Offset(x, cy))
+        drawRoundRect(idleColor, Offset(0f, top), Size(size.width, th), CornerRadius(th / 2f))
+        drawRoundRect(playedColor, Offset(0f, top), Size(x, th), CornerRadius(th / 2f))
+        drawCircle(thumbColor, radius = r, center = Offset(x, cy))
     }
 }

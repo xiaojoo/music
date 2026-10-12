@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 只在 debug 包里合并进来：在线那一路现在接的是本机静态服务（明文 http），
+         Android 9 起默认禁止明文流量，不在 debug 变体上开这一条就只能看到"连接失败"。
+         release 不合并这个文件，明文仍然是关着的。 -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "LightPlayer"
 include(":app")
 include(":ffmpeg-decoder")
+include(":video-source")

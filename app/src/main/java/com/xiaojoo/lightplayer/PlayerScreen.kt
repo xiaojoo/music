@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
@@ -47,16 +48,16 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import androidx.media3.ui.PlayerView
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import com.xiaojoo.lightplayer.data.PlayHistory
 import com.xiaojoo.lightplayer.data.Track
@@ -77,10 +78,20 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 
+/**
+ * 音乐那一屏。**绑的是音频那一路的播放器，不是会话** —— 会话会被视频那一路借走（视频页要拿它
+ * 控制出声的成员），跟着会话走的话，正在放视频时切到这一屏就会把视频的海报、名字、进度画在
+ * 音乐页上（他报的「音乐界面怎么还是显示视频海报」）。
+ * 这一屏不碰视频：没有渲染面、不显示视频信息。要动音频就是动音频那台。
+ *
+ * [onTakeover] 在每一次"真的去操作"之前调一下：把会话交给音频那台（顺带把在放的视频按停）。
+ * 只是看着这一屏不会调它 —— 所以视频在放、他切到音乐 tab 浏览，视频一格不停。
+ */
 @OptIn(UnstableApi::class)
 @Composable
 fun PlayerScreen(
-    controller: MediaController?,
+    audio: ExoPlayer?,
+    onTakeover: () -> Unit,
     onPicked: (List<Uri>) -> Unit,
     onOpenQueue: () -> Unit,
     onNowPlaying: (Uri?) -> Unit
@@ -97,7 +108,6 @@ fun PlayerScreen(
     var artist by remember { mutableStateOf<String?>(null) }
     var cover by remember { mutableStateOf<ImageBitmap?>(null) }
     var currentUri by remember { mutableStateOf<Uri?>(null) }
-    var isVideo by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
     var modeSheet by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -125,7 +135,7 @@ fun PlayerScreen(
         }
     }
 
-    val playerListener = remember(controller) {
+    val playerListener = remember(audio) {
         object : Player.Listener {
             override fun onIsPlayingChanged(value: Boolean) {
                 isPlaying = value
@@ -133,7 +143,7 @@ fun PlayerScreen(
 
             override fun onPlaybackStateChanged(state: Int) {
                 playbackState = state
-                durationMs = controller?.duration?.takeIf { it > 0 } ?: 0L
+                durationMs = audio?.duration?.takeIf { it > 0 } ?: 0L
                 if (durationMs > 0) {
                     currentUri?.let { PlayHistory.updateDuration(context, it, durationMs) }
                 }
@@ -145,11 +155,10 @@ fun PlayerScreen(
 
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 errorMessage = null
-                title = titleOf(controller, context)
-                artist = controller?.mediaMetadata?.artist?.toString()
+                title = titleOf(audio, context)
+                artist = audio?.mediaMetadata?.artist?.toString()
                 currentUri = item?.localConfiguration?.uri
-                isVideo = item?.localConfiguration?.uri.isVideoUri()
-                trackWarning = controller?.let { unsupportedTrackOf(it) }
+                trackWarning = audio?.let { unsupportedTrackOf(it) }
                 val uri = item?.localConfiguration?.uri
                 if (uri != null) {
                     PlayHistory.record(
@@ -157,9 +166,9 @@ fun PlayerScreen(
                         Track(
                             id = runCatching { android.content.ContentUris.parseId(uri) }.getOrDefault(0L),
                             uri = uri,
-                            name = titleOf(controller, context) ?: "未知文件",
+                            name = titleOf(audio, context) ?: "未知文件",
                             artist = artist,
-                            durationMs = controller?.duration?.takeIf { it > 0 } ?: 0L,
+                            durationMs = audio?.duration?.takeIf { it > 0 } ?: 0L,
                             sizeBytes = 0L,
                             isVideo = uri.isVideoUri()
                         )
@@ -168,12 +177,12 @@ fun PlayerScreen(
             }
 
             override fun onMediaMetadataChanged(metadata: androidx.media3.common.MediaMetadata) {
-                title = titleOf(controller, context)
+                title = titleOf(audio, context)
                 artist = metadata.artist?.toString() ?: artist
             }
 
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-                trackWarning = controller?.let { unsupportedTrackOf(it) }
+                trackWarning = audio?.let { unsupportedTrackOf(it) }
             }
 
             override fun onRepeatModeChanged(mode: Int) {
@@ -182,8 +191,8 @@ fun PlayerScreen(
         }
     }
 
-    DisposableEffect(controller) {
-        val c = controller
+    DisposableEffect(audio) {
+        val c = audio
         if (c == null) return@DisposableEffect onDispose { }
         c.addListener(playerListener)
         isPlaying = c.isPlaying
@@ -194,14 +203,13 @@ fun PlayerScreen(
         title = titleOf(c, context)
         artist = c.mediaMetadata.artist?.toString()
         currentUri = c.currentMediaItem?.localConfiguration?.uri
-        isVideo = currentUri.isVideoUri()
         onDispose { c.removeListener(playerListener) }
     }
 
-    LaunchedEffect(controller, isPlaying, dragging) {
+    LaunchedEffect(audio, isPlaying, dragging) {
         if (dragging) return@LaunchedEffect
         while (true) {
-            positionMs = controller?.currentPosition ?: 0L
+            positionMs = audio?.currentPosition ?: 0L
             delay(if (isPlaying) 500L else 1000L)
         }
     }
@@ -266,10 +274,8 @@ fun PlayerScreen(
             ) { page ->
                 if (page == 0) {
                     CoverPage(
-                        controller = controller,
                         cover = cover,
                         playing = isPlaying,
-                        isVideo = isVideo,
                         title = title,
                         artist = artist
                     )
@@ -278,7 +284,7 @@ fun PlayerScreen(
                         lines = lyrics,
                         positionMs = positionMs,
                         source = lyricSource,
-                        onSeek = { ms -> controller?.seekTo(ms) },
+                        onSeek = { ms -> onTakeover(); audio?.seekTo(ms) },
                         onPickFolder = { folderPicker.launch(null) }
                     )
                 }
@@ -298,17 +304,19 @@ fun PlayerScreen(
             ProgressRow(
                 positionMs = positionMs,
                 durationMs = durationMs,
-                enabled = controller != null && durationMs > 0,
+                enabled = audio != null && durationMs > 0,
                 onDragStart = { dragging = true },
                 onDrag = { f -> positionMs = (f * durationMs).toLong() },
                 onSeek = { ms ->
                     dragging = false
-                    controller?.seekTo(ms)
+                    onTakeover()
+                    audio?.seekTo(ms)
                 },
                 speed = speed,
                 onSpeed = { v ->
                     speed = v
-                    controller?.setPlaybackSpeed(v)
+                    onTakeover()
+                    audio?.setPlaybackSpeed(v)
                 }
             )
 
@@ -318,10 +326,11 @@ fun PlayerScreen(
                 playing = isPlaying,
                 repeatMode = repeatMode,
                 onPickMode = { modeSheet = true },
-                onPrev = { controller?.seekToPreviousMediaItem() },
-                onNext = { controller?.seekToNextMediaItem() },
+                onPrev = { onTakeover(); audio?.seekToPreviousMediaItem() },
+                onNext = { onTakeover(); audio?.seekToNextMediaItem() },
                 onPlayPause = {
-                    val c = controller ?: return@ControlRow
+                    val c = audio ?: return@ControlRow
+                    onTakeover()
                     if (c.isPlaying) c.pause() else c.play()
                 },
                 onQueue = onOpenQueue
@@ -339,7 +348,8 @@ fun PlayerScreen(
                     Triple(IconKind.LoopOne, "单曲循环", repeatMode == Player.REPEAT_MODE_ONE)
                 ),
                 onPick = { i ->
-                    controller?.repeatMode = when (i) {
+                    onTakeover()
+                    audio?.repeatMode = when (i) {
                         1 -> Player.REPEAT_MODE_ALL
                         2 -> Player.REPEAT_MODE_ONE
                         else -> Player.REPEAT_MODE_OFF
@@ -355,10 +365,8 @@ fun PlayerScreen(
 
 @Composable
 private fun CoverPage(
-    controller: MediaController?,
     cover: ImageBitmap?,
     playing: Boolean,
-    isVideo: Boolean,
     title: String?,
     artist: String?
 ) {
@@ -374,15 +382,11 @@ private fun CoverPage(
                 .fillMaxWidth()
                 .aspectRatio(1.103f)
         ) {
-            if (isVideo && controller != null) {
-                VideoSurface(controller)
-            } else {
-                Turntable(
-                    cover = cover,
-                    playing = playing,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
+            Turntable(
+                cover = cover,
+                playing = playing,
+                modifier = Modifier.fillMaxSize()
+            )
         }
 
         Text(
@@ -493,57 +497,48 @@ private fun ControlRow(
                 else -> IconKind.OrderSeq
             },
             color = if (repeatMode == Player.REPEAT_MODE_OFF) Tokens.Ink else Tokens.Accent,
+            size = Tokens.Dimen.LoopIcon,
+            stroke = Tokens.Dimen.LoopStroke,
             onClick = onPickMode
         )
-        HitIcon(IconKind.Prev, color = Tokens.Ink, onClick = onPrev)
+        HitIcon(IconKind.Prev, color = Tokens.InkStrong, size = Tokens.Dimen.PrevNextIcon, onClick = onPrev)
+        // 圆底删掉后这颗就是枚裸三角，按参考图三颗同色同量级；命中区还是原来那块 64dp 的方
         Box(
             modifier = Modifier
                 .size(Tokens.Dimen.PlayButton)
-                .background(Tokens.InkStrong, CircleShape)
                 .tap(onClick = onPlayPause),
             contentAlignment = Alignment.Center
         ) {
             LineIcon(
                 kind = if (playing) IconKind.Pause else IconKind.Play,
-                size = 26.dp,
-                color = Color.White
+                size = if (playing) Tokens.Dimen.PauseIcon else Tokens.Dimen.PlayIcon,
+                color = Tokens.InkStrong,
+                modifier = Modifier.offset(x = if (playing) 0.dp else Tokens.Dimen.PlayInkShift)
             )
         }
-        HitIcon(IconKind.Next, color = Tokens.Ink, onClick = onNext)
-        HitIcon(IconKind.Queue, color = Tokens.InkStrong, onClick = onQueue)
+        HitIcon(IconKind.Next, color = Tokens.InkStrong, size = Tokens.Dimen.PrevNextIcon, onClick = onNext)
+        HitIcon(
+            IconKind.Queue, color = Tokens.InkStrong,
+            size = Tokens.Dimen.QueueIcon, stroke = Tokens.Dimen.QueueStroke, onClick = onQueue
+        )
     }
 }
 
 @Composable
-private fun HitIcon(kind: IconKind, color: Color, onClick: () -> Unit) {
+private fun HitIcon(
+    kind: IconKind, color: Color, onClick: () -> Unit,
+    size: Dp = Tokens.Dimen.IconSize, stroke: Dp? = null
+) {
     Box(
         modifier = Modifier
             .size(Tokens.Dimen.IconHit)
             .tap(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        LineIcon(kind, color = color)
+        LineIcon(kind, color = color, size = size, stroke = stroke)
     }
 }
 
-@OptIn(UnstableApi::class)
-@Composable
-private fun VideoSurface(player: MediaController) {
-    val context = LocalContext.current
-    AndroidView(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(360.dp),
-        factory = {
-            PlayerView(context).apply {
-                useController = false
-                setKeepScreenOn(true)
-            }
-        },
-        update = { it.player = player },
-        onRelease = { it.player = null }
-    )
-}
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -588,11 +583,8 @@ private fun displayName(context: Context, uri: Uri): String {
     return uri.lastPathSegment?.substringAfterLast('/') ?: "未知文件"
 }
 
-private fun Uri?.isVideoUri(): Boolean {
-    val path = this?.path ?: this?.toString() ?: return false
-    val ext = path.substringAfterLast('.', "").lowercase()
-    return ext in setOf("mp4", "mkv", "webm", "mov", "3gp", "ts", "m2ts")
-}
+private fun Uri?.isVideoUri(): Boolean =
+    this != null && com.xiaojoo.lightplayer.data.isVideoUri(toString())
 
 @OptIn(UnstableApi::class)
 private fun unsupportedTrackOf(player: Player): String? {

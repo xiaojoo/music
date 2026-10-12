@@ -96,6 +96,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import com.xiaojoo.lightplayer.PlayerPool
 import com.xiaojoo.lightplayer.hasQueueAs
 import com.xiaojoo.lightplayer.data.MediaLibrary
+import com.xiaojoo.lightplayer.data.Online
 import com.xiaojoo.lightplayer.data.PlayHistory
 import com.xiaojoo.lightplayer.data.Track
 import kotlinx.coroutines.Dispatchers
@@ -124,7 +125,12 @@ fun VideoFeed(
     permissionGranted: Boolean,
     onAskPermission: () -> Unit,
     fullscreen: Boolean,
-    onFullscreenChange: (Boolean) -> Unit
+    onFullscreenChange: (Boolean) -> Unit,
+    favorites: Set<String>,
+    onToggleFavorite: (Track) -> Unit,
+    onOpenQueue: () -> Unit,
+    onOpenOnline: () -> Unit,
+    onDelete: (Track) -> Unit
 ) {
     val context = LocalContext.current
 
@@ -146,10 +152,10 @@ fun VideoFeed(
             }
             return@Box
         }
-        if (controller == null || library.isEmpty() || PlayerPool.members().isEmpty()) {
+        if (controller == null || PlayerPool.members().isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    text = if (library.isEmpty()) "这台机器上没扫到本地视频" else "正在连接播放服务…",
+                    text = "正在连接播放服务…",
                     color = Color(0xFF9A9A9A),
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
@@ -163,8 +169,22 @@ fun VideoFeed(
            以前页表固定取扫库结果，重新进这一页就把他那一步整个覆盖回去了
            （实测：面板里删掉一条，退出面板重进视频页，那条又回来了）。
            队列里装的不是这批视频（冷进这一页、或在放歌）时才用扫库结果铺一遍。
-           只在进这一页时算一次：面板只能在视频页没挂着的时候打开，页表不会在半路变。 */
+           只在进这一页时算一次：面板只能在视频页没挂着的时候打开，页表不会在半路变。
+           判空也挪到这里：在线那一条不在扫描结果里，但它是货真价实的一页，
+           原来拿 library 判空会把"手机上一条本地片都没有、正放着在线条目"误判成空页。 */
         val videos = remember(controller, library) { queuePages(controller, library) ?: library }
+        if (videos.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    text = "这台机器上没扫到本地视频",
+                    color = Color(0xFF9A9A9A),
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 32.dp)
+                )
+            }
+            return@Box
+        }
         /* 进来落在哪一条，有两个来源：
            - 播放器此刻就停在这批视频里的某一条（在别的页听着声音）→ 必须落回这一条，
              按"上次看的"另起一条等于把正在播的换掉、重头再播；
@@ -677,13 +697,15 @@ fun VideoFeed(
                         .fillMaxWidth()
                 ) {
                     if (!fullscreen) {
-                        Column(modifier = Modifier.padding(horizontal = 18.dp)) {
+                        // 右沿让到 76dp：右侧那一列悬浮键占掉右边 60dp（12 内缩 + 48 命中），
+                        // 视频名是 36 字符的 uuid，不让开就会从键底下穿过去
+                        Column(modifier = Modifier.padding(start = 18.dp, end = 76.dp)) {
                             Text(t.name, color = Color.White, style = MaterialTheme.typography.titleSmall)
                             Spacer(Modifier.height(3.dp))
                             Text(
                                 text = listOfNotNull(
                                     MediaLibrary.fmtDuration(t.durationMs).takeIf { t.durationMs > 0 },
-                                    MediaLibrary.fmtSize(t.sizeBytes),
+                                    MediaLibrary.fmtSize(t.sizeBytes).takeIf { t.sizeBytes > 0 },
                                     if (wantPlay) "播放中" else "已暂停"
                                 ).joinToString(" · "),
                                 color = Color(0xFFBDBDBD),
@@ -731,6 +753,16 @@ fun VideoFeed(
                             .height(16.dp)
                     )
                 }
+                /* 右侧悬浮那一列（跟抖音同一位置、同一手势层级）：心=收藏眼前这一条，
+                   队列=打开这一路的播放列表。它落在这一页里而不是整屏一份，所以每滑一页，
+                   心形跟着那一页的收藏状态换，不会把上一页的收藏态显示在下一条上。 */
+                FeedRail(
+                    favorited = key in favorites,
+                    onFavorite = { onToggleFavorite(t) },
+                    onQueue = onOpenQueue,
+                    onOnline = onOpenOnline,
+                    modifier = Modifier.align(Alignment.BottomEnd)
+                )
             }
         }
 
@@ -743,6 +775,9 @@ fun VideoFeed(
                 fullscreen = fullscreen,
                 rotation = rotation,
                 autoNext = autoNext,
+                // 在线条目没有本地文件可删，走 createDeleteRequest 会直接抛；这一行对它不出现，
+                // 和 API 29 上"系统没这个入口"是同一种处理
+                canDelete = android.os.Build.VERSION.SDK_INT >= 30 && !(cur?.let { Online.isOnline(it) } ?: false),
                 onSpeed = { speed = it },
                 onFullscreen = { onFullscreenChange(!fullscreen) },
                 onRotate = { rotation = (rotation + 90) % 360 },
@@ -768,6 +803,10 @@ fun VideoFeed(
                 },
                 onShare = {
                     cur?.let { shareVideo(context, it)?.let { msg -> toast(context, msg) } }
+                    moreOpen = false
+                },
+                onDelete = {
+                    cur?.let(onDelete)
                     moreOpen = false
                 }
             )
@@ -842,14 +881,20 @@ private fun reassign(
  *
  * 逐条比 uri、不比条数：面板删一条会让条数也变，拖一次顺序只变次序。两种都是"队列说了算"，
  * 而页表若固定跟着扫库结果走，重新进这一页就把他那一步覆盖回去了（删掉的那条自己回来）。
+ *
+ * 原来这里还有一道 `n > library.size` 就回 null 的判据，用来认"队列装的不是这批视频"。
+ * 在线条目混进队列之后它不再成立（100 条本地 + 5 条在线 = 105 > 100，会把 5 条在线的整页
+ * 顶回本地列表），所以改成逐条认：本地库里查不到，再看它是不是带 mediaId 的在线条目，
+ * 两条都不认才回 null。
  */
 private fun queuePages(c: MediaController, library: List<Track>): List<Track>? {
     val n = c.mediaItemCount
-    if (n == 0 || n > library.size) return null
+    if (n == 0) return null
     val byUri = library.associateBy { it.uri }
     val out = ArrayList<Track>(n)
     for (i in 0 until n) {
-        val t = c.getMediaItemAt(i).localConfiguration?.uri?.let { byUri[it] } ?: return null
+        val item = c.getMediaItemAt(i)
+        val t = item.localConfiguration?.uri?.let { byUri[it] } ?: Online.trackOf(item) ?: return null
         out.add(t)
     }
     return out
@@ -861,13 +906,15 @@ private class VideoMoreActions(
     val fullscreen: Boolean,
     val rotation: Int,
     val autoNext: Boolean,
+    val canDelete: Boolean,
     val onSpeed: (Float) -> Unit,
     val onFullscreen: () -> Unit,
     val onRotate: () -> Unit,
     val onAutoNext: () -> Unit,
     val onCopyName: () -> Unit,
     val onCopyAddress: () -> Unit,
-    val onShare: () -> Unit
+    val onShare: () -> Unit,
+    val onDelete: () -> Unit
 )
 
 @Composable
@@ -925,6 +972,69 @@ private fun VideoMoreRows(a: VideoMoreActions) {
         SheetLine(IconKind.Copy, "复制视频地址", a.onCopyAddress)
         SheetDivider()
         SheetLine(IconKind.OpenLink, "分享视频", a.onShare)
+        /* 删除走系统那条删除请求，确认框由系统弹，不在这里再画一层。
+           createDeleteRequest 是 API 30 才有的，29 上拿不到授权入口，所以这一行只在 30+ 出现 */
+        if (a.canDelete) {
+            SheetDivider()
+            SheetLine(IconKind.Trash, "删除视频", a.onDelete)
+        }
+    }
+}
+
+/**
+ * 视频页右侧那一列悬浮键。两颗都是 48dp 见方的命中区（底线是这一屏上"按得着"的最小格），
+ * 底下垫一层 25% 黑圆底：白画面上白图标会整个糊掉，黑画面又用不上它 —— 取一个两边都成立的数。
+ * 心形分两态：没收藏描边、已收藏实心+品牌绿，和「我的」歌单行那颗同一套读法。
+ */
+@Composable
+private fun FeedRail(
+    favorited: Boolean,
+    onFavorite: () -> Unit,
+    onQueue: () -> Unit,
+    onOnline: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.padding(end = 12.dp, bottom = 22.dp)) {
+        // 三颗的画框各给各的：同一个 26dp 框出来是三颗不一样大的 —— 墨最长边占画框
+        // 心 0.5495、队列 0.9245（笔画跟着画框缩）、放大镜 0.604。
+        // 下面三个数是按真机读数收出来的（26dp 那版量到 39/66/43，第一版配平量到 59/60/61），
+        // 现在三颗最长边都读 60px。48dp 的圆底一个字没动。
+        FeedRailButton(
+            if (favorited) IconKind.Favorite else IconKind.FavoriteLine,
+            favorited,
+            size = 40.4.dp,
+            onClick = onFavorite
+        )
+        Spacer(Modifier.height(16.dp))
+        FeedRailButton(IconKind.Queue, active = false, size = 23.6.dp, onClick = onQueue)
+        // 在线那一路的入口。摆在另外两颗下面：这两颗的位置是他量过的，新增的往后加
+        Spacer(Modifier.height(16.dp))
+        // 放大镜的墨天生偏画框中心左 0.0555·画框（圈在 0.42、柄伸到右下），不补的话墨中心
+        // 比圆底中心左 2dp；只挪墨，圆底和命中区不动。
+        FeedRailButton(
+            IconKind.Search, active = false, size = 35.5.dp,
+            inkShift = 2.dp, onClick = onOnline
+        )
+    }
+}
+
+@Composable
+private fun FeedRailButton(
+    kind: IconKind, active: Boolean, size: Dp = 26.dp, inkShift: Dp = 0.dp,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(Color(0x40000000))
+            .tap(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        LineIcon(
+            kind, modifier = Modifier.offset(x = inkShift),
+            size = size, color = if (active) Tokens.Accent else Color.White
+        )
     }
 }
 
