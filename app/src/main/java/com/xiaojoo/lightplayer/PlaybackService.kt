@@ -10,8 +10,8 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        // 池由 PlayerPool 建；会话先挂在第一个成员上，换"眼前这一页"时由 PlayerPool.use() 调
-        // MediaSession.setPlayer 转过去（media3 官方给的就是这条转移入口）
+        // 池由 PlayerPool 建；会话默认挂在**音频那一路**那台上，切到视频那一屏时由 PlayerPool.use()
+        // 把会话转给池里的成员（media3 官方给的就是这条转移入口），离开时 useAudio() 再换回来
         PlayerPool.ensure(this)
         val s = MediaSession.Builder(this, PlayerPool.sessionPlayer()).build()
         mediaSession = s

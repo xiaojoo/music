@@ -21,7 +21,7 @@ object PlayHistory {
             put("artist", track.artist ?: "")
             put("duration", track.durationMs)
             put("size", track.sizeBytes)
-            put("video", track.isVideo)
+            put("video", track.isVideo || isVideoUri(track.uri.toString()))
             put("at", System.currentTimeMillis())
         }
         val arr = read(context)
@@ -75,7 +75,8 @@ object PlayHistory {
                     artist = o.optString("artist").takeIf { it.isNotBlank() },
                     durationMs = o.optLong("duration"),
                     sizeBytes = o.optLong("size"),
-                    isVideo = o.optBoolean("video")
+                    // 标记可能是旧的/错的（见 isVideoUri），读的时候按 uri 再认一次
+                    isVideo = o.optBoolean("video") || isVideoUri(uriText)
                 )
             )
         }
@@ -114,8 +115,8 @@ object PlayHistory {
         val arr = read(context)
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            if (!o.optBoolean("video")) continue
             val u = o.optString("uri")
+            if (!(o.optBoolean("video") || isVideoUri(u))) continue
             val idx = videos.indexOfFirst { it.uri.toString() == u }
             if (idx >= 0) return idx
         }

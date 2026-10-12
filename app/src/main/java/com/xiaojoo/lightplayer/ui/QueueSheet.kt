@@ -57,31 +57,35 @@ data class QueueEntry(
     ).joinToString(" - ")
 
     companion object {
-        private val VideoExt = setOf("mp4", "mkv", "webm", "mov", "3gp", "ts", "m2ts")
-
         /**
-         * 库里查不到的条目（SAF 直接选进来的文件）只能从 uri 本身认：
-         * MediaStore 的视频库走 /video/，其余看扩展名。
+         * 库里查不到的条目（SAF 直接选进来的文件）只能从 uri 本身认。
+         * 判据本身在 data 层（`MediaLibrary.kt` 的 isVideoUri）—— 历史存档读的时候也要过同一条，
+         * 放两份会走岔。
          */
-        fun isVideoUri(raw: String): Boolean {
-            val path = raw.substringBefore('?')
-            return path.contains("/video/") ||
-                path.substringAfterLast('.', "").lowercase() in VideoExt
-        }
+        fun isVideoUri(raw: String): Boolean = com.xiaojoo.lightplayer.data.isVideoUri(raw)
     }
 }
 
-private val RowHeight = 56.dp
+/* 行高按这一页最高的那个东西分档。视频页行首是 42dp 缩略图、歌名两行 15sp（约 41dp），
+   56dp 只剩上下各 7dp，再收就顶到边；音乐页和两支「已播」只有一行 15sp（行高约 20.3dp），
+   56dp 上下各摊 17.9dp —— 这两档收到 48dp：上下各 13.9dp，比原来小 4dp（0.857 倍）。 */
+private val RowHeightThumb = 56.dp
+private val RowHeightFlat = 48.dp
 
 /**
- * 队列面板。正在播的队列按类型分成音乐 / 视频两页，已播歌曲单独一页。
- * 两页的行完全一样：点行播、✕ 移出队列、≡ 拖动改顺序；视频页在行首多一张缩略图。
+ * 队列面板。**按正在播的那一路分家**：放歌就只摆「音乐列表 / 已播音乐」，放视频只摆
+ * 「视频列表 / 已播视频」。以前一支面板里三页并存，看着视频页在放、点进去先要挑哪一页，
+ * 而另一路的那一串在本路里根本没有可操作的对象。
+ * 两路的行是同一份代码：点行播、✕ 移出队列、≡ 拖动改顺序；视频那一路行首带缩略图。
+ * 行里的 `realIndex` 一直是整条队列的真实下标，过滤只影响"看得见哪几行"，不影响移出/换序的寻址。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QueueSheet(
     queue: List<QueueEntry>,
-    history: List<Track>,
+    historyAudio: List<Track>,
+    historyVideo: List<Track>,
+    videoRoute: Boolean,
     onPlayQueueAt: (Int) -> Unit,
     onRemoveAt: (Int) -> Unit,
     onMove: (Int, Int) -> Unit,
@@ -89,15 +93,13 @@ fun QueueSheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    // -1 = 还没点过页签：跟着正在播的那条走，从视频页拉开就该看见视频列表
-    var picked by remember { mutableIntStateOf(-1) }
+    // 换路由（放完一首歌接着刷视频）时回到「列表」那一页：上一路选中的页在这一路没有对应物
+    var picked by remember(videoRoute) { mutableIntStateOf(0) }
 
     // 带上在整条队列里的真实下标：移出、播放、换序都要按真实下标找
     val withIndex = queue.mapIndexed { i, e -> i to e }
-    val audioRows = withIndex.filter { !it.second.isVideo }
-    val videoRows = withIndex.filter { it.second.isVideo }
-    val autoTab = queue.firstOrNull { it.current }?.let { if (it.isVideo) 1 else 0 } ?: 0
-    val tab = if (picked >= 0) picked else autoTab
+    val rows = withIndex.filter { it.second.isVideo == videoRoute }
+    val history = if (videoRoute) historyVideo else historyAudio
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -111,29 +113,32 @@ fun QueueSheet(
     ) {
         Column(modifier = Modifier.fillMaxWidth().height(540.dp).padding(top = Tokens.Dimen.ScreenPad)) {
             Row(modifier = Modifier.fillMaxWidth().height(46.dp)) {
-                QueueTab("音乐列表", audioRows.size, tab == 0, Modifier.weight(1f)) { picked = 0 }
-                QueueTab("视频列表", videoRows.size, tab == 1, Modifier.weight(1f)) { picked = 1 }
-                QueueTab("已播歌曲", history.size, tab == 2, Modifier.weight(1f)) { picked = 2 }
+                QueueTab(
+                    if (videoRoute) "视频列表" else "音乐列表", rows.size, picked == 0, Modifier.weight(1f)
+                ) { picked = 0 }
+                QueueTab(
+                    if (videoRoute) "已播视频" else "已播音乐", history.size, picked == 1, Modifier.weight(1f)
+                ) { picked = 1 }
             }
-            when (tab) {
-                2 -> {
-                    if (history.isEmpty()) {
-                        EmptyLine("播过的歌会留在这里（重启也在）", Modifier.weight(1f))
-                    } else {
-                        HistoryList(history, onPlayHistory)
-                    }
+            if (picked == 1) {
+                if (history.isEmpty()) {
+                    EmptyLine(
+                        if (videoRoute) "播过的视频会留在这里（重启也在）"
+                        else "播过的歌会留在这里（重启也在）",
+                        Modifier.weight(1f)
+                    )
+                } else {
+                    HistoryList(history, thumbs = videoRoute, onPlayHistory)
                 }
-                else -> {
-                    val rows = if (tab == 0) audioRows else videoRows
-                    if (rows.isEmpty()) {
-                        EmptyLine(
-                            if (tab == 0) "队列里没有音乐，去「本地歌曲」点「全部播放」"
-                            else "队列里没有视频，去「视频」列表点「全部播放」",
-                            Modifier.weight(1f)
-                        )
-                    } else {
-                        QueueList(rows, thumbs = tab == 1, onPlayQueueAt, onRemoveAt, onMove)
-                    }
+            } else {
+                if (rows.isEmpty()) {
+                    EmptyLine(
+                        if (videoRoute) "队列里没有视频，去「视频」页点「全部播放」"
+                        else "队列里没有音乐，去「音乐」页签点「全部播放」",
+                        Modifier.weight(1f)
+                    )
+                } else {
+                    QueueList(rows, thumbs = videoRoute, onPlayQueueAt, onRemoveAt, onMove)
                 }
             }
             Spacer(Modifier.height(Tokens.Dimen.ScreenPad))
@@ -155,11 +160,12 @@ private fun ColumnScope.QueueList(
     // pointerInput 只在 key 变时重建，闭包里的 rows 是按下那一刻的旧顺序；
     // 起始位置和邻居都从这份最新值取，不然第一次之后就会拖错行
     val rowsNow by rememberUpdatedState(rows)
+    val rowH = if (thumbs) RowHeightThumb else RowHeightFlat
 
     LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
         itemsIndexed(rows, key = { _, r -> r.second.uri }) { pos, row ->
             val (realIndex, e) = row
-            val stepPx = with(LocalDensity.current) { RowHeight.toPx() }
+            val stepPx = with(LocalDensity.current) { rowH.toPx() }
             var acc by remember(e.uri) { mutableFloatStateOf(0f) }
             val dragging = dragUri == e.uri
             Row(
@@ -168,7 +174,7 @@ private fun ColumnScope.QueueList(
                     // 只留这个动画，不给拖起的行加底色
                     .animateItem()
                     .fillMaxWidth()
-                    .height(RowHeight)
+                    .height(rowH)
                     .padding(horizontal = Tokens.Dimen.ScreenPad),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -246,18 +252,27 @@ private fun ColumnScope.QueueList(
     }
 }
 
+/** 已播那一页：和队列页同一档行高、同一套缩略图规则（视频那一路行名是 36 字符的 uuid，一行装不下） */
 @Composable
-private fun ColumnScope.HistoryList(history: List<Track>, onPlayHistory: (Track) -> Unit) {
+private fun ColumnScope.HistoryList(
+    history: List<Track>,
+    thumbs: Boolean,
+    onPlayHistory: (Track) -> Unit
+) {
     LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
         itemsIndexed(history, key = { _, t -> "h-" + t.uri }) { _, t ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(RowHeight)
+                    .height(if (thumbs) RowHeightThumb else RowHeightFlat)
                     .padding(horizontal = Tokens.Dimen.ScreenPad)
                     .tap { onPlayHistory(t) },
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (thumbs) {
+                    CoverOfUri(t.uri.toString(), t.name, 42.dp)
+                    Spacer(Modifier.width(12.dp))
+                }
                 Text(
                     text = listOfNotNull(
                         t.name.takeIf { it.isNotBlank() },
@@ -265,7 +280,7 @@ private fun ColumnScope.HistoryList(history: List<Track>, onPlayHistory: (Track)
                     ).joinToString(" - "),
                     color = Tokens.InkStrong,
                     fontSize = 15.sp,
-                    maxLines = 1,
+                    maxLines = if (thumbs) 2 else 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )

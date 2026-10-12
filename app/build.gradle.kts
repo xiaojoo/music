@@ -48,6 +48,7 @@ dependencies {
     implementation(libs.media3.ui)
 
     implementation(project(":ffmpeg-decoder"))
+    implementation(project(":video-source"))
 
     testImplementation("junit:junit:4.13.2")
     // android.jar 里的 org.json 是抛异常的 stub，测试类路径上放一份真实现才能验编解码
