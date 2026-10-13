@@ -14,6 +14,19 @@ object LastPlayed {
 
     /** 空名单存出来就是空串，读回来要是空列表而不是 [""] */
     fun decode(s: String): List<String> = if (s.isEmpty()) emptyList() else s.split(SEP)
+
+    /** 在线那一路存下来的是站点直链：带签名、会过期，而且名字取不回来 */
+    fun isRemote(u: String): Boolean = u.startsWith("http://") || u.startsWith("https://")
+
+    /**
+     * 开机该把上一次那串里的哪些装回来 —— 规则放这儿是为了能在 JVM 上单测
+     * （`Track` 里那个 `android.net.Uri` 在单测里是抛异常的桩，所以这颗函数只碰字符串）。
+     *
+     * 留下的 = 上一次那串里**不是在线直链、而且曲库现在还查得到**的那些，顺序照上一次
+     * （不照曲库顺序：上一次那串是人排出来的）。一个不剩就回空列表，调用方据此退到整份本地音乐列表。
+     */
+    fun keepForRestore(saved: List<String>, resolved: Collection<String>): List<String> =
+        saved.filter { !isRemote(it) && resolved.contains(it) }
 }
 
 class LastPlayedRepository(context: Context) {

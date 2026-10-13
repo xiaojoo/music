@@ -68,6 +68,8 @@ import com.xiaojoo.lightplayer.ui.Lrc
 import com.xiaojoo.lightplayer.ui.LyricLine
 import com.xiaojoo.lightplayer.ui.LyricPage
 import com.xiaojoo.lightplayer.ui.LyricSource
+import com.xiaojoo.lightplayer.ui.MusicOnlinePage
+import com.xiaojoo.lightplayer.videosource.MusicVideo
 import com.xiaojoo.lightplayer.ui.ModeSheet
 import com.xiaojoo.lightplayer.ui.ScrubBar
 import com.xiaojoo.lightplayer.ui.SpeedSheet
@@ -94,6 +96,25 @@ fun PlayerScreen(
     onTakeover: () -> Unit,
     onPicked: (List<Uri>) -> Unit,
     onOpenQueue: () -> Unit,
+    // 右滑到的第三页（在线）：状态都在壳层，这一屏只画和回动作 —— 和歌词那页一样不带自己的存档
+    /** 一屏四栏都从"搜当前这首歌"那一批结果里分：两族各按播放数降序，前 3 张最火、第 4 条往后相关 */
+    onlineHotMusic: List<MusicVideo>,
+    onlineMoreMusic: List<MusicVideo>,
+    onlineHotVideo: List<MusicVideo>,
+    onlineMoreVideo: List<MusicVideo>,
+    onlineKeyword: String,
+    onlineError: String?,
+    onlinePlayingId: String?,
+    onOnlinePlay: (MusicVideo) -> Unit,
+    /** 音乐那一行右端那颗：挂到音频那一路的队尾 */
+    onOnlineQueue: (MusicVideo) -> Unit,
+    /** 滑到这一页、或换了歌，就问一次「这首歌」；壳层里按关键词去重。这一屏上没有那颗按钮 */
+    onOnlineSongsFetch: () -> Unit,
+    /** 那一栏里的视频：不在这播，挪到视频 tab 的在线那一栏去播 */
+    onOpenVideo: (MusicVideo) -> Unit,
+    /** 播放页那三页当前在哪一页：从视频 tab 按系统返回键退回来时，要落回「在线」那一页 */
+    startPage: Int,
+    onPage: (Int) -> Unit,
     onNowPlaying: (Uri?) -> Unit
 ) {
     val context = LocalContext.current
@@ -248,11 +269,21 @@ fun PlayerScreen(
         ) {
             Spacer(Modifier.height(12.dp))
 
-            val pagerState = rememberPagerState(pageCount = { 2 })
+            val pagerState = rememberPagerState(initialPage = startPage, pageCount = { 3 })
+
+            // 第三页是滑进来的，不给它另摆一颗键 —— 和歌词同一只入口（ dots + 右滑 ）
+            /* 只在**滑到这一页**那一下问一次。这一屏上点封面、展开、暂停都不该再发搜索请求（他点名的），
+               所以这里刻意不跟 currentUri —— 点封面会换歌，换了歌就重搜，等于每点一下打一次接口。
+               滑走再滑回来，才按当时队列里选中的那一首重新问一次。
+               摊那一串（歌手页吃的）不在这里做 —— 这一屏没有地址栏了，进来就先做（见 MainActivity）。 */
+            LaunchedEffect(pagerState.currentPage) {
+                onPage(pagerState.currentPage)
+                if (pagerState.currentPage == 2) onOnlineSongsFetch()
+            }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
-                PageDots(count = 2, index = pagerState.currentPage)
+                PageDots(count = 3, index = pagerState.currentPage)
                 Box(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.CenterEnd
@@ -279,13 +310,26 @@ fun PlayerScreen(
                         title = title,
                         artist = artist
                     )
-                } else {
+                } else if (page == 1) {
                     LyricPage(
                         lines = lyrics,
                         positionMs = positionMs,
                         source = lyricSource,
                         onSeek = { ms -> onTakeover(); audio?.seekTo(ms) },
                         onPickFolder = { folderPicker.launch(null) }
+                    )
+                } else {
+                    MusicOnlinePage(
+                        hotMusic = onlineHotMusic,
+                        moreMusic = onlineMoreMusic,
+                        hotVideo = onlineHotVideo,
+                        moreVideo = onlineMoreVideo,
+                        keyword = onlineKeyword,
+                        error = onlineError,
+                        playingId = onlinePlayingId,
+                        onPlay = onOnlinePlay,
+                        onQueue = onOnlineQueue,
+                        onOpenVideo = onOpenVideo
                     )
                 }
             }
@@ -301,40 +345,44 @@ fun PlayerScreen(
                 }
             }
 
-            ProgressRow(
-                positionMs = positionMs,
-                durationMs = durationMs,
-                enabled = audio != null && durationMs > 0,
-                onDragStart = { dragging = true },
-                onDrag = { f -> positionMs = (f * durationMs).toLong() },
-                onSeek = { ms ->
-                    dragging = false
-                    onTakeover()
-                    audio?.seekTo(ms)
-                },
-                speed = speed,
-                onSpeed = { v ->
-                    speed = v
-                    onTakeover()
-                    audio?.setPlaybackSpeed(v)
-                }
-            )
+            /* 进度条和那五个键只在封面那一页摆。歌词页点一行就能跳，在线页整页是内容 ——
+               底下再挂一条控制区，两页都白占一截高度（他点名要的）。 */
+            if (pagerState.currentPage == 0) {
+                ProgressRow(
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    enabled = audio != null && durationMs > 0,
+                    onDragStart = { dragging = true },
+                    onDrag = { f -> positionMs = (f * durationMs).toLong() },
+                    onSeek = { ms ->
+                        dragging = false
+                        onTakeover()
+                        audio?.seekTo(ms)
+                    },
+                    speed = speed,
+                    onSpeed = { v ->
+                        speed = v
+                        onTakeover()
+                        audio?.setPlaybackSpeed(v)
+                    }
+                )
 
-            Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(6.dp))
 
-            ControlRow(
-                playing = isPlaying,
-                repeatMode = repeatMode,
-                onPickMode = { modeSheet = true },
-                onPrev = { onTakeover(); audio?.seekToPreviousMediaItem() },
-                onNext = { onTakeover(); audio?.seekToNextMediaItem() },
-                onPlayPause = {
-                    val c = audio ?: return@ControlRow
-                    onTakeover()
-                    if (c.isPlaying) c.pause() else c.play()
-                },
-                onQueue = onOpenQueue
-            )
+                ControlRow(
+                    playing = isPlaying,
+                    repeatMode = repeatMode,
+                    onPickMode = { modeSheet = true },
+                    onPrev = { onTakeover(); audio?.seekToPreviousMediaItem() },
+                    onNext = { onTakeover(); audio?.seekToNextMediaItem() },
+                    onPlayPause = {
+                        val c = audio ?: return@ControlRow
+                        onTakeover()
+                        if (c.isPlaying) c.pause() else c.play()
+                    },
+                    onQueue = onOpenQueue
+                )
+            }
 
             Spacer(Modifier.height(14.dp))
         }

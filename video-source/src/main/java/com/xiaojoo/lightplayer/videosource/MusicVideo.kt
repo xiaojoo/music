@@ -12,6 +12,18 @@ data class MusicVideo(
     val durationMs: Long,
     val pageUrl: String,
     val artworkUrl: String? = null,
+    /** 站点报的播放数，只用来在封面上那一格里写个数；0 = 站点没给，界面就不写 */
+    val playCount: Long = 0,
+    /** 歌手那一页要摆头像：只有列表型接口（热门、相关）的 owner 里带 face，合集那一层没有 */
+    val artistFaceUrl: String? = null,
+    /** 站点给的分区名（原创音乐/翻唱/MV/日常…）：歌手页那三行筛选芯片里"分区"那一行吃的就是它 */
+    val category: String? = null,
+    /**
+     * 这一条是"冲着听来的"还是"冲着看来的"：音乐那一栏点了在原地播，视频那一栏点了要挪到视频 tab。
+     * 只有 B 站的关键词搜索判得出来（按分区 tid，见 BiliSource），其余入口一律 false ——
+     * 粘地址摊出来的那一串本来就是歌单，走的是另一条规则（原地播），不靠这个字段。
+     */
+    val music: Boolean = false,
 ) {
     val key: String get() = "$sourceId/$remoteId"
 }

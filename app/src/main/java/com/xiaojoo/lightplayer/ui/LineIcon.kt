@@ -244,8 +244,15 @@ fun LineIcon(
                 drawLine(color, Offset(s * 0.57726f, s * 0.65726f), Offset(s * 0.73726f, s * 0.65726f), st, StrokeCap.Round)
             }
 
-            IconKind.Download -> {
-                drawLine(color, Offset(s * 0.50f, s * 0.18f), Offset(s * 0.50f, s * 0.60f), st, StrokeCap.Round)
+            /* 三点（更多）：竖排三枚实心点，等距压在画框中线。没进 InkFit 归一 ——
+               它是这一族里唯一"三枚点"的形状，墨宽只占画框 0.11，归一会把它撑成一颗饼。 */
+            IconKind.More -> {
+                drawCircle(color, radius = s * 0.055f, center = Offset(s * 0.50f, s * 0.28f))
+                drawCircle(color, radius = s * 0.055f, center = Offset(s * 0.50f, s * 0.50f))
+                drawCircle(color, radius = s * 0.055f, center = Offset(s * 0.50f, s * 0.72f))
+            }
+
+            IconKind.Download -> {                drawLine(color, Offset(s * 0.50f, s * 0.18f), Offset(s * 0.50f, s * 0.60f), st, StrokeCap.Round)
                 drawLine(color, Offset(s * 0.33f, s * 0.44f), Offset(s * 0.50f, s * 0.62f), st, StrokeCap.Round)
                 drawLine(color, Offset(s * 0.67f, s * 0.44f), Offset(s * 0.50f, s * 0.62f), st, StrokeCap.Round)
                 drawLine(color, Offset(s * 0.22f, s * 0.80f), Offset(s * 0.78f, s * 0.80f), st, StrokeCap.Round)
@@ -442,7 +449,7 @@ enum class IconKind {
     Play, Pause, Next, Prev, Repeat, Queue, ChevronDown, ChevronRight,
     Home, MusicNote, Video, Person, Add, Favorite, FavoriteLine, PlayAdd, PlayQueue, SquareAdd, Share, PinTop, Trash,
     Download, ArrowLeft, Search, PlaylistAdd, Sort,
-    Close, Drag, Speed, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter
+    Close, Drag, Speed, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More
 }
 
 /** 三尖倒圆角的实心三角：每个尖沿两条邻边各让进 t = r / tan(θ/2)（θ 是该尖的内角），

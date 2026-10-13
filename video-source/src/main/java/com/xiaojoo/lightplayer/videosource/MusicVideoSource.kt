@@ -23,6 +23,21 @@ interface MusicVideoSource {
     suspend fun search(query: String, limit: Int): List<MusicVideo> =
         throw SourceFailureException(SourceFailure.Unsupported("$id 未实现 search"))
 
+    /** 站点地址 → 条目。只有"一个页地址能换成一条片子"的源需要实现它。 */
+    suspend fun entry(url: String): MusicVideo =
+        throw SourceFailureException(SourceFailure.Unsupported("$id 不能从地址取条目"))
+
+    /**
+     * 站点地址 → 一串条目：合集、歌单、多 P 这一类"一个页装着一批"的页。
+     * 只有 entry 的源不必实现它 —— 界面上"这一页能摊成一串"这件事就跟着 capability 走。
+     */
+    suspend fun list(url: String): List<MusicVideo> =
+        throw SourceFailureException(SourceFailure.Unsupported("$id 不能从地址取一批条目"))
+
+    /** 眼前这一条的"相关"那一批（同一首歌的其他版本、同系列的稿这一类）。没有这层关系的源不必实现。 */
+    suspend fun related(video: MusicVideo, limit: Int): List<MusicVideo> =
+        throw SourceFailureException(SourceFailure.Unsupported("$id 没有相关推荐"))
+
     suspend fun resolve(video: MusicVideo): Playable =
         throw SourceFailureException(SourceFailure.Unsupported("$id 未实现 resolve"))
 }
