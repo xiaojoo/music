@@ -141,7 +141,6 @@ fun QueueSheet(
                     QueueList(rows, thumbs = videoRoute, onPlayQueueAt, onRemoveAt, onMove)
                 }
             }
-            Spacer(Modifier.height(Tokens.Dimen.ScreenPad))
         }
     }
 }

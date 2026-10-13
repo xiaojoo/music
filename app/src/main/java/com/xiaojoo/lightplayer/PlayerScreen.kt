@@ -382,9 +382,9 @@ fun PlayerScreen(
                     },
                     onQueue = onOpenQueue
                 )
-            }
 
-            Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(14.dp))
+            }
         }
 
         if (modeSheet) {
