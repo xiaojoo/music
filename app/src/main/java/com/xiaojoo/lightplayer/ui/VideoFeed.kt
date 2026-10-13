@@ -69,7 +69,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -130,6 +140,31 @@ fun VideoFeed(
     onToggleFavorite: (Track) -> Unit,
     onOpenQueue: () -> Unit,
     onOpenOnline: () -> Unit,
+    onAddUrl: (String) -> Unit,
+    savedUrl: String,
+    onlineItems: List<Track>,
+    onlineBusy: Boolean,
+    onlineError: String?,
+    onlineCovers: Map<String, String>,
+    onBrowse: () -> Unit,
+    onlinePlaying: String?,
+    /** 这一屏第一次挂着时顶栏落在哪一栏（迷你条按条上那一条在哪一栏来指定） */
+    onlineStart: Boolean,
+    /** 在线那一栏上次看到第几页（那一屏一切走就被销毁，位置得存在外面这一层） */
+    onlinePage: Int,
+    onOnlinePage: (Int) -> Unit,
+    onOnlinePlay: (Track, Int) -> Unit,
+    onOnlinePlayAt: (Track, Int) -> Unit,
+    /** 第 i 页那条到手了没有：在线那一栏的翻页门禁读它，没到手的下一页不让进站 */
+    onlineReady: (Track, Int) -> Boolean,
+    onOnlineDelete: (Track) -> Unit,
+    onOnlineDownload: (Track) -> Unit,
+    onlineDownloading: String?,
+    onlineDownloadProgress: Float,
+    // 队列被整串换掉的那一刻（在线那一条是在这一屏还挂着的时候换的）要重算页表：
+    // 原来只跟 controller/library 两个键，换完队列页表还是本地那串，
+    // 于是画面是 B 站、底下标题和大小还是上一条本地的
+    queueTick: Int,
     onDelete: (Track) -> Unit
 ) {
     val context = LocalContext.current
@@ -172,7 +207,7 @@ fun VideoFeed(
            只在进这一页时算一次：面板只能在视频页没挂着的时候打开，页表不会在半路变。
            判空也挪到这里：在线那一条不在扫描结果里，但它是货真价实的一页，
            原来拿 library 判空会把"手机上一条本地片都没有、正放着在线条目"误判成空页。 */
-        val videos = remember(controller, library) { queuePages(controller, library) ?: library }
+        val videos = remember(controller, library, queueTick) { queuePages(controller, library) ?: library }
         if (videos.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
@@ -201,6 +236,10 @@ fun VideoFeed(
         var autoNext by remember { mutableStateOf(true) }
         var rotation by remember { mutableIntStateOf(0) }
         var moreOpen by remember { mutableStateOf(false) }
+        // 顶栏落在哪一栏由外面定（迷你条点进来要按条上那一条属于哪一栏来落）；
+        // 默认仍是每次进这一屏从在线开始，那条默认写在 MainActivity 的 videoOnline 上
+        var online by remember { mutableStateOf(onlineStart) }
+        var urlOpen by remember { mutableStateOf(false) }
 
         // controller.isPlaying / videoSize 都不是 Compose state，读一次就冻在那儿，挂监听转成 state
         var isPlaying by remember { mutableStateOf(controller.isPlaying) }
@@ -302,7 +341,12 @@ fun VideoFeed(
         /* 连播放完一条时，我们会把那个成员按停在它自己那一页的最后一帧 —— 那一下 pause 不是他按的，
            "还要不要接着播"这个意图得留给下一页（单实例时是 Media3 自己翻页，不存在这件事）。 */
         var carryPlay by remember { mutableStateOf(false) }
-        LaunchedEffect(slots, controller) {
+        LaunchedEffect(slots, controller, online) {
+            /* 在线那一栏挂着的时候，本地这一栏一个字都不动：它这一串会在落位时把会话抢过去
+               （`use` + `play`），于是声音还在在线那台上放，会话却已经换成了本地那台 ——
+               迷你条读的是会话那台，于是"条上写暂停、里面在放"和反过来都会出现（真机量到：
+               在线0 play=true 会话却在视频0）。切回本地时这个 effect 会随 key 重启，照样落位。 */
+            if (online) return@LaunchedEffect
             /* 换成员等落位，不提前到"拖过半"：每一条都有自己的画面了，滑出去那一页露的是它自己
                那一格的活画面，提早换的只是"谁在出声"，手指还没松声音就先跳走，没有好处。
                "下一条早就位"靠的是下面那段邻条提前解码，不是提前换。 */
@@ -674,22 +718,15 @@ fun VideoFeed(
                             )
                         }
                 )
-                // 暂停时屏幕中央给一个三角，底下垫半透黑圆底（黑画面上白三角没有圆底会糊掉）
+                // 暂停时中央只留一支半透明白三角：原来那层 40% 黑圆底按他点名撤掉了，
+                // 透明度给 0.55（原来是 0.92 靠黑底托着才看得清）
                 if (!wantPlay && page == active) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .size(72.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.40f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        LineIcon(
-                            kind = IconKind.Play,
-                            size = 72.dp,
-                            color = Color.White.copy(alpha = 0.92f)
-                        )
-                    }
+                    LineIcon(
+                        kind = IconKind.Play,
+                        modifier = Modifier.align(Alignment.Center),
+                        size = 72.dp,
+                        color = Color.White.copy(alpha = 0.55f)
+                    )
                 }
                 Column(
                     modifier = Modifier
@@ -764,6 +801,55 @@ fun VideoFeed(
                     modifier = Modifier.align(Alignment.BottomEnd)
                 )
             }
+        }
+
+        /* 在线是一屏自己的界面：自己的播放器、自己的一块画面、自己攒下来的列表，整屏盖住本地那一串。
+           切栏只留一栏出声 —— useOnline/useVideoFeed 各自先把另一栏放掉再接会话。
+           第一次挂着不算切换：进这一屏默认就在在线，不该把会话交给一台空播放器。 */
+        var tabSwapped by remember { mutableStateOf(false) }
+        LaunchedEffect(online) {
+            if (!tabSwapped) {
+                tabSwapped = true
+                return@LaunchedEffect
+            }
+            // 交给「上次看到那一页」那台，不写死 0：写死会和紧接着按页号接手的那一句打架
+            if (online) PlayerPool.useOnline(onlinePage) else PlayerPool.useVideoFeed()
+        }
+        if (online) {
+            LaunchedEffect(Unit) { onBrowse() }
+            OnlineFeed(
+                items = onlineItems,
+                initialPage = onlinePage,
+                onPage = onOnlinePage,
+                playingUrl = onlinePlaying,
+                busy = onlineBusy,
+                error = onlineError,
+                covers = onlineCovers,
+                onPlay = { x, i -> onOnlinePlay(x, i) },
+                onPlayAt = { x, i -> onOnlinePlayAt(x, i) },
+                isReady = onlineReady,
+                onAdd = { urlOpen = true },
+                onDelete = { onOnlineDelete(it) },
+                onDownload = { onOnlineDownload(it) },
+                downloadingUrl = onlineDownloading,
+                downloadProgress = onlineDownloadProgress,
+            )
+        }
+
+        /* 顶栏挂在整屏这一层，不挂在某一页里：滑页不该把导航换掉。
+           全屏播放时和标题、悬浮列一起收起来。地址只在右侧抽屉里填，这一栏不再摆输入框。 */
+        if (!fullscreen) {
+            Column(modifier = Modifier.align(Alignment.TopStart).fillMaxWidth().statusBarsPadding()) {
+                VideoTopTabs(online = online, onPick = { online = it })
+            }
+        }
+
+        if (urlOpen) {
+            VideoUrlSheet(
+                initial = savedUrl,
+                onPlay = { onAddUrl(it) },
+                onDismiss = { urlOpen = false }
+            )
         }
 
         if (moreOpen) {
@@ -894,7 +980,10 @@ private fun queuePages(c: MediaController, library: List<Track>): List<Track>? {
     val out = ArrayList<Track>(n)
     for (i in 0 until n) {
         val item = c.getMediaItemAt(i)
-        val t = item.localConfiguration?.uri?.let { byUri[it] } ?: Online.trackOf(item) ?: return null
+        // 只认扫描结果里的那批：在线那一条有它自己那一栏和自己的实例，
+        // 拿它顶成本地的一页，就会出现"在线的视频跑到本地列表里"（他点名要治的这条）。
+        // 队列里混进不是这批的条目 = 现在播的根本不是本地这一串 → 整表作废，退回扫库结果。
+        val t = item.localConfiguration?.uri?.let { byUri[it] } ?: return null
         out.add(t)
     }
     return out
@@ -1019,8 +1108,9 @@ private fun FeedRail(
 }
 
 @Composable
-private fun FeedRailButton(
+internal fun FeedRailButton(
     kind: IconKind, active: Boolean, size: Dp = 26.dp, inkShift: Dp = 0.dp,
+    progress: Float? = null,
     onClick: () -> Unit
 ) {
     Box(
@@ -1035,6 +1125,116 @@ private fun FeedRailButton(
             kind, modifier = Modifier.offset(x = inkShift),
             size = size, color = if (active) Tokens.Accent else Color.White
         )
+        /* 进度画在这颗自己的 48dp 圆底边上，不另开一条横杠：这一列本来就窄，多一行会把
+           上面那颗的位置顶走。环心线落在 23dp、外沿正好贴到圆底 24dp，不多占一像素。
+           0% 那一刹不画 —— 圆头笔画在起点会留一个点，看着像"已经下了一点"。 */
+        progress?.takeIf { it > 0f }?.let { p ->
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val st = 2.dp.toPx()
+                // 这颗的画框参数也叫 size（那是 LineIcon 的 Dp），DrawScope 那一份不写 this 就拿不到
+                val ring = this.size
+                drawArc(
+                    color = Tokens.Accent,
+                    startAngle = -90f,
+                    sweepAngle = 360f * p.coerceIn(0f, 1f),
+                    useCenter = false,
+                    topLeft = Offset(st / 2, st / 2),
+                    size = Size(ring.width - st, ring.height - st),
+                    style = Stroke(width = st, cap = StrokeCap.Round)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 视频页顶栏：在线 / 本地 两栏，在线在左边、默认落在在线。
+ * 选中白、没选中灰、中间一根竖线，不带下划线 —— 和列表页那两支页签同一套读法，
+ * 只是这一屏底色是黑的，所以"选中黑"换成"选中白"。
+ */
+@Composable
+private fun VideoTopTabs(online: Boolean, onPick: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        VideoTopTab("在线", online) { onPick(true) }
+        Box(modifier = Modifier.width(1.dp).height(15.dp).background(Color(0x4DFFFFFF)))
+        VideoTopTab("本地", !online) { onPick(false) }
+    }
+}
+
+@Composable
+private fun VideoTopTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        color = if (selected) Color.White else Color(0xFF9A9A9A),
+        fontSize = 16.sp,
+        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+        // tap 写在 padding 外面：命中区=看得见的字加内衬，不是只字那 16sp
+        modifier = Modifier.tap(onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp)
+    )
+}
+
+/** 右侧「地址」那颗拉开的抽屉：填一条视频地址，解析成功就加进在线那一栏并起播。 */
+@kotlin.OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VideoUrlSheet(initial: String, onPlay: (String) -> Unit, onDismiss: () -> Unit) {
+    var text by remember { mutableStateOf(initial) }
+    fun go() {
+        if (text.isNotBlank()) {
+            onPlay(text.trim())
+            onDismiss()
+        }
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Tokens.ListBg,
+        shape = RoundedCornerShape(
+            topStart = Tokens.Dimen.SheetCorner,
+            topEnd = Tokens.Dimen.SheetCorner
+        ),
+        dragHandle = null
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Tokens.Dimen.ScreenPad)
+                .padding(top = 16.dp, bottom = 24.dp)
+        ) {
+            Text("视频地址", color = Tokens.InkFaint, fontSize = 13.sp)
+            Box(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                if (text.isEmpty()) {
+                    Text("粘贴 B 站视频页地址，或一条视频直链", color = Tokens.InkFaint, fontSize = 16.sp)
+                }
+                BasicTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    cursorBrush = SolidColor(Tokens.InkStrong),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = Tokens.InkStrong,
+                        fontSize = 16.sp
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { go() }),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Text(
+                    "添加",
+                    color = Tokens.Accent,
+                    fontSize = 15.sp,
+                    modifier = Modifier.tap(onClick = { go() }).padding(horizontal = 14.dp, vertical = 10.dp)
+                )
+            }
+        }
     }
 }
 
@@ -1156,7 +1356,7 @@ private fun SheetDivider() {
    只给宽、高按原比例走，拿到的一定是完整画面。 */
 /* 便宜的模糊：缩到 36px 宽就停，剩下的模糊交给绘制时的双线性放大（Crop 铺满整屏）。
    这样每张垫图只有几 KB；RenderEffect 要 API 31，这台机是 API 29，用不了。 */
-private fun blurOf(src: ImageBitmap): ImageBitmap {
+internal fun blurOf(src: ImageBitmap): ImageBitmap {
     val bmp = src.asAndroidBitmap()
     val w = 36.coerceAtMost(bmp.width)
     val h = (bmp.height.toLong() * w / bmp.width).toInt().coerceAtLeast(1)

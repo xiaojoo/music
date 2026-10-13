@@ -4,11 +4,16 @@ import android.content.Context
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 
 /**
@@ -36,6 +41,25 @@ object PlayerPool {
     private var localMembers: List<ExoPlayer> = emptyList()
     /** 音频那一路专用的一台：不在这三个成员里、也不进队列镜像，所以换视频队列顶不掉它 */
     private var audio: ExoPlayer? = null
+    /** 在线那一栏自己的三台：和音频那台同理，不进视频成员、不进队列镜像。按页号取模分 */
+    private var onlineMembers: List<ExoPlayer> = emptyList()
+
+    /**
+     * 在线那一栏几台：3 = 上一条 + 眼前 + 下一条，相邻两页必然不同台。
+     * 原来只给两台，往前翻一步时"再下一条"会把"上一条"那台顶掉，于是**回看必然重新拉一次**
+     * （他问的"这个是视频没有缓存吗"就是这个）；三台之后来回都是秒开，只有真没拉到的那条才等。
+     */
+    const val ONLINE_SIZE = 3
+
+    /**
+     * 拿在线那两台，池没建就先把池建起来。
+     * 冷启动直接在视频页粘地址播，是不经过 PlaybackService 的 —— 那时候一台都没有，
+     * 不 ensure 的话那颗「添加」按下去就是没反应（静默 null 返回）。
+     */
+    fun ensureOnline(context: Context): List<ExoPlayer> {
+        ensure(context)
+        return onlineMembers
+    }
     private var session: MediaSession? = null
     private var current: ExoPlayer? = null
     /** 会话此刻挂在谁身上。setPlayer 打同一个实例会重建一遍 PlayerInfo，换之前先比一下 */
@@ -55,6 +79,39 @@ object PlayerPool {
     /** 音频那一路的播放器 */
     fun audioPlayer(): ExoPlayer? = audio
 
+    /** 在线那一栏自己的播放器：不进视频那三台的队列镜像，所以两栏的队列互不顶 */
+    fun onlinePlayers(): List<ExoPlayer> = onlineMembers
+
+    /** 第 i 页用哪一台：按奇偶，相邻两页必然不同台 */
+    fun onlineAt(i: Int): ExoPlayer? = onlineMembers.getOrNull(i % ONLINE_SIZE.coerceAtLeast(1))
+
+    /**
+     * 把会话交给在线那一台。顺序和 useAudio 一样：先放旧的再换（ExoPlayer 在 pause 时交回焦点）。
+     * 「只留一栏出声」就是靠这个：切到在线栏，视频那三台被放掉；切回去，在线这台被放掉。
+     */
+    fun useOnline(index: Int = 0) {
+        val o = onlineAt(index) ?: return
+        current?.pause()
+        audio?.pause()
+        /* 在线这一栏自己也只能一支出声：翻页交接时上一页那台要按停。
+           给它喂了预加载之后，那台手里一直有条目在缓冲，不按停就会一路播到下一条去。 */
+        onlineMembers.filter { it !== o }.forEach { it.pause() }
+        if (onSession !== o) {
+            session?.setPlayer(o)
+            onSession = o
+        }
+    }
+
+    /** 视频那一栏接手会话：把在线这台放掉 */
+    fun useVideoFeed() {
+        onlineMembers.forEach { it.pause() }
+        val c = current ?: localMembers.firstOrNull() ?: return
+        if (onSession !== c) {
+            session?.setPlayer(c)
+            onSession = c
+        }
+    }
+
     /** 会话现在是不是挂在音频那台上：进度存档拿它判"这一条该不该进音频那格的档" */
     fun onAudio(): Boolean = audio != null && onSession === audio
 
@@ -70,6 +127,7 @@ object PlayerPool {
         if (localMembers.isNotEmpty()) return
         localMembers = (1..SIZE).map { newPlayer(context) }
         audio = newPlayer(context)
+        onlineMembers = (1..ONLINE_SIZE).map { newPlayer(context) }
     }
 
     /** 会话建好后调一次：认下会话，并装上队列镜像 */
@@ -140,10 +198,30 @@ object PlayerPool {
         onSession = null
         val ms = localMembers
         val a = audio
+        val o = onlineMembers
         localMembers = emptyList()
         audio = null
-        (ms + listOfNotNull(a)).forEach { runCatching { it.release() } }
+        onlineMembers = emptyList()
+        (ms + listOfNotNull(a) + o).forEach { runCatching { it.release() } }
     }
+
+    /**
+     * 在线那一路要按主机名补请求头（B 站的 CDN 认来路）。
+     * 用 DefaultMediaSourceFactory 换数据源而不是自己拼 ProgressiveMediaSource：
+     * 前者内部本来就按 scheme 分派（content/file/http/hls/dash），自己拼会把本地文件那条路换掉。
+     */
+    private fun mediaSources(context: Context): MediaSource.Factory =
+        DefaultMediaSourceFactory(context).setDataSourceFactory(
+            ResolvingDataSource.Factory(
+                DefaultDataSource.Factory(
+                    context,
+                    DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
+                )
+            ) { spec ->
+                val h = com.xiaojoo.lightplayer.videosource.headersForUrl(spec.uri.toString())
+                if (h.isEmpty()) spec else spec.buildUpon().setHttpRequestHeaders(h).build()
+            }
+        )
 
     private fun newPlayer(context: Context): ExoPlayer {
         // ON 而不是 PREFER：只有平台解码器不支持该音轨时才走 FFmpeg，避免软解抢硬解增加耗电
@@ -161,6 +239,7 @@ object PlayerPool {
             .build()
         return ExoPlayer.Builder(context)
             .setRenderersFactory(renderersFactory)
+            .setMediaSourceFactory(mediaSources(context))
             .setLoadControl(loadControl)
             .setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)

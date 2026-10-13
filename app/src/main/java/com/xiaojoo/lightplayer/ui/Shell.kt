@@ -165,141 +165,6 @@ fun BottomBar(tab: AppTab, onSelect: (AppTab) -> Unit) {
     }
 }
 
-/** 首页：卡片就是「我的」里建的自建歌单，样式照参考图的列表卡 */
-@Composable
-fun HomeScreen(
-    playlists: List<Playlist>,
-    tracksOf: (Playlist) -> List<Track>,
-    onPlayPlaylist: (Playlist) -> Unit,
-    onPlayPlaylistAt: (Playlist, Int) -> Unit,
-    onGoMine: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Tokens.ListBg)
-            .statusBarsPadding()
-            .padding(horizontal = Tokens.Dimen.ScreenPad)
-    ) {
-        Spacer(Modifier.height(14.dp))
-        Text("歌单", color = Tokens.InkStrong, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(12.dp))
-
-        if (playlists.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("还没有歌单", color = Tokens.InkFaint, style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        text = "在「我的」里新建一个，它就会出现在这里",
-                        color = Tokens.InkFaint.copy(alpha = 0.8f),
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .width(220.dp)
-                            .padding(top = 6.dp)
-                    )
-                    Text(
-                        text = "去新建",
-                        color = Tokens.InkStrong,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier
-                            .padding(top = 14.dp)
-                            .tap(onClick = onGoMine)
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
-                }
-            }
-            return@Column
-        }
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)
-        ) {
-            items(playlists, key = { it.id }) { p ->
-                PlaylistCard(
-                    playlist = p,
-                    tracks = tracksOf(p),
-                    onPlay = { onPlayPlaylist(p) },
-                    onPlayAt = { i -> onPlayPlaylistAt(p, i) }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PlaylistCard(
-    playlist: Playlist,
-    tracks: List<Track>,
-    onPlay: () -> Unit,
-    onPlayAt: (Int) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
-            .background(Tokens.CardBg)
-            .padding(16.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(playlist.name, color = Tokens.InkStrong, fontSize = 17.sp, fontWeight = FontWeight.Medium)
-                Text(
-                    text = "${playlist.uris.size} 首",
-                    color = Tokens.InkFaint,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
-                    .background(Tokens.PlayerBg)
-                    .tap(onClick = onPlay)
-                    .padding(horizontal = 12.dp, vertical = 7.dp)
-            ) {
-                Text("播放全部", color = Tokens.Ink, fontSize = 13.sp)
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        if (tracks.isEmpty()) {
-            Text("歌单是空的，去「音乐」页把歌加进来", color = Tokens.InkFaint, fontSize = 13.sp)
-        } else {
-            tracks.take(4).forEachIndexed { i, t ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .tap { onPlayAt(i) }
-                        .padding(vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(t.name, color = Tokens.InkStrong, fontSize = 14.sp)
-                        Text(
-                            text = listOfNotNull(
-                                t.artist?.takeIf { it.isNotBlank() && it != "<unknown>" },
-                                MediaLibrary.fmtDuration(t.durationMs)
-                                    .takeIf { t.durationMs > 0 }
-                            ).joinToString(" · "),
-                            color = Tokens.InkFaint,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 1.dp)
-                        )
-                    }
-                }
-            }
-            if (tracks.size > 4) {
-                Text(
-                    text = "还有 ${tracks.size - 4} 首",
-                    color = Tokens.InkFaint,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
-        }
-    }
-}
 
 /* 选单抽屉的数来自 2026-10-11 对两张参考截图的像素测量（截图宽 849px）。
    绝对像素不能直接搬，先拿内容内缩边定标：参考图 35.5px 对应我们的 ScreenPad 20dp，即 1px=0.563dp。
@@ -950,6 +815,9 @@ internal fun loadThumb(
     track: Track,
     edgePx: Int = 144
 ): ImageBitmap? {
+    // 在线那一路的 uri 是 http：contentResolver 根本不认它，每条都要抛一次
+    // FileNotFoundException 才回 null（真机日志里一排"封面取不到"就是这个）。直接回占位。
+    if (track.uri.scheme == "http" || track.uri.scheme == "https") return null
     var failure: Throwable? = null
     val bmp = runCatching {
         context.contentResolver.loadThumbnail(track.uri, android.util.Size(edgePx, edgePx), null).asImageBitmap()
@@ -1557,7 +1425,7 @@ fun TrackListPage(
     原来这里是每颗一个盒宽（39.7 / 40.4 / 30.6）+ 每颗一个画框，缝还是差 0.9dp、
     心还比另外两颗高 0.45dp，就是因为墨宽不等（12.27~13.18）只能靠盒子去凑。 */
 @Composable
-private fun RowIcon(
+internal fun RowIcon(
     kind: IconKind, color: Color,
     size: Dp = Tokens.Dimen.ColIcon, stroke: Dp = Tokens.Dimen.ColStroke,
     inkShift: Dp = 0.dp,
