@@ -1,7 +1,6 @@
 package com.xiaojoo.lightplayer.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,34 +15,63 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiaojoo.lightplayer.videosource.MusicVideo
 
-/** 源列表里的一行：那一行小灰字写的是"这一路在我们这儿管哪一栏" */
+/** 源列表里的一行。[sub] 那一行小灰字写的是这一路的网址（他点的：显示成网址）。 */
 data class SourceRow(val id: String, val name: String, val sub: String)
+
+/**
+ * 右端那一列的公共右沿：全部按「加入播放列表」那颗的墨右沿对齐 —— 真机量到它在设备 x990
+ * （热歌那六行都是 989~990），离屏幕右 = 90px = **32.7dp**。
+ * 一颗 48dp 的命中盒贴着内容右沿（1080−55=1025）摆时，墨右沿落在 `1025 − (48−墨宽)/2`，
+ * 所以每颗要往右补 `(48 − 墨宽)/2 − (32.7 − 20)dp`：Close 22dp（墨 13.50dp）→ 4.5dp；
+ * Close 19dp（墨 11.66dp）→ 5.5dp；Refresh 19dp（墨 10.30dp）→ 6.3dp
+ * （那颗弧在右边留了缺口，整颗墨中心本来就偏左 0.6px）。
+ * 这一笔一律补在**带 `tap` 的那颗盒子**上，不补在里面的字形上 —— 补错层就会出现
+ * "按墨没反应、按旁边才生效"。
+ */
+private fun rightShift(inkDp: Float): Dp = ((48f - inkDp) / 2f - 12.7f).dp
+
+/** 右端那一列的一颗图标：48dp 命中盒 + 按上面那条补过的右移；禁用时只是按不动、不消失 */
+@Composable
+private fun RightIcon(
+    kind: IconKind,
+    inkDp: Float,
+    canvas: Dp,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(Tokens.Dimen.IconHit)
+            .offset(x = rightShift(inkDp))
+            .tap(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) { LineIcon(kind, size = canvas, color = if (enabled) Tokens.Ink else Tokens.InkFaint) }
+}
 
 /**
  * 在线音乐源那一屏（右上角那颗齿轮开的）。
  *
- * 能按的东西一律同一颗按钮：8dp 圆角 + [Tokens.CardBg] 底 + 1dp Divider 描边 + 14sp 中位墨。
- * 一行一个动作：顶上那颗「获取」，每一路后面那颗「删除」。
- * 开关、"停用/启用"、"恢复"三样都撤了（他点的）：这一路要么在、要么被删掉，
- * 删掉就没有回来的入口 —— 名单是单向的，只有清应用数据能复原。
- *
+ * 一行一个动作，右端一律图标、且全部右对齐到同一条墨右沿（见 [rightShift]）：
+ * 地址那一格右边那颗是「获取」（刷新图标，跑着的时候置灰）；每一路右端那颗是 ✕（删掉这一路）。
+ * 文字按钮、绿胶囊开关、「恢复」都撤了 —— 删掉即没了，这一屏没有回来的入口。
  * 参考那张里的「填网址装上」也没做：源是编译进来的，一条网址变不出新源。
  */
 @Composable
@@ -51,9 +79,10 @@ fun MusicSourcePage(
     baseUrl: String,
     onBaseUrl: (String) -> Unit,
     sources: List<SourceRow>,
-    /** 行末那颗「删除」：把这一路从列表和注册表里去掉，没有反悔的入口 */
+    /** 行末那颗 ✕：把这一路从列表和注册表里去掉，没有反悔的入口 */
     onDelete: (String) -> Unit,
     busy: Boolean,
+    /** 只有问不通的时候才有话；"拿到 N 条"那一句他点名不要了 */
     note: String?,
     onFetch: () -> Unit,
     hot: List<MusicVideo>,
@@ -84,53 +113,43 @@ fun MusicSourcePage(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.align(Alignment.CenterStart)
             )
-            /* 往右补 16.2dp 让墨右沿和下面那颗按钮的右沿齐平。这一笔必须加在**这颗盒子自己**上：
-               上一版加在里面的 LineIcon 上，结果墨挪了、48dp 的命中框没挪，
-               他报的症状就是"按叉没反应、按叉右边一点才关"。
-               余量的出处：Close 这字形只吃画框 0.6136（真机墨 13.5dp / 画框 22dp），
-               48dp 盒 + 22dp 画框两层余量 = 17.25dp。 */
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .size(Tokens.Dimen.IconHit)
-                    .offset(x = 16.2.dp)
-                    .tap(onClick = onBack),
-                contentAlignment = Alignment.Center
-            ) { LineIcon(IconKind.Close, size = 22.dp, color = Tokens.Ink) }
+            RightIcon(
+                IconKind.Close, inkDp = 13.50f, canvas = 22.dp, enabled = true,
+                // 标题那格是 Box：不写这句它会掉到左上角（上一版就是这么漏的）
+                modifier = Modifier.align(Alignment.CenterEnd),
+                onClick = onBack,
+            )
         }
-        Hairline()
-        BasicTextField(
-            value = baseUrl,
-            onValueChange = onBaseUrl,
-            singleLine = true,
-            cursorBrush = SolidColor(Tokens.Accent),
-            textStyle = TextStyle(color = Tokens.InkStrong, fontSize = 14.sp),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Tokens.Dimen.ScreenPad, vertical = 14.dp)
-        )
         Hairline()
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Tokens.Dimen.ScreenPad, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(end = Tokens.Dimen.ScreenPad),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 跑着的时候这颗还在原位，只是按不动（禁用不等于移除）
-            ActionButton(if (busy) "获取中…" else "获取", onClick = onFetch, enabled = !busy)
+            BasicTextField(
+                value = baseUrl,
+                onValueChange = onBaseUrl,
+                singleLine = true,
+                cursorBrush = SolidColor(Tokens.Accent),
+                textStyle = TextStyle(color = Tokens.InkStrong, fontSize = 14.sp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = Tokens.Dimen.ScreenPad, top = 14.dp, bottom = 14.dp)
+            )
+            RightIcon(IconKind.Refresh, inkDp = 10.30f, canvas = 19.dp, enabled = !busy, onClick = onFetch)
         }
+        Hairline()
         if (note != null) {
             Text(
                 note,
-                color = Tokens.InkFaint,
+                color = Color(0xFFC0392B),
                 fontSize = 12.sp,
                 modifier = Modifier.padding(
                     start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ScreenPad, top = 10.dp
                 )
             )
+            Hairline()
         }
-        Hairline()
         LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
             itemsIndexed(sources) { i, r ->
                 if (i > 0) Hairline()
@@ -151,7 +170,7 @@ fun MusicSourcePage(
     }
 }
 
-/** 一行源：名字 + 那一行小灰字，右端一颗「删除」。行高照参考那张量的 60.5dp */
+/** 一行源：名字 + 那一行网址，右端一颗 ✕。行高照参考那张量的 60.5dp */
 @Composable
 private fun SourceLine(row: SourceRow, onDelete: (String) -> Unit) {
     Row(
@@ -170,39 +189,7 @@ private fun SourceLine(row: SourceRow, onDelete: (String) -> Unit) {
                 modifier = Modifier.padding(top = 2.dp)
             )
         }
-        ActionButton("删除", onClick = { onDelete(row.id) })
-    }
-}
-
-/**
- * 这一屏唯一的按钮形状：8dp 圆角 + [Tokens.CardBg] 底 + 14sp 中位墨，内衬 16 x 9dp。
- * 禁用是**置灰不消失**（他定的那条：禁用不等于移除）—— 字色退到 [Tokens.InkFaint]、
- * 笔画退到常规，位置一格不动。
- */
-@Composable
-private fun ActionButton(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-) {
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
-            .background(Tokens.CardBg)
-            // 1dp 描边照筛选页那颗「重置」的写法：CardBg(250) 压在 ListBg(241,244,249) 上只差
-            // (9,6,1)，那一档在浅色底上看不出来，得给一条 Divider 的分界
-            .border(1.dp, Tokens.Divider, RoundedCornerShape(Tokens.Dimen.CardCorner))
-            .tap(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 9.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text,
-            color = if (enabled) Tokens.InkStrong else Tokens.InkFaint,
-            fontSize = 14.sp,
-            fontWeight = if (enabled) FontWeight.Medium else FontWeight.Normal
-        )
+        RightIcon(IconKind.Close, inkDp = 11.66f, canvas = 19.dp, enabled = true, onClick = { onDelete(row.id) })
     }
 }
 
