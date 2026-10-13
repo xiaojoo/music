@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -97,10 +98,12 @@ fun MusicOnlinePage(
             columns = GridCells.Fixed(3),
             modifier = Modifier.fillMaxSize(),
             horizontalArrangement = Arrangement.spacedBy(11.dp),
-            /* 纵向间隙从 16dp 收到 12dp：他量给我们看的底线是"最后一行刚好贴到底栏上面"——
-               真机那张附件上末行墨底在设备 y=2227、底栏顶在 2232，只剩 1.5dp，多一个尾巴就整屏能滚。
-               这一屏能改的间隙只有这三处（栏头那颗 `SectionHead` 的 14dp 是首页共用的，动它会带上首页）。 */
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            /* 纵向间隙 12dp 是他量给我们定的那一版（末行贴到底栏上面），不动。
+               底下这一截按「和上面一样」补成同一档：行自己上下各 5dp，两行之间是 5+12+5=22dp，
+               所以滚到底要留 22−5=**17dp** 才和行距齐平（真机附件量过：行间隙 60.5px=22dp，
+               尾巴只留那 5dp 时末行墨底 2085、底栏顶 2100 —— 只剩 15px）。 */
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 17.dp)
         ) {
             /* 四栏全空的时候才写这一句 —— 它是失败/没得搜的出口，不是统计行。
                顶上那行「最火 N 张 · 相关 N 条」他点名不要了，但搜挂了总得说一句，
@@ -171,7 +174,6 @@ fun MusicOnlinePage(
                     WideRow(video = v, playing = "online:" + v.key == playingId, onClick = { onOpenVideo(v) })
                 }
             }
-            item(key = "tail", span = { GridItemSpan(maxLineSpan) }) { Spacer(modifier = Modifier.height(4.dp)) }
         }
     }
 }
