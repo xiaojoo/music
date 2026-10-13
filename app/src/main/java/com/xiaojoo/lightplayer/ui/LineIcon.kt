@@ -251,6 +251,73 @@ fun LineIcon(
                 drawCircle(color, radius = s * 0.055f, center = Offset(s * 0.50f, s * 0.50f))
                 drawCircle(color, radius = s * 0.055f, center = Offset(s * 0.50f, s * 0.72f))
             }
+            /* 设置：一只八齿齿轮 + 一枚轮毂圈。按"墨宽 0.5 画框"那档反解 —— 齿顶半径 0.2125、
+               齿根 0.145、轮毂 0.078，笔画 0.075 一支：8 倍超采样离屏量到墨 10.91 x 10.82dp
+               （22dp 画框的目标是 11.00），中心 0.4990/0.4990；齿比谷凸出 1.45dp = 真机 4.0px，
+               这一档笔画吃得住。为什么不用"三横带圆点"那支：它和这一族的筛选、排序同一形状语言，
+               摆在一起分不出谁是谁。
+               它顶替的是右上角原来那颗「选文件」文字键 —— 那颗按的是 SAF 挑单个文件来播，
+               和歌词页那颗「选文件」（挑歌词目录）不是同一件事，那一条能力随按钮一起撤了。 */
+            IconKind.Settings -> {
+                drawPath(
+                    Path().apply {
+                        moveTo(s * 0.64099f, s * 0.46615f)
+                        lineTo(s * 0.71014f, s * 0.46841f)
+                        lineTo(s * 0.71014f, s * 0.53159f)
+                        lineTo(s * 0.64099f, s * 0.53385f)
+                        lineTo(s * 0.62363f, s * 0.57576f)
+                        lineTo(s * 0.67093f, s * 0.62625f)
+                        lineTo(s * 0.62625f, s * 0.67093f)
+                        lineTo(s * 0.57576f, s * 0.62363f)
+                        lineTo(s * 0.53385f, s * 0.64099f)
+                        lineTo(s * 0.53159f, s * 0.71014f)
+                        lineTo(s * 0.46841f, s * 0.71014f)
+                        lineTo(s * 0.46615f, s * 0.64099f)
+                        lineTo(s * 0.42424f, s * 0.62363f)
+                        lineTo(s * 0.37375f, s * 0.67093f)
+                        lineTo(s * 0.32907f, s * 0.62625f)
+                        lineTo(s * 0.37637f, s * 0.57576f)
+                        lineTo(s * 0.35901f, s * 0.53385f)
+                        lineTo(s * 0.28986f, s * 0.53159f)
+                        lineTo(s * 0.28986f, s * 0.46841f)
+                        lineTo(s * 0.35901f, s * 0.46615f)
+                        lineTo(s * 0.37637f, s * 0.42424f)
+                        lineTo(s * 0.32907f, s * 0.37375f)
+                        lineTo(s * 0.37375f, s * 0.32907f)
+                        lineTo(s * 0.42424f, s * 0.37637f)
+                        lineTo(s * 0.46615f, s * 0.35901f)
+                        lineTo(s * 0.46841f, s * 0.28986f)
+                        lineTo(s * 0.53159f, s * 0.28986f)
+                        lineTo(s * 0.53385f, s * 0.35901f)
+                        lineTo(s * 0.57576f, s * 0.37637f)
+                        lineTo(s * 0.62625f, s * 0.32907f)
+                        lineTo(s * 0.67093f, s * 0.37375f)
+                        lineTo(s * 0.62363f, s * 0.42424f)
+                        close()
+                    }, color,
+                    style = Stroke(width = st, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+                drawCircle(color, radius = s * 0.078f, center = Offset(s * 0.5f, s * 0.5f))
+            }
+
+            /* 刷新（「获取」那颗）：一段 290° 的弧 + 端点两笔箭头，缺口朝右上。
+               半径 0.245 画框、笔画 0.075 —— 墨宽 0.542 画框（19dp 画框时 28.3px），
+               和同排的 Close（0.6136）差半成，是这一族里"圈"形自己的账。
+               中心线 x 0.255..0.722 / y 0.255..0.745：横向少 0.023 是因为弧在右边留了缺口，
+               整颗墨中心偏左 0.0115 画框 = 19dp 画框时 0.6px，在量化底噪里，不额外补。 */
+            IconKind.Refresh -> {
+                val r = s * 0.245f
+                drawArc(
+                    color, startAngle = 45f, sweepAngle = 290f, useCenter = false,
+                    topLeft = Offset(s * 0.5f - r, s * 0.5f - r), size = androidx.compose.ui.geometry.Size(r * 2f, r * 2f),
+                    style = Stroke(width = st, cap = StrokeCap.Round)
+                )
+                val ex = s * 0.7220f
+                val ey = s * 0.3964f
+                drawLine(color, Offset(ex, ey), Offset(s * 0.6770f, s * 0.4743f), st, StrokeCap.Round)
+                drawLine(color, Offset(ex, ey), Offset(s * 0.6334f, s * 0.3808f), st, StrokeCap.Round)
+            }
+
 
             IconKind.Download -> {                drawLine(color, Offset(s * 0.50f, s * 0.18f), Offset(s * 0.50f, s * 0.60f), st, StrokeCap.Round)
                 drawLine(color, Offset(s * 0.33f, s * 0.44f), Offset(s * 0.50f, s * 0.62f), st, StrokeCap.Round)
@@ -449,7 +516,7 @@ enum class IconKind {
     Play, Pause, Next, Prev, Repeat, Queue, ChevronDown, ChevronRight,
     Home, MusicNote, Video, Person, Add, Favorite, FavoriteLine, PlayAdd, PlayQueue, SquareAdd, Share, PinTop, Trash,
     Download, ArrowLeft, Search, PlaylistAdd, Sort,
-    Close, Drag, Speed, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More
+    Close, Drag, Speed, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh
 }
 
 /** 三尖倒圆角的实心三角：每个尖沿两条邻边各让进 t = r / tan(θ/2)（θ 是该尖的内角），

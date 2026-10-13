@@ -94,7 +94,7 @@ import java.util.concurrent.Executors
 fun PlayerScreen(
     audio: ExoPlayer?,
     onTakeover: () -> Unit,
-    onPicked: (List<Uri>) -> Unit,
+    onSettings: () -> Unit,
     onOpenQueue: () -> Unit,
     // 右滑到的第三页（在线）：状态都在壳层，这一屏只画和回动作 —— 和歌词那页一样不带自己的存档
     /** 一屏四栏都从"搜当前这首歌"那一批结果里分：两族各按播放数降序，前 3 张最火、第 4 条往后相关 */
@@ -137,11 +137,6 @@ fun PlayerScreen(
     var lyricSource by remember { mutableStateOf<String?>(null) }
     var lyricTreeUri by remember { mutableStateOf<Uri?>(null) }
 
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isNotEmpty()) onPicked(uris)
-    }
 
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -291,10 +286,10 @@ fun PlayerScreen(
                     Box(
                         modifier = Modifier
                             .size(Tokens.Dimen.IconHit)
-                            .tap { picker.launch(arrayOf("*/*")) },
+                            .tap(onClick = onSettings),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("选文件", color = Tokens.Ink, style = MaterialTheme.typography.labelMedium)
+                        LineIcon(IconKind.Settings, size = 22.dp, color = Tokens.Ink)
                     }
                 }
             }
