@@ -105,10 +105,10 @@ fun MusicOnlinePage(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 17.dp)
         ) {
-            /* 四栏全空的时候才写这一句 —— 它是失败/没得搜的出口，不是统计行。
+            /* 四栏全空、或者哪一路挂了才写这一句 —— 它是失败/没得搜的出口，不是统计行。
                顶上那行「最火 N 张 · 相关 N 条」他点名不要了，但搜挂了总得说一句，
                不然这一屏就是一片空白，看着像坏了。 */
-            if (nothing) {
+            if (nothing || error != null) {
                 item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
                     Text(
                         text = error ?: if (keyword.isBlank()) "先放一首歌，这一屏按它在搜" else "还没有内容",
@@ -239,7 +239,7 @@ private fun WideRow(video: MusicVideo, playing: Boolean, onClick: () -> Unit) {
  * 首页那些在线行同样没摆它），摆一颗点不动的比不摆更糟。
  */
 @Composable
-private fun MusicRow(
+internal fun MusicRow(
     video: MusicVideo,
     playing: Boolean,
     onClick: () -> Unit,

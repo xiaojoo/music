@@ -62,6 +62,8 @@ import com.xiaojoo.lightplayer.data.PinnedRepository
 import com.xiaojoo.lightplayer.ui.AddToPlaylistDialog
 import androidx.media3.common.Player
 import com.xiaojoo.lightplayer.ui.NowPlayingBar
+import com.xiaojoo.lightplayer.ui.MusicSourcePage
+import com.xiaojoo.lightplayer.ui.SourceRow
 import com.xiaojoo.lightplayer.ui.OnlinePage
 import com.xiaojoo.lightplayer.ui.QueueEntry
 import com.xiaojoo.lightplayer.ui.QueueSheet
@@ -294,6 +296,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
             )
         }
     }
+
     val scope = rememberCoroutineScope()
     /* 音乐页右滑到的那一屏在线：一条地址摊成一串歌，摆成封面网格。取址和在线视频同一套源，
        差别只在落到哪台机器 —— 这一路交给音频那台、进会话队列，不另开实例也不要画面。 */
@@ -311,8 +314,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     var artistQuery by remember { mutableStateOf("") }
     var musicOnlineError by remember { mutableStateOf<String?>(null) }
 
-    /** 「这首歌的音乐」那一栏：按眼前正在放的那一首搜出来的、站点分区判成音乐的那些 */
-    var musicOnlineSongs by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
+    /** 这一屏问两路：音乐那两栏吃网易云搜回来的那一批，视频那两栏吃 B 站那一批。
+     *  两批各自留着，谁挂了另一路照旧摆 —— 报错写在那一栏，不弹吐司。 */
     var musicOnlineSongsBusy by remember { mutableStateOf(false) }
     /** 这一栏的一句话：为什么没搜、搜到了几条不在音乐区。报错留在它发生的那一栏，不弹吐司 */
     var musicOnlineSongsNote by remember { mutableStateOf<String?>(null) }
@@ -322,8 +325,16 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     var musicPlayerPage by remember { mutableStateOf(0) }
     /** 是不是从音乐那一屏的「在线」跳过来的：是，系统返回键才该退回那一屏（不是退出应用） */
     var backToMusicOnline by remember { mutableStateOf(false) }
-    /** 站点给的那一批原样留着（音乐 + 视频都在里面）：顶上那 6 张从这一份里按播放数取 */
-    var musicOnlineFound by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
+    var musicOnlineMusic by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
+    var musicOnlineVideo by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
+    /** 右上角那颗齿轮开的是「在线音乐源」那一整屏（page = "music-source"），不再是抽屉 */
+    var musicBaseUrl by remember {
+        mutableStateOf(musicOnlineSettings.musicUrl().ifBlank { Online.MUSIC_DEFAULT_BASE })
+    }
+    var musicHot by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
+    var musicHotBusy by remember { mutableStateOf(false) }
+    /** 「获取」那一趟的一句话：拿到几条、或为什么不通。写在抽屉里，不弹吐司 */
+    var musicHotNote by remember { mutableStateOf<String?>(null) }
     var pinned by remember { mutableStateOf(pinRepo.all()) }
     // 删完文件要重扫一遍曲库：不扫的话那一行还留在列表里，点它是报错不是播放
     var scanTick by remember { mutableIntStateOf(0) }
@@ -789,6 +800,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
 
     /* 这一屏不再摆地址栏和「获取」（他点的：顶上只留最火那 6 张）。所以摊那一串改成进来就做 ——
        那 6 张里的音乐、和歌手页那批人，吃的都是这一份。地址还是存在设置里，只是这屏不再给入口。 */
+    LaunchedEffect(Unit) { Online.setMusicBase(musicBaseUrl) }
     LaunchedEffect(Unit) { fetchMusicOnline() }
 
     /**
@@ -874,42 +886,62 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                 }
         }
         if (t == null) {
-            musicOnlineSongs = emptyList()
-            musicOnlineFound = emptyList()
+            musicOnlineMusic = emptyList()
+            musicOnlineVideo = emptyList()
             musicOnlineKeyword = ""
             musicOnlineSongsNote = "先放一首歌，这一屏按它在搜"
             return
         }
         val kw = Online.searchKeywordOf(t.name, t.artist, fromLibrary = !Online.isOnline(t))
         if (kw.isBlank()) {
-            musicOnlineSongs = emptyList()
+            musicOnlineMusic = emptyList()
             musicOnlineSongsNote = "这一首的名字里提不出搜索词"
             return
         }
-        if (kw == musicOnlineKeyword && (musicOnlineSongs.isNotEmpty() || musicOnlineSongsNote == null)) return
+        if (kw == musicOnlineKeyword &&
+            (musicOnlineMusic.isNotEmpty() || musicOnlineVideo.isNotEmpty() || musicOnlineSongsNote != null)
+        ) return
         musicOnlineKeyword = kw
         musicOnlineSongsBusy = true
         musicOnlineSongsNote = null
         scope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { Online.searchSongs(kw, MUSIC_ONLINE_SONGS) } }
+            /* 两栏一族各问各的一路（他点的：音乐吃网易云、视频仍吃 B 站）。两趟分开跑、
+               各自记自己的失败：网易云挂了不该把 B 站那两栏一起带走，反过来也一样。 */
+            val m = withContext(Dispatchers.IO) { runCatching { Online.searchMusic(kw, MUSIC_ONLINE_SONGS) } }
+            val v = withContext(Dispatchers.IO) { runCatching { Online.searchVideos(kw, MUSIC_ONLINE_SONGS) } }
             musicOnlineSongsBusy = false
-            r.onSuccess { vs ->
-                musicOnlineFound = vs
-                musicOnlineSongs = vs.filter { it.music }
-                musicOnlineSongsNote = when {
-                    vs.isEmpty() -> "没搜到「$kw」"
-                    musicOnlineSongs.isEmpty() -> "搜到 ${vs.size} 条，没有一条在音乐分区"
-                    else -> null
-                }
-            }.onFailure {
-                musicOnlineSongs = emptyList()
-                musicOnlineFound = emptyList()
-                musicOnlineKeyword = ""
-                musicOnlineSongsNote = (it as? SourceFailureException)?.failure?.message ?: "搜不了"
+            musicOnlineMusic = m.getOrDefault(emptyList())
+            // B 站那一批里分区是音乐的那些不要了：音乐那两栏现在归网易云
+            musicOnlineVideo = v.getOrDefault(emptyList()).filterNot { it.music }
+            val why = (m.exceptionOrNull() ?: v.exceptionOrNull()) as? SourceFailureException
+            musicOnlineSongsNote = when {
+                m.isFailure && v.isFailure -> why?.failure?.message ?: "两路都问不通"
+                m.isFailure -> why?.failure?.message ?: "音乐那一路问不通"
+                v.isFailure -> why?.failure?.message ?: "视频那一路问不通"
+                musicOnlineMusic.isEmpty() && musicOnlineVideo.isEmpty() -> "没搜到「$kw」"
+                else -> null
             }
+            if (m.isFailure && v.isFailure) musicOnlineKeyword = ""
         }
     }
 
+    /** 删掉的源：那一行从列表里没了、注册表也不再问它。没有「恢复」—— 名单是单向的（他点的） */
+    var goneSources by remember { mutableStateOf(onlineSettings.goneSources()) }
+    LaunchedEffect(Unit) { Online.setGone(goneSources) }
+
+    fun deleteSource(id: String) {
+        val next = goneSources + id
+        goneSources = next
+        onlineSettings.saveGoneSources(next)
+        Online.setGone(next)
+    }
+
+    /** 那一屏列的三路：副标题写清"删掉它，哪一栏会空" */
+    fun sourceRows(): List<SourceRow> = listOf(
+        SourceRow("netease", "网易云", "在线那一屏的音乐两栏 · 上面那格改的是它"),
+        SourceRow("bili", "B 站", "在线那一屏的视频两栏 · 视频页那一栏的热门"),
+        SourceRow("douyin", "抖音", "视频页粘页地址取无水印那一条"),
+    ).filterNot { it.id in goneSources }
     /**
      * 点一条视频：挪到视频 tab 的在线那一栏播。走的是那一页那颗「添加」用的同一条路
      * （解析 → 落盘），所以下次进视频 tab 这一条还在。落盘是点名要的，不是顺手：他说「存，和添加一致」。
@@ -943,6 +975,41 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
             }
         }
     }
+
+    /**
+     * 把「在线音乐源」那一屏填的那一栏落成"这一路问哪台"：格式不对就不落，直接把话说在那一屏；
+     * 留空按默认那一条（网易云官方站）走。关掉那一屏也走这一句 —— 只填地址不按「获取」
+     * 也该算设置好了，不然那一栏白填。
+     */
+    fun commitMusicBase(): Boolean {
+        val url = musicBaseUrl.trim()
+        if (url.isNotEmpty() && !(url.startsWith("http://") || url.startsWith("https://"))) {
+            musicHotNote = "地址要以 http:// 或 https:// 开头，或者留空回到默认的网易云"
+            return false
+        }
+        Online.setMusicBase(url)
+        musicOnlineSettings.saveMusicUrl(url)
+        return true
+    }
+
+    /** 那一屏那颗「获取」：把这个源的默认那一串（网易云 = 热歌榜）摊出来 */
+    fun fetchMusicHot() {
+        if (musicHotBusy || !commitMusicBase()) return
+        musicHotBusy = true
+        musicHotNote = null
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { Online.hotMusic(MUSIC_ONLINE_SONGS) } }
+            musicHotBusy = false
+            r.onSuccess {
+                musicHot = it
+                musicHotNote = if (it.isEmpty()) "这个源没摊出内容" else "拿到 ${it.size} 条，点一行就播"
+            }.onFailure {
+                musicHot = emptyList()
+                musicHotNote = (it as? SourceFailureException)?.failure?.message ?: "这个地址问不通"
+            }
+        }
+    }
+
 
     // 控制器是异步连上的，冷启动头一下点歌不能因为没连上就落空
     LaunchedEffect(controller, pendingQueue) {
@@ -1141,8 +1208,10 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
         groupArtists(musicOnlineVideos + musicOnlinePicks)
     }
 
-    /** 一屏四栏全从"搜当前这首歌"那一批结果里分：两族各按播放数降序，前 3 张最火、第 4 条往后相关 */
-    val musicOnlineSplit = remember(musicOnlineFound) { Online.splitByZone(musicOnlineFound) }
+    /** 一屏四栏：音乐那两栏来自网易云那一批，视频那两栏来自 B 站那一批（各自前 3 张最火、第 4 条往后相关） */
+    val musicOnlineSplit = remember(musicOnlineMusic, musicOnlineVideo) {
+        Online.zonesOf(musicOnlineMusic, musicOnlineVideo)
+    }
 
     val trackByUri = remember(audioTracks, videoTracks) {
         (audioTracks + videoTracks).associateBy { it.uri }
@@ -1240,6 +1309,22 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                 )
             } else if (page == "online") {
                 OnlinePage(onBack = { leavePage() }, onPlay = { v -> playOnline(v) })
+            } else if (page == "music-source") {
+                MusicSourcePage(
+                    baseUrl = musicBaseUrl,
+                    onBaseUrl = { musicBaseUrl = it },
+                    sources = sourceRows(),
+                    busy = musicHotBusy,
+                    note = musicHotNote,
+                    onFetch = { fetchMusicHot() },
+                    hot = musicHot,
+                    playingId = musicOnlinePlayingId(),
+                    onPlay = { v -> playMusicOnline(v) },
+                    onDelete = { id -> deleteSource(id) },
+                    onQueue = { v -> queueMusicOnline(v) },
+                    onBack = { commitMusicBase(); leavePage() },
+                    bottomInset = !showBar,
+                )
             } else if (page == "artists") {
                 ArtistListPage(
                     artists = onlineArtists,
@@ -1363,19 +1448,9 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     // 绑音频那台，不绑会话：会话可能正被视频那一路借走，绑会话就会把视频画在音乐页上
                     audio = audioPlayer,
                     onTakeover = { PlayerPool.useAudio() },
-                    onPicked = { uris ->
-                        // SAF 给的读权限要落到持久授权，否则下次打开播不动
-                        uris.forEach { uri ->
-                            runCatching {
-                                context.contentResolver.takePersistableUriPermission(
-                                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                )
-                            }
-                        }
-                        play(uris, 0, emptyList())
-                    },
                     onNowPlaying = { nowPlaying = it },
                     onOpenQueue = { queueRoute = QueueRoute.Music },
+                    onSettings = { openPage("music-source") },
                     onlineHotMusic = musicOnlineSplit.hotMusic,
                     onlineMoreMusic = musicOnlineSplit.moreMusic,
                     onlineHotVideo = musicOnlineSplit.hotVideo,
@@ -1408,8 +1483,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     onOpenOnline = { openPage("online") },
                     onAddUrl = { u -> addUrl(u) },
                     savedUrl = onlineSettings.url(),
-                    onlineItems = onlineFeed,
-                    onlineBusy = onlineBusy,
+                    onlineItems = onlineFeed,                    onlineBusy = onlineBusy,
                     onlineError = onlineError,
                     onlineCovers = onlineCovers,
                     onBrowse = { loadOnlineFeed() },
@@ -1534,6 +1608,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
             BottomBar(tab = tab, onSelect = { backToMusicOnline = false; tab = it })
         }
     }
+
+
 
     queueRoute?.let { route ->
         val routeVideo = when (route) {

@@ -185,6 +185,10 @@ fun OnlineFeed(
                                     blockedNow = true
                                 }
                             } while (e.changes.any { it.pressed })
+                            /* 每一滑抬手就收旗。写在下面这个 finally 里是不够的：finally 只在整段
+                               pointerInput 被取消（那两个开关的取值变了）时才跑，抬手不触发它 ——
+                               于是被挡一次之后那颗就一直亮着，站着不动也不灭。 */
+                            blockedNow = false
                         }
                     } finally {
                         blockedNow = false
@@ -214,6 +218,25 @@ fun OnlineFeed(
     }
 }
 
+/**
+ * 模糊底的缓存：键是封面 url，值就是 `blurOf` 那张 36px 宽的小图（一张约 9KB，40 张不到 0.5MB）。
+ *
+ * 为什么要它：这一栏每次进来整个 composable 都是新建的，封面底于是从零重取一遍 ——
+ * 取到之前那一帧只有 `Color.Black` 垫底，于是"点进在线那一下整屏闪一下黑"。
+ * 缓存跨组合活着（对象级），第二次起第一帧就有底。
+ */
+private object FeedCovers {
+    private val keep = LinkedHashMap<String, ImageBitmap>(0, 0.75f, true)
+
+    @Synchronized fun get(url: String?): ImageBitmap? = url?.let { keep[it] }
+
+    @Synchronized fun put(url: String?, bmp: ImageBitmap) {
+        if (url == null) return
+        keep[url] = bmp
+        while (keep.size > 40) keep.remove(keep.keys.first())
+    }
+}
+
 /** 一整页：封面底 → 自己的画面 → 标题 → 右侧那一列。四样都在页里，pager 推谁就是一整页。 */
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
@@ -232,27 +255,18 @@ private fun OnlinePage(
     onDownload: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    var vidW by remember(player) { mutableIntStateOf(player?.let { (it as? androidx.media3.exoplayer.ExoPlayer)?.videoSize?.width } ?: 0) }
-    var vidH by remember(player) { mutableIntStateOf(player?.let { (it as? androidx.media3.exoplayer.ExoPlayer)?.videoSize?.height } ?: 0) }
+    var vidW by remember(player) { mutableIntStateOf(player?.videoSize?.width ?: 0) }
+    var vidH by remember(player) { mutableIntStateOf(player?.videoSize?.height ?: 0) }
     var playing by remember(player) { mutableStateOf(player?.isPlaying == true) }
-    /* 这一条有没有真的解出一帧：没出之前这块画面是空的（同一台实例刚播过别的页，
-       上面还留着上一条的最后一帧）。所以没出帧时把画面层藏掉，露出底下这一页自己的封面。
-       本地那一栏同一个办法（FeedSlot.firstFrame）。 */
-    var rendered by remember(player, track.uri) { mutableStateOf(false) }
     /* 这一条到没到手：缓冲好（STATE_READY）才算。没到手之前这一页不给画面，只给循环点 ——
        他看到的"上一个视频还挂着"，根因是下一条还没拉下来，不是渲染层没藏住。 */
-    var ready by remember(player, track.uri) { mutableStateOf(false) }
+    var ready by remember(player, track.uri) {
+        mutableStateOf(player?.playbackState == Player.STATE_READY)
+    }
 
     DisposableEffect(player, track.uri, current) {
-        /* 滑到这一页就把"出过帧"和宽高一起清掉：
-           一台实例被第 0 页和第 2 页轮流用，不清的话新页先按上一条的宽高比摆（画面大小跳一下），
-           而且那块表面还留着上一条的画面（他说的残影）。 */
-        rendered = false
-        vidW = 0
-        vidH = 0
         val p = player ?: return@DisposableEffect onDispose { }
         val l = object : Player.Listener {
-            override fun onRenderedFirstFrame() { rendered = true }
             override fun onVideoSizeChanged(s: androidx.media3.common.VideoSize) {
                 vidW = s.width
                 vidH = s.height
@@ -264,14 +278,17 @@ private fun OnlinePage(
             }
             override fun onPlaybackStateChanged(state: Int) {
                 ready = state == Player.STATE_READY
-                if (state == Player.STATE_ENDED) rendered = true
             }
         }
         p.addListener(l)
+        /* 挂上监听时要把"到手没 / 多大画面 / 在不在放"三样都按播放器现在的样子读回来，
+           不能先清成"没有"再等回调 —— 尺寸没变的话 onVideoSizeChanged 根本不会重发，
+           于是这一条早就在手上的时候，进这一栏的头几帧仍然退回"模糊封面 + 三个循环点"，
+           画面按兜底比例摆、宽高要等下一次状态跳变才回来。真机量到 3–4 帧（124–165ms），
+           就是他报的"点进在线闪一下"。顺带"在不在放"也要重读：监听只报**变化**，
+           不重读就会一直停在 false —— 画面在动、标签却写「已暂停」还挂着三角。 */
         ready = p.playbackState == Player.STATE_READY
-        rendered = p.playbackState == Player.STATE_ENDED
-        /* 挂上监听时要把"在不在放"重读一次：这一屏刚组合那一刻它可能还没被接手（接手在几十毫秒后的
-           落位里），监听只报**变化**，不重读就会一直停在 false —— 画面在动、标签却写「已暂停」还挂着三角。 */
+        p.videoSize?.let { if (it.width > 0 && it.height > 0) { vidW = it.width; vidH = it.height } }
         playing = p.isPlaying
         onDispose { p.removeListener(l) }
     }
@@ -280,13 +297,21 @@ private fun OnlinePage(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black).tap { onTap() }) {
         /* 背景 = 这一条自己的封面，放大模糊后铺满（和抖音/本地那一栏同一套观感）。
-           必须先进手把 value 清成 null：produceState 换 key 不会回到 initialValue，
+           换 key 时必须先进手把 value 换掉：produceState 换 key 不会回到 initialValue，
            它留着上一张图继续显示、同时在后台重取 —— 这就是"还看得到上一个视频的画面"的真身
-           （不是那块视频表面，是这张封面底图）。 */
-        val bmp by produceState<ImageBitmap?>(initialValue = null, cover) {
-            value = null
-            val raw = cover?.let { withContext(Dispatchers.IO) { loadCover(it) } }
-            value = raw?.let { blurOf(it) }
+           （不是那块视频表面，是这张封面底图）。
+           命中缓存就不空那一帧：这一栏每次进来整个 composable 都是新建的，没缓存时第一帧只有纯黑垫底，
+           就是他报的"点进在线闪一下"。 */
+        val bmp by produceState<ImageBitmap?>(initialValue = FeedCovers.get(cover), cover) {
+            val hit = FeedCovers.get(cover)
+            value = hit
+            if (hit == null) {
+                val blurred = cover?.let { withContext(Dispatchers.IO) { loadCover(it) } }?.let { blurOf(it) }
+                if (blurred != null) {
+                    FeedCovers.put(cover, blurred)
+                    value = blurred
+                }
+            }
         }
         bmp?.let {
             Image(
@@ -312,24 +337,27 @@ private fun OnlinePage(
             // 上一条的最后一帧没有地方可以继续挂着；新页进来时是一枚全新的表面。
             // （试过用 graphicsLayer 的 alpha 藏：对 TextureView 无效，残影照旧。）
             if (current) {
-                var tv by remember { mutableStateOf<TextureView?>(null) }
-                DisposableEffect(tv, player) {
-                    val e = player as? androidx.media3.exoplayer.ExoPlayer
-                    val v = tv
-                    if (e != null && v != null) e.setVideoTextureView(v)
-                    onDispose {
-                        if (e != null && v != null) e.clearVideoTextureView(v)
-                    }
-                }
                 AndroidView(
-                    factory = { c -> TextureView(c).also { tv = it } },
+                    factory = { c ->
+                        /* 造出这块的当场就把它交给播放器。原来绑在 DisposableEffect 里，
+                           那要等下一帧才跑，而表面本身还要再等一两帧才可用 —— 白让出画晚一帧。 */
+                        TextureView(c).also { v ->
+                            (player as? androidx.media3.exoplayer.ExoPlayer)?.setVideoTextureView(v)
+                        }
+                    },
+                    update = { },
+                    onRelease = { v ->
+                        (player as? androidx.media3.exoplayer.ExoPlayer)?.clearVideoTextureView(v)
+                    },
                     modifier = Modifier.size(width = picW, height = picH),
                 )
             }
         }
 
-        if (current && !ready) {
-            // 这一条还没拉下来：只给三个循环点，不给任何画面 —— 这时候摆出来的一定是上一条的残留
+        if (current && !ready && !waitingSide) {
+            // 这一条还没拉下来：只给三个循环点，不给任何画面 —— 这时候摆出来的一定是上一条的残留。
+            // 底部那颗亮着的时候这里必须让位：两个加载样子不同时出现（他点名的第二条）。
+            // 让位不等于停手 —— 这一条照旧在自己那台上继续缓冲，滑回来不用重取。
             OnlineDots(modifier = Modifier.align(Alignment.Center))
         }
 

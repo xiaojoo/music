@@ -10,6 +10,7 @@ import com.xiaojoo.lightplayer.videosource.DouyinSource
 import com.xiaojoo.lightplayer.videosource.Fetcher
 import com.xiaojoo.lightplayer.videosource.LocalStubSource
 import com.xiaojoo.lightplayer.videosource.MusicVideo
+import com.xiaojoo.lightplayer.videosource.NeteaseSource
 import com.xiaojoo.lightplayer.videosource.Playable
 import com.xiaojoo.lightplayer.videosource.ResolveOutcome
 import com.xiaojoo.lightplayer.videosource.RetryPolicy
@@ -73,31 +74,32 @@ object Online {
 
     private val stub = LocalStubSource(catalog = devCatalog, baseUrl = DEV_BASE)
 
-    /** B 站：粘页地址换一条自带音频的 mp4（要 Referer，见模块里的 headersForUrl） */
-    private val bili = BiliSource(
-        Fetcher { url, hs ->
-            val c = URL(url).openConnection() as HttpURLConnection
-            c.connectTimeout = 8_000
-            c.readTimeout = 12_000
-            c.instanceFollowRedirects = true
-            hs.forEach { (k, v) -> c.setRequestProperty(k, v) }
-            try {
-                val code = c.responseCode
-                if (code !in 200..299) {
-                    // 412 是 B 站的风控回法，按"要登录/被限"处理，重试只是再撞一次
-                    throw SourceFailureException(
-                        if (code == 403 || code == 412) SourceFailure.Auth("HTTP $code")
-                        else SourceFailure.Network("HTTP $code")
-                    )
-                }
-                c.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
-            } catch (e: java.io.IOException) {
-                throw SourceFailureException(SourceFailure.Network(e.message ?: "连接失败"))
-            } finally {
-                c.disconnect()
+    /** 一路 HTTP：几支源共用这一台（超时、跟重定向、把状态码归类成站点失败，全在这一处） */
+    private val http = Fetcher { url, hs ->
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 8_000
+        c.readTimeout = 12_000
+        c.instanceFollowRedirects = true
+        hs.forEach { (k, v) -> c.setRequestProperty(k, v) }
+        try {
+            val code = c.responseCode
+            if (code !in 200..299) {
+                // 412 是 B 站的风控回法，按"要登录/被限"处理，重试只是再撞一次
+                throw SourceFailureException(
+                    if (code == 403 || code == 412) SourceFailure.Auth("HTTP $code")
+                    else SourceFailure.Network("HTTP $code")
+                )
             }
+            c.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
+        } catch (e: java.io.IOException) {
+            throw SourceFailureException(SourceFailure.Network(e.message ?: "连接失败"))
+        } finally {
+            c.disconnect()
         }
-    )
+    }
+
+    /** B 站：粘页地址换一条自带音频的 mp4（要 Referer，见模块里的 headersForUrl） */
+    private val bili = BiliSource(http)
 
     /**
      * 抖音：粘页地址（或分享文案里那条短链）→ 内部文件 id → 无水印单文件。
@@ -106,10 +108,57 @@ object Online {
      */
     private val douyin by lazy { DouyinSource(DouyinWebView(app)) }
 
-    val registry by lazy { SourceRegistry(listOf(stub, bili, douyin)) }
+    /** 在线音乐源那一路的默认地址：设置抽屉里那一栏空着就回到它 */
+    const val MUSIC_DEFAULT_BASE = "https://music.163.com"
 
-    private val searcher by lazy { AggregateSearcher(registry) }
-    private val resolver by lazy { SourceResolver(registry, RetryPolicy(attempts = 2, baseDelayMs = 300)) }
+    /**
+     * 网易云那一路的根地址。设置抽屉里改的就是它，所以它得能"改完立刻生效" ——
+     * 注册表和它那两台引擎都是按当前值现搭的薄壳（[registry] 那三个 get），
+     * 一旦有源按地址建，改地址就把缓存清掉。
+     */
+    @Volatile
+    private var musicBase = MUSIC_DEFAULT_BASE
+
+    @Volatile
+    private var registryCache: SourceRegistry? = null
+
+    /** 「在线音乐源」那一屏的地址落到这一句：整尾斜杠和空值都收回到默认那一条，别让拼出来的地址出现 `//api` */
+    fun setMusicBase(url: String) {
+        val v = url.trim().trimEnd('/').ifBlank { MUSIC_DEFAULT_BASE }
+        if (v == musicBase) return
+        musicBase = v
+        registryCache = null
+    }
+
+    /** 现在这个地址上的网易云源 */
+    private fun musicSource() = NeteaseSource(http, musicBase)
+
+    /**
+     * 被删掉的源：注册表按它筛，所以三处入口（在线那一屏的两路、视频页那一栏、粘地址换条目）
+     * 一起生效 —— 只在注册表筛、别处直连的会漏，所以 [searchMusic] / [searchVideos] 各自还要
+     * 看一眼自己那一趟。
+     */
+    @Volatile
+    private var gone: Set<String> = emptySet()
+
+    fun setGone(ids: Set<String>) {
+        if (ids == gone) return
+        gone = ids
+        registryCache = null
+    }
+
+    /** 这一路现在还不问它吗 */
+    private fun blocked(id: String): Boolean = id in gone
+
+    val registry: SourceRegistry
+        get() = registryCache
+            ?: SourceRegistry(
+                listOf(stub, bili, douyin, NeteaseSource(http, musicBase))
+                    .filterNot { blocked(it.id) },
+            ).also { registryCache = it }
+
+    private val searcher get() = AggregateSearcher(registry)
+    private val resolver get() = SourceResolver(registry, RetryPolicy(attempts = 2, baseDelayMs = 300))
 
     private val policy = SearchPolicy(defaultTimeoutMs = 6_000, firstResultWaitMs = 6_000, graceMs = 1_500)
 
@@ -166,26 +215,21 @@ object Online {
         .build()
 
     /**
-     * 按关键词问一次站点，**保留站点自己给的那个顺序**。
+     * 「最火的音乐 / 相关音乐」那两栏问的那一路：只问在线音乐源（网易云），**保留它自己给的那个顺序**。
      *
-     * 不走 [search] 那套跨源归并：它按 relevance 重排，会把站点排好的"最像这一首的"打散
-     * （空查询时更明显 —— relevance 全 0，等于按标题排序）。这一栏要的就是站点那一序。
-     * 本机那颗占位源要摘掉：它按 relevance>0 就会把样片混进来（推荐栏被它顶掉过 4 条，真机量过）。
-     * 一条都没摊出来时把站点的失败原因抛出去，让那一栏能说出为什么，而不是写"没搜到"。
+     * 不走 [search] 那套跨源归并：它按 relevance 重排，会把站点排好的"最像这一首的"打散。
+     * 失败原样抛出去，让那一栏能说出为什么，而不是写"没搜到"。
      */
-    suspend fun searchSongs(query: String, limit: Int): List<MusicVideo> {
-        var real: SourceFailureException? = null
-        val out = ArrayList<MusicVideo>()
-        for (s in registry.searchSources().filterNot { it === stub }) {
-            try {
-                out.addAll(s.search(query, limit))
-            } catch (e: SourceFailureException) {
-                if (e.failure !is SourceFailure.Unsupported && real == null) real = e
-            }
-        }
-        if (out.isEmpty() && real != null) throw real
-        return out.take(limit)
-    }
+    suspend fun searchMusic(query: String, limit: Int): List<MusicVideo> =
+        if (blocked("netease")) emptyList() else musicSource().search(query, limit)
+
+    /** 「最火的视频 / 相关视频」那两栏问的那一路：B 站按关键词搜，分区不是音乐的那些留在这里 */
+    suspend fun searchVideos(query: String, limit: Int): List<MusicVideo> =
+        if (blocked("bili")) emptyList() else bili.search(query, limit)
+
+    /** 设置抽屉里那颗「获取」：把这个源的默认那一串（网易云就是热歌榜）摊出来 */
+    suspend fun hotMusic(limit: Int): List<MusicVideo> =
+        if (blocked("netease")) emptyList() else musicSource().hot(limit)
 
     /**
      * 从"眼前这一首"派生一个搜索词。
@@ -208,13 +252,15 @@ object Online {
     }
 
     /**
-     * 一屏四栏全部从**同一批搜索结果**里分出来，不再多问一次接口（他点的：这里不要再重新搜索了）。
-     * 两族各自按站点报的播放数降序：前 3 张摆「最火的音乐 / 最火的视频」，第 4 条往后摆「相关音乐 / 相关视频」。
-     * 分区跟着 `MusicVideo.music` 走，那是 B 站每条自己的 `typeid` 判出来的（见 BiliSource.MUSIC_TIDS）。
+     * 一屏四栏分两路问：音乐那两栏吃在线音乐源（网易云）搜回来的那一批，
+     * 视频那两栏吃 B 站搜回来的那一批（他点的：音乐吃网易云、视频仍吃 B 站）。
+     * 每族各自按站点报的播放数降序 —— 网易云不给播放数（全 0），降序就是个稳定不动，
+     * 留下的正是它自己那个热度序；B 站那一路给，所以「最火的视频」真的是按人看的多少排。
+     * 前 3 条摆「最火」，第 4 条往后摆「相关」。
      */
-    fun splitByZone(found: List<MusicVideo>): ZoneSplit {
-        val mus = found.filter { it.music }.sortedByDescending { it.playCount }
-        val vid = found.filter { !it.music }.sortedByDescending { it.playCount }
+    fun zonesOf(music: List<MusicVideo>, video: List<MusicVideo>): ZoneSplit {
+        val mus = music.sortedByDescending { it.playCount }
+        val vid = video.sortedByDescending { it.playCount }
         return ZoneSplit(mus.take(3), mus.drop(3), vid.take(3), vid.drop(3))
     }
 
@@ -275,7 +321,7 @@ object Online {
     }
 }
 
-/** 一屏四栏的分法：两族各按播放数降序，前 3 张「最火」、第 4 条往后「相关」。见 `Online.splitByZone` */
+/** 一屏四栏的分法：两族各按播放数降序，前 3 张「最火」、第 4 条往后「相关」。见 `Online.zonesOf` */
 data class ZoneSplit(
     val hotMusic: List<MusicVideo>,
     val moreMusic: List<MusicVideo>,
