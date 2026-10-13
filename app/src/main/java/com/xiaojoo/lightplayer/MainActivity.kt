@@ -938,9 +938,11 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
 
     /** 那一屏列的三路：副标题写清"删掉它，哪一栏会空" */
     fun sourceRows(): List<SourceRow> = listOf(
-        SourceRow("netease", "网易云", "在线那一屏的音乐两栏 · 上面那格改的是它"),
-        SourceRow("bili", "B 站", "在线那一屏的视频两栏 · 视频页那一栏的热门"),
-        SourceRow("douyin", "抖音", "视频页粘页地址取无水印那一条"),
+        // 那一行小灰字写的是这一路现在问的哪台（他点的：显示成网址）。网易云那一条跟着上面
+        // 那一格走 —— 改过镜像就看得见改成了什么；空值按默认那一条显示，不留空白
+        SourceRow("netease", "网易云", musicBaseUrl.trim().ifBlank { Online.MUSIC_DEFAULT_BASE } + "/"),
+        SourceRow("bili", "B 站", "https://www.bilibili.com/"),
+        SourceRow("douyin", "抖音", "https://www.douyin.com/"),
     ).filterNot { it.id in goneSources }
     /**
      * 点一条视频：挪到视频 tab 的在线那一栏播。走的是那一页那颗「添加」用的同一条路
@@ -1002,7 +1004,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
             musicHotBusy = false
             r.onSuccess {
                 musicHot = it
-                musicHotNote = if (it.isEmpty()) "这个源没摊出内容" else "拿到 ${it.size} 条，点一行就播"
+                // 成功不写话（他点名不要"拿到 N 条"那一句）；空列表还是要说，不然看着像挂了
+                musicHotNote = if (it.isEmpty()) "这个源没摊出内容" else null
             }.onFailure {
                 musicHot = emptyList()
                 musicHotNote = (it as? SourceFailureException)?.failure?.message ?: "这个地址问不通"
