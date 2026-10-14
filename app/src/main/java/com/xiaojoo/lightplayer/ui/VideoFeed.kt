@@ -17,6 +17,10 @@ import android.view.Gravity
 import android.view.TextureView
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -70,6 +74,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.SolidColor
@@ -79,9 +84,10 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.Image
 import androidx.compose.ui.input.pointer.pointerInput
@@ -106,6 +112,9 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import com.xiaojoo.lightplayer.PlayerPool
 import com.xiaojoo.lightplayer.hasQueueAs
 import com.xiaojoo.lightplayer.data.MediaLibrary
+import com.xiaojoo.lightplayer.videosource.MusicVideo
+import com.xiaojoo.lightplayer.videosource.OnlineSort
+import com.xiaojoo.lightplayer.videosource.Rendition
 import com.xiaojoo.lightplayer.data.Online
 import com.xiaojoo.lightplayer.data.PlayHistory
 import com.xiaojoo.lightplayer.data.Track
@@ -142,6 +151,26 @@ fun VideoFeed(
     onOpenOnline: () -> Unit,
     onAddUrl: (String) -> Unit,
     savedUrl: String,
+    /** 再点一次「本地」= 重扫一遍媒体库 */
+    onRescan: () -> Unit,
+    /** 重扫完成的计数：那一格的转圈要等的是这一趟扫完了，不是列表内容变了 —— 拿列表当键按 equals 比就不重跑，那枚会一直转个停（真机量到过） */
+    libraryScan: Int,
+    /** 「视频地址源」那一串行：这份名单只管视频那三路，音乐那一路另存一份（两张屏不混） */
+    videoSources: List<SourceRow>,
+    onDeleteSource: (String) -> Unit,
+    /** 点地址源那颗芯片：禁用 / 重新启用这一路（删除走 onDeleteSource，是芯片上那颗 X） */
+    onToggleSource: (String) -> Unit,
+    /** 那一屏的筛选草稿，和「确定」交回来的那一份 */
+    videoFilter: VideoFilter,
+    onVideoFilter: (VideoFilter) -> Unit,
+    /** 算芯片候选值、算"这样筛下来剩几条"的那一串：站点给回来的在线池，不含粘进来的那些 */
+    onlinePool: List<MusicVideo>,
+    /** 「视频地址源」那一屏开没开。开关在壳层：底部那行页签要跟着藏，这一屏自己藏不掉它 */
+    sourceOpen: Boolean,
+    onSourceOpen: (Boolean) -> Unit,
+    /** 把在线那一栏送回第一条的计数。开关在壳层：换筛选（按「确定」）和再点一次顶栏都要踩它 */
+    onlineResetTick: Int,
+    onOnlineReset: () -> Unit,
     onlineItems: List<Track>,
     onlineBusy: Boolean,
     onlineError: String?,
@@ -159,6 +188,11 @@ fun VideoFeed(
     onlineReady: (Track, Int) -> Boolean,
     onOnlineDelete: (Track) -> Unit,
     onOnlineDownload: (Track) -> Unit,
+    /** 在线那一栏现在按什么排 / 选完存回去（长按那一栏开的那一层） */
+    onlineSort: OnlineSort,
+    onOnlineSort: (OnlineSort) -> Unit,
+    /** 那一栏滑到栏尾了：外面去要下一批（要不要得回来、要不要挡并发，都不关这一屏的事） */
+    onOnlineMore: () -> Unit,
     onlineDownloading: String?,
     onlineDownloadProgress: Float,
     // 队列被整串换掉的那一刻（在线那一条是在这一屏还挂着的时候换的）要重算页表：
@@ -239,7 +273,11 @@ fun VideoFeed(
         // 顶栏落在哪一栏由外面定（迷你条点进来要按条上那一条属于哪一栏来落）；
         // 默认仍是每次进这一屏从在线开始，那条默认写在 MainActivity 的 videoOnline 上
         var online by remember { mutableStateOf(onlineStart) }
-        var urlOpen by remember { mutableStateOf(false) }
+        /* 在线那一栏的 pager 在它自己里面，外面改 initialPage 它不动 ——
+           所以递一个计数进去，它自己滑回 0 */
+        /* 本地这一栏在不在重扫，只有外面知道（扫完会 bump libraryScan），这里跟着那个计数收 */
+        var localBusy by remember { mutableStateOf(false) }
+        LaunchedEffect(libraryScan) { localBusy = false }
 
         // controller.isPlaying / videoSize 都不是 Compose state，读一次就冻在那儿，挂监听转成 state
         var isPlaying by remember { mutableStateOf(controller.isPlaying) }
@@ -333,6 +371,15 @@ fun VideoFeed(
                 // 同步打到每个成员（走会话是异步的，会慢一拍，见 PlayerPool.setQueue 那段注释）
                 PlayerPool.setQueue(items)
                 PlayerPool.current()?.pause()
+                /* 队列一变，"第几页"这个号指的就是另一支片子了。格子只认页号（moveTo 见页号没变就
+                   直接 return），于是它手里那块画面还停在被删掉那一条的最后一帧，而 firstFrame 还
+                   是 true → 海报被压着不出现，滑到哪一格看的都是那一条 —— 就是他报的
+                   "删掉之后下面一直是那条的封面、界面没刷新"。
+                   所以这里按 uri 认这条格子该不该收回，不按页号。收回后由下面那段落位重新派格子。 */
+                slots.forEach { s ->
+                    val mine = s.member.currentMediaItem?.localConfiguration?.uri?.toString()
+                    if (s.page in videos.indices && mine != videos[s.page].uri.toString()) s.moveTo(-1)
+                }
             }
         }
 
@@ -341,7 +388,7 @@ fun VideoFeed(
         /* 连播放完一条时，我们会把那个成员按停在它自己那一页的最后一帧 —— 那一下 pause 不是他按的，
            "还要不要接着播"这个意图得留给下一页（单实例时是 Media3 自己翻页，不存在这件事）。 */
         var carryPlay by remember { mutableStateOf(false) }
-        LaunchedEffect(slots, controller, online) {
+        LaunchedEffect(slots, controller, online, videos) {
             /* 在线那一栏挂着的时候，本地这一栏一个字都不动：它这一串会在落位时把会话抢过去
                （`use` + `play`），于是声音还在在线那台上放，会话却已经换成了本地那台 ——
                迷你条读的是会话那台，于是"条上写暂停、里面在放"和反过来都会出现（真机量到：
@@ -828,11 +875,15 @@ fun VideoFeed(
                 onPlay = { x, i -> onOnlinePlay(x, i) },
                 onPlayAt = { x, i -> onOnlinePlayAt(x, i) },
                 isReady = onlineReady,
-                onAdd = { urlOpen = true },
+                onAdd = { onSourceOpen(true) },
                 onDelete = { onOnlineDelete(it) },
                 onDownload = { onOnlineDownload(it) },
                 downloadingUrl = onlineDownloading,
                 downloadProgress = onlineDownloadProgress,
+                sort = onlineSort,
+                onSort = onOnlineSort,
+                onMore = onOnlineMore,
+                resetTick = onlineResetTick,
             )
         }
 
@@ -840,15 +891,39 @@ fun VideoFeed(
            全屏播放时和标题、悬浮列一起收起来。地址只在右侧抽屉里填，这一栏不再摆输入框。 */
         if (!fullscreen) {
             Column(modifier = Modifier.align(Alignment.TopStart).fillMaxWidth().statusBarsPadding()) {
-                VideoTopTabs(online = online, onPick = { online = it })
+                VideoTopTabs(
+                online = online,
+                onlineBusy = onlineBusy,
+                localBusy = localBusy,
+                onPick = { online = it },
+                /* 点的是已经站着的那一栏 = 刷新它，并且把这一栏送回第一个视频。
+                   换栏那一下照旧只换栏，不动页号 —— 那是另一件事。 */
+                onRepick = {
+                    if (online) {
+                        onBrowse()
+                        onOnlineReset()
+                    } else {
+                        localBusy = true
+                        onRescan()
+                        scope.launch { pagerState.animateScrollToPage(0) }
+                    }
+                },
+            )
             }
         }
 
-        if (urlOpen) {
-            VideoUrlSheet(
-                initial = savedUrl,
-                onPlay = { onAddUrl(it) },
-                onDismiss = { urlOpen = false }
+        if (sourceOpen) {
+            // 整屏，不是抽屉：这一屏既管地址源（禁用/删除）又管筛选，抽屉那一格装不下四组芯片
+            VideoSourcePage(
+                sources = videoSources,
+                pool = onlinePool,
+                start = videoFilter,
+                initialUrl = savedUrl,
+                onToggleSource = onToggleSource,
+                onDeleteSource = onDeleteSource,
+                onAddUrl = { onAddUrl(it) },
+                onApply = { onVideoFilter(it); onSourceOpen(false) },
+                onCancel = { onSourceOpen(false) },
             )
         }
 
@@ -1153,41 +1228,80 @@ internal fun FeedRailButton(
  * 只是这一屏底色是黑的，所以"选中黑"换成"选中白"。
  */
 @Composable
-private fun VideoTopTabs(online: Boolean, onPick: (Boolean) -> Unit) {
+private fun VideoTopTabs(
+    online: Boolean,
+    /** 在线那一栏正在重新问站点 / 本地那一栏正在重扫 —— 谁在忙谁那格转 */
+    onlineBusy: Boolean,
+    localBusy: Boolean,
+    onPick: (Boolean) -> Unit,
+    onRepick: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        VideoTopTab("在线", online) { onPick(true) }
+        VideoTopTab("在线", online, online && onlineBusy) { if (online) onRepick() else onPick(true) }
         Box(modifier = Modifier.width(1.dp).height(15.dp).background(Color(0x4DFFFFFF)))
-        VideoTopTab("本地", !online) { onPick(false) }
+        VideoTopTab("本地", !online, !online && localBusy) { if (online) onPick(false) else onRepick() }
     }
 }
 
+/**
+ * 刷新那一下：文字原地淡出、一枚转圈的箭头淡入 —— 和抖音同一件事。
+ *
+ * 是**盖**不是换：箭头叠在文字那一格正中，盒子仍由文字撑开（14dp 的箭头比 16sp 那两个字窄，
+ * 撑不宽），所以整排一个字都不位移、行高也没动。改成"把文字换成箭头"会让这一格忽宽忽窄，
+ * 牵动整排重排 —— 那一下就是他报过的"闪烁"。
+ */
 @Composable
-private fun VideoTopTab(label: String, selected: Boolean, onClick: () -> Unit) {
-    Text(
-        label,
-        color = if (selected) Color.White else Color(0xFF9A9A9A),
-        fontSize = 16.sp,
-        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-        // tap 写在 padding 外面：命中区=看得见的字加内衬，不是只字那 16sp
-        modifier = Modifier.tap(onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp)
+private fun VideoTopTab(label: String, selected: Boolean, busy: Boolean, onClick: () -> Unit) {
+    val ink = if (selected) Color.White else Color(0xFF9A9A9A)
+    val spin = rememberInfiniteTransition(label = "tab-spin")
+    val rot by spin.animateFloat(
+        0f, 360f,
+        infiniteRepeatable(tween(900, easing = LinearEasing)),
+        label = "tab-rot",
     )
+    val textA by animateFloatAsState(if (busy) 0f else 1f, tween(120), label = "tab-text")
+    val iconA by animateFloatAsState(if (busy) 1f else 0f, tween(120), label = "tab-icon")
+    Box(
+        modifier = Modifier.tap(onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = ink,
+            fontSize = 16.sp,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+            modifier = Modifier.graphicsLayer { alpha = textA },
+        )
+        LineIcon(
+            IconKind.Refresh,
+            size = 14.dp,
+            color = ink,
+            modifier = Modifier.graphicsLayer { alpha = iconA; rotationZ = rot },
+        )
+    }
 }
 
-/** 右侧「地址」那颗拉开的抽屉：填一条视频地址，解析成功就加进在线那一栏并起播。 */
+
+/**
+ * 下载前那一句「要哪一档」。只在源真给出**两档以上**时才出（约定写在
+ * `MusicVideoSource.qualities` 那句注释里）：只有一档还弹一层，等于白按一次。
+ *
+ * 行是「在线音乐源」那一屏同一套件（[RightIcon] / [Hairline]）：48dp 标题 + 右端 Close 22dp、
+ * 发丝线、60.5dp 一行 —— 行高和标题行是从那一屏搬的，不是这边重新量的数。
+ * 右边那一列写的是**站点报的整片字节数**（B 站不登录实测 17,989,807 对 7,626,603），
+ * 挑档的人真正在比的是"多大"，不是档位编号那串数字；站点没给大小就那一格留空，不写"未知"。
+ */
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VideoUrlSheet(initial: String, onPlay: (String) -> Unit, onDismiss: () -> Unit) {
-    var text by remember { mutableStateOf(initial) }
-    fun go() {
-        if (text.isNotBlank()) {
-            onPlay(text.trim())
-            onDismiss()
-        }
-    }
+internal fun QualitySheet(
+    renditions: List<Rendition>,
+    onPick: (Rendition) -> Unit,
+    onDismiss: () -> Unit,
+) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -1198,41 +1312,122 @@ private fun VideoUrlSheet(initial: String, onPlay: (String) -> Unit, onDismiss: 
         ),
         dragHandle = null
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Tokens.Dimen.ScreenPad)
-                .padding(top = 16.dp, bottom = 24.dp)
-        ) {
-            Text("视频地址", color = Tokens.InkFaint, fontSize = 13.sp)
-            Box(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                if (text.isEmpty()) {
-                    Text("粘贴 B 站视频页地址，或一条视频直链", color = Tokens.InkFaint, fontSize = 16.sp)
-                }
-                BasicTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    singleLine = true,
-                    cursorBrush = SolidColor(Tokens.InkStrong),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        color = Tokens.InkStrong,
-                        fontSize = 16.sp
-                    ),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { go() }),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
-                horizontalArrangement = Arrangement.End
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .padding(horizontal = Tokens.Dimen.ScreenPad)
             ) {
                 Text(
-                    "添加",
-                    color = Tokens.Accent,
-                    fontSize = 15.sp,
-                    modifier = Modifier.tap(onClick = { go() }).padding(horizontal = 14.dp, vertical = 10.dp)
+                    "清晰度",
+                    color = Tokens.InkStrong,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.align(Alignment.CenterStart)
                 )
+                RightIcon(
+                    IconKind.Close, inkDp = 13.50f, canvas = 22.dp, enabled = true,
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                    onClick = onDismiss,
+                )
+            }
+            Hairline()
+            renditions.forEachIndexed { i, r ->
+                if (i > 0) Hairline()
+                Row(
+                    // tap 写在内衬外面：整行都是命中区，不是只有字那一段（和 MusicRow 同一句）
+                    modifier = Modifier.fillMaxWidth().height(60.5.dp)
+                        .tap(onClick = { onPick(r) })
+                        .padding(horizontal = Tokens.Dimen.ScreenPad),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        r.label,
+                        color = Tokens.InkStrong,
+                        fontSize = 15.sp,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        if (r.approxBytes > 0) MediaLibrary.fmtSize(r.approxBytes) else "",
+                        color = Tokens.InkFaint,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        modifier = Modifier.padding(start = 12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 长按那一栏拉出来的「排序方式」。四个选项各落在条目身上一个真字段上
+ * （发布时间 / 播放数 / 时长 / 源），没有"综合排序"那种说不出凭的是什么的一项。
+ *
+ * 选中那一项右边出一枚勾，**没选中的什么都不摆**（和筛选页那颗「选中才出」同一条口径）——
+ * 四行都摆一个空圈会让"现在按什么排"看不出来。
+ * 形状还是那一套：48dp 标题 + 右端 Close 22dp、发丝线、60.5dp 一行。
+ */
+@kotlin.OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun SortSheet(
+    modes: List<OnlineSort>,
+    current: OnlineSort,
+    onPick: (OnlineSort) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Tokens.ListBg,
+        shape = RoundedCornerShape(
+            topStart = Tokens.Dimen.SheetCorner,
+            topEnd = Tokens.Dimen.SheetCorner
+        ),
+        dragHandle = null
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .padding(horizontal = Tokens.Dimen.ScreenPad)
+            ) {
+                Text(
+                    "排序方式",
+                    color = Tokens.InkStrong,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.align(Alignment.CenterStart)
+                )
+                RightIcon(
+                    IconKind.Close, inkDp = 13.50f, canvas = 22.dp, enabled = true,
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                    onClick = onDismiss,
+                )
+            }
+            Hairline()
+            modes.forEachIndexed { i, m ->
+                if (i > 0) Hairline()
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(60.5.dp)
+                        .tap(onClick = { onPick(m) })
+                        .padding(horizontal = Tokens.Dimen.ScreenPad),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        m.label,
+                        color = Tokens.InkStrong,
+                        fontSize = 15.sp,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (m == current) {
+                        LineIcon(IconKind.Check, size = 18.dp, color = Tokens.Accent)
+                    }
+                }
             }
         }
     }

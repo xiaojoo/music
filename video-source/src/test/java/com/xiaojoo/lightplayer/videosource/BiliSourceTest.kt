@@ -1,6 +1,8 @@
 package com.xiaojoo.lightplayer.videosource
 
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -40,9 +42,20 @@ class BiliSourceTest {
         assertEquals("https://www.bilibili.com/video/BV17EpY6UEdL", first.pageUrl)
         // 播放数是从真报文 stat.view 读的，横卡那一格的药丸吃的就是它
         assertTrue("热门列表没读出播放数", first.playCount > 0)
+        // 发布时间：夹具里 pubdate=1791774000（秒），条目上要带的是毫秒 —— 在线那一栏默认按它排
+        assertEquals(1_791_774_000_000L, first.publishedAtMs)
         // 歌手页那颗圆头像吃的是 owner.face，同样要 https
         assertTrue("热门列表没读出 UP 主头像", first.artistFaceUrl?.startsWith("https://") == true)
         assertTrue(f.urls[0], f.urls[0].startsWith("https://api.bilibili.com/x/web-interface/popular?ps=20"))
+    }
+
+    /** 往下滑要下一批：热门那一条是真翻页，问的就是给的那一页 */
+    @Test
+    fun `翻页那一颗从给的那一页开始问`() = runBlocking {
+        val f = Recording { resource("bili_popular.json") }
+        val items = BiliSource(f).search("", 20, 3)
+        assertEquals(20, items.size)
+        assertTrue("问的页号不是要的那一页：" + f.urls[0], f.urls[0].contains("pn=3"))
     }
 
     @Test
@@ -249,5 +262,77 @@ class BiliSourceTest {
             "https://www.bilibili.com/video/BV1NSBqYSEhu")
         assertEquals(2, BiliSource(f).related(anchor, 2).size)
         assertEquals(1, f.urls.size)
+    }
+
+    /* ---- 清晰度那几档 ----
+       bili_playurl_720.json 是 2026-10-14 用 `qn=127` 从同一支片子（BV1CapR6JEAM / cid 42675012798）
+       真抓回来的那一趟：`quality=64`、`accept_quality=[64,16]`、`durl[0].size=17989807`。
+       原来那份 bili_playurl.json 是问 `qn=32` 的那一趟，站点答的是 `quality=16`、7626603 字节 ——
+       下面"问 480P 它降到 360P"那条用的是真回的形状，不是假设的一种。 */
+
+    private val play720 = { resource("bili_playurl_720.json") }
+
+    private val oneBili = MusicVideo(
+        "bili", "BV1CapR6JEAM|42675012798", "t", "a", 344_000,
+        "https://www.bilibili.com/video/BV1CapR6JEAM",
+    )
+
+    /** 问哪一档就答哪一份真报文：127/64 给 720 那份，16 给原来那份 */
+    private fun replyByQn(url: String): String =
+        if (qnIn(url) == "16") playJson() else play720()
+
+    private fun qnIn(url: String): String = Regex("qn=(\\d+)").find(url)!!.groupValues[1]
+
+    /** 改 `accept_quality` 只许解析了再改：夹具是带缩进落盘的，按字符串替换会静默不replace */
+    private fun withAccept(vararg qns: Int): String {
+        val o = JSONObject(play720())
+        val d = o.getJSONObject("data")
+        if (qns.isEmpty()) d.remove("accept_quality") else d.put("accept_quality", JSONArray(qns.toList()))
+        return o.toString()
+    }
+
+    @Test
+    fun `默认那一档问的是站点能给的最高一档，不是写死的 32`() = runBlocking {
+        val f = Recording { play720() }
+        val p = BiliSource(f).resolve(oneBili)
+        assertTrue(f.urls[0], f.urls[0].contains("qn=127"))
+        assertTrue(p.url, p.url.contains("bilivideo.com"))
+    }
+
+    @Test
+    fun `两档都读得出来，标签用的是站点自己给的那一句`() = runBlocking {
+        val f = Recording(::replyByQn)
+        val qs = BiliSource(f).qualities(oneBili)
+        assertEquals(2, qs.size)
+        assertEquals("720P", qs[0].label)
+        assertEquals(17_989_807L, qs[0].approxBytes)
+        assertEquals("360P", qs[1].label)
+        assertEquals(7_626_603L, qs[1].approxBytes)
+        assertTrue(qs[0].playable.url != qs[1].playable.url)
+        assertEquals("https://www.bilibili.com/", qs[0].playable.headers["Referer"])
+        // 两档只问两次：最高那档枚举的时候已经问过了，不该再问第二遍
+        assertEquals(listOf("127", "16"), f.urls.map { qnIn(it) })
+    }
+
+    @Test
+    fun `站点把问的那档降到别处，这一档就不摆出来`() = runBlocking {
+        val three = withAccept(64, 32, 16)
+        val f = Recording { u -> if (qnIn(u) == "127") three else playJson() }
+        // 问 480P 站点答的是 16：照 accept_quality 那三档画，就会画出一档点不动的 480P
+        assertEquals(listOf("720P", "360P"), BiliSource(f).qualities(oneBili).map { it.label })
+    }
+
+    @Test
+    fun `只有一档就不出选择器`() = runBlocking {
+        val one = withAccept(64)
+        val f = Recording { one }
+        assertEquals(0, BiliSource(f).qualities(oneBili).size)
+    }
+
+    @Test
+    fun `没给 accept_quality 就当没得挑，不去猜一档`() = runBlocking {
+        val none = withAccept()
+        assertTrue("夹具里没找到 accept_quality，这份改动没生效", none != play720())
+        assertEquals(0, BiliSource(Recording { none }).qualities(oneBili).size)
     }
 }

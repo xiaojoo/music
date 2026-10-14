@@ -8,11 +8,15 @@ import com.xiaojoo.lightplayer.videosource.AggregateSearcher
 import com.xiaojoo.lightplayer.videosource.BiliSource
 import com.xiaojoo.lightplayer.videosource.DouyinSource
 import com.xiaojoo.lightplayer.videosource.Fetcher
-import com.xiaojoo.lightplayer.videosource.LocalStubSource
+import com.xiaojoo.lightplayer.videosource.KuaishouSource
 import com.xiaojoo.lightplayer.videosource.MusicVideo
+import com.xiaojoo.lightplayer.videosource.NamedLyric
 import com.xiaojoo.lightplayer.videosource.NeteaseSource
+import com.xiaojoo.lightplayer.videosource.OnlineSort
 import com.xiaojoo.lightplayer.videosource.Playable
+import com.xiaojoo.lightplayer.videosource.Poster
 import com.xiaojoo.lightplayer.videosource.ResolveOutcome
+import com.xiaojoo.lightplayer.videosource.Rendition
 import com.xiaojoo.lightplayer.videosource.RetryPolicy
 import com.xiaojoo.lightplayer.videosource.SourceFailure
 import com.xiaojoo.lightplayer.videosource.SourceFailureException
@@ -31,8 +35,10 @@ import java.net.URL
  * 于是整页退回本地列表（真机量的：队列里混进一条外来的，页表就整个换掉）。
  * 给它造一份和库条目同形状的 Track，那几处就不用各自加特例。
  *
- * 现在的源是本机静态服务的占位源（tools/serve_online_dev.sh 起服务 + adb reverse），
- * 换真站点的写法是在 registry 里再注册一个 MusicVideoSource，别处不动。
+ * 源表里全是真站点；要加一路就在 [registry] 那一行多注册一个 MusicVideoSource，别处不动。
+ * 原来这里还挂着本机静态服务的占位源（tools/serve_online_dev.sh + adb reverse 那批"本机样片"）——
+ * 它注册在生产表里就会往视频那一栏塞四条永远播不动的假条目（真机读到过「本机样片 dy / 本机服务」），
+ * 占位源只留给 AggregateSearcherTest 用。
  */
 object Online {
 
@@ -62,18 +68,6 @@ object Online {
         if (!::app.isInitialized) app = context.applicationContext
     }
 
-    private const val DEV_BASE = "http://127.0.0.1:8777"
-
-    /** 时长是真量的（ffmpeg -i 那批样片），不是编的；标题如实写成样片，不冒充某个 MV */
-    private val devCatalog = listOf(
-        MusicVideo("dev", "dy", "本机样片 dy", "本机服务", 4_000, "$DEV_BASE/dy"),
-        MusicVideo("dev", "f1", "本机样片 f1", "本机服务", 6_310, "$DEV_BASE/f1"),
-        MusicVideo("dev", "s1", "本机样片 s1", "本机服务", 5_390, "$DEV_BASE/s1"),
-        MusicVideo("dev", "t", "本机样片 t", "本机服务", 2_370, "$DEV_BASE/t"),
-    )
-
-    private val stub = LocalStubSource(catalog = devCatalog, baseUrl = DEV_BASE)
-
     /** 一路 HTTP：几支源共用这一台（超时、跟重定向、把状态码归类成站点失败，全在这一处） */
     private val http = Fetcher { url, hs ->
         val c = URL(url).openConnection() as HttpURLConnection
@@ -81,32 +75,59 @@ object Online {
         c.readTimeout = 12_000
         c.instanceFollowRedirects = true
         hs.forEach { (k, v) -> c.setRequestProperty(k, v) }
-        try {
-            val code = c.responseCode
-            if (code !in 200..299) {
-                // 412 是 B 站的风控回法，按"要登录/被限"处理，重试只是再撞一次
-                throw SourceFailureException(
-                    if (code == 403 || code == 412) SourceFailure.Auth("HTTP $code")
-                    else SourceFailure.Network("HTTP $code")
-                )
-            }
-            c.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
-        } catch (e: java.io.IOException) {
-            throw SourceFailureException(SourceFailure.Network(e.message ?: "连接失败"))
-        } finally {
-            c.disconnect()
+        c.readTextOrThrow()
+    }
+
+    /**
+     * POST 那一条另开一台，没有和上面合并：`Fetcher` 是函数式接口，多一个抽象方法就把
+     * 上面那个 lambda 构造和模块里全部测试替身一起打断。现在只有 graphql 那一路（快手）要它。
+     */
+    private val post = Poster { url, body, hs ->
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 8_000
+        c.readTimeout = 12_000
+        c.instanceFollowRedirects = true
+        c.requestMethod = "POST"
+        c.doOutput = true
+        hs.forEach { (k, v) -> c.setRequestProperty(k, v) }
+        c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+        c.readTextOrThrow()
+    }
+
+    /** 状态码归类和读文本：GET/POST 两种问法共用，免得 403/412 那条规则在两处各漂一份 */
+    private fun HttpURLConnection.readTextOrThrow(): String = try {
+        val code = responseCode
+        if (code !in 200..299) {
+            // 412 是 B 站的风控回法，403 是抖音那条 detail，都按"要登录/被限"处理，重试只是再撞一次
+            throw SourceFailureException(
+                if (code == 403 || code == 412) SourceFailure.Auth("HTTP $code")
+                else SourceFailure.Network("HTTP $code")
+            )
         }
+        inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
+    } catch (e: java.io.IOException) {
+        throw SourceFailureException(SourceFailure.Network(e.message ?: "连接失败"))
+    } finally {
+        disconnect()
     }
 
     /** B 站：粘页地址换一条自带音频的 mp4（要 Referer，见模块里的 headersForUrl） */
     private val bili = BiliSource(http)
 
     /**
-     * 抖音：粘页地址（或分享文案里那条短链）→ 内部文件 id → 无水印单文件。
-     * 取 id 那一步要一颗真内核（那条接口裸 HTTP 回 403，见 DouyinWebView），所以这一路的源
-     * 得等 [init] 递进 context 才建得出来 —— registry 改成 lazy 就是这个原因。
+     * 抖音：粘页地址（或分享文案里那条短链）→ 内部文件 id → 无水印单文件；外加精选那一屏的列表。
+     * 取 id 和读列表都要一颗真内核（那条接口裸 HTTP 回 403、列表那一屏只回壳，见 DouyinWebView），
+     * 所以这一路的源得等 [init] 递进 context 才建得出来 —— registry 改成 lazy 就是这个原因。
+     * 两个入口共用同一颗内核对象：它每次问都是一建一毁，不留实例。
      */
-    private val douyin by lazy { DouyinSource(DouyinWebView(app)) }
+    private val douyinWebView by lazy { DouyinWebView(app) }
+    private val douyin by lazy { DouyinSource(douyinWebView, douyinWebView) }
+
+    /**
+     * 快手：推荐流那一条匿名就能问（实测连 Cookie/UA 都不带，200 + 20 条），而且列表里就带着
+     * 无水印单文件 —— 这一路的下载拿的就是那一条。它不接粘贴地址：详情接口要验证码。
+     */
+    private val kuaishou = KuaishouSource(post)
 
     /** 在线音乐源那一路的默认地址：设置抽屉里那一栏空着就回到它 */
     const val MUSIC_DEFAULT_BASE = "https://music.163.com"
@@ -134,9 +155,12 @@ object Online {
     private fun musicSource() = NeteaseSource(http, musicBase)
 
     /**
-     * 被删掉的源：注册表按它筛，所以三处入口（在线那一屏的两路、视频页那一栏、粘地址换条目）
+     * 不再问的源：注册表按它筛，所以三处入口（在线那一屏的两路、视频页那一栏、粘地址换条目）
      * 一起生效 —— 只在注册表筛、别处直连的会漏，所以 [searchMusic] / [searchVideos] 各自还要
      * 看一眼自己那一趟。
+     *
+     * 传进来的是**两张屏两份名单的并集**（「视频地址源」那三路 + 「在线音乐源」那一路，
+     * 各存各的 prefs 文件，他 10-14 点的"别混在一起"）：哪一边删掉的源，注册表都不再问它。
      */
     @Volatile
     private var gone: Set<String> = emptySet()
@@ -150,10 +174,13 @@ object Online {
     /** 这一路现在还不问它吗 */
     private fun blocked(id: String): Boolean = id in gone
 
+    /** 条目上那一格写的源名：拿源自己报的那个名字，不在这边另抄一份对照表 */
+    fun sourceLabel(id: String): String? = registry.get(id)?.displayName
+
     val registry: SourceRegistry
         get() = registryCache
             ?: SourceRegistry(
-                listOf(stub, bili, douyin, NeteaseSource(http, musicBase))
+                listOf(bili, douyin, kuaishou, NeteaseSource(http, musicBase))
                     .filterNot { blocked(it.id) },
             ).also { registryCache = it }
 
@@ -164,11 +191,47 @@ object Online {
 
     suspend fun search(query: String): SearchReport = searcher.search(query, policy)
 
-    /** 在线那一栏开屏那一串：所有启用了搜索能力的源的默认列表（B 站就是热门，一页 20，按页翻到 limit） */
-    suspend fun browse(limit: Int = 60): List<MusicVideo> =
-        searcher.search("", policy.copy(perSourceLimit = limit)).groups.flatMap { it.items }
+    /**
+     * 在线那一栏开屏那一串：所有启用了搜索能力的源的默认列表（B 站热门、快手推荐流…）。
+     *
+     * 回来的顺序按**发布时间从新到旧**，不吃 `groupVideos` 给的那个顺序：那套是按 relevance 再按
+     * matchKey 升序，空查询下 relevance 全都一样，于是等于按标题的匹配键排字母序 —— 站点自己排好的
+     * "最新"被打散成哈希序（这就是他看到的"只有一家的片子、还乱序"）。
+     * 界面那一栏还能换排法，见 [OnlineSort]；这里给的只是默认那一种。
+     */
+    suspend fun browse(limit: Int = 60, page: Int = 1): List<MusicVideo> =
+        OnlineSort.Newest.sorted(
+            searcher.search("", policy.copy(perSourceLimit = limit), onlyVideo = true, page = page)
+                .groups.flatMap { it.items }
+        )
+
+    /**
+     * 抖音精选那一屏的列表，**单独一趟**，不并进上面那次。
+     *
+     * 为什么不并：这一路要先让真内核把页面跑完才挂得出卡片（裸 HTTP 只回 72,914 字节的壳），
+     * 量下来是十几秒；而 [browse] 给每一路的预算是 6 秒 + 1.5 秒宽限，挂进去只会
+     * 把整栏开屏一起拖慢，还每次白冒一条超时。所以这一路自己问、自己并进来
+     * （`MainActivity.loadOnlineFeed` 里那一趟排在 [browse] 之后）。
+     *
+     * 这一路的关键词搜索不做：实测回 `status_code 2483`「请先登录，再继续搜索吧」，那是要账号的。
+     */
+    suspend fun browseWithKernel(limit: Int = 30, page: Int = 1): List<MusicVideo> =
+        if (!registry.isEnabled(douyin.id)) emptyList() else douyin.search("", limit, page)
 
     suspend fun resolve(video: MusicVideo): ResolveOutcome = resolver.resolve(video, timeoutMs = 6_000)
+
+    /**
+     * 这一条能挑的几档（下载前问那一句）。空 = 这一路只给一条，界面就不出选择器。
+     *
+     * 站点风控、接口问不通，这里也回空而不是把异常抛出去：选择器只是一层可选的追问，
+     * 挡掉下载整件事就说不过去了 —— 真下不了，紧接着那一次 [resolve] 会把原因如实带出来。
+     * 按 sourceId 直取那一个源，不像 [resolve] 那样挨个试：档是"这一源的一档"，别源的答案拼不进来。
+     */
+    suspend fun qualities(video: MusicVideo): List<Rendition> = try {
+        registry.get(video.sourceId)?.qualities(video) ?: emptyList()
+    } catch (e: SourceFailureException) {
+        emptyList()
+    }
 
     /**
      * 站点地址 → 条目：按注册域挑源，第一个认得的赢。
@@ -223,13 +286,54 @@ object Online {
     suspend fun searchMusic(query: String, limit: Int): List<MusicVideo> =
         if (blocked("netease")) emptyList() else musicSource().search(query, limit)
 
-    /** 「最火的视频 / 相关视频」那两栏问的那一路：B 站按关键词搜，分区不是音乐的那些留在这里 */
-    suspend fun searchVideos(query: String, limit: Int): List<MusicVideo> =
-        if (blocked("bili")) emptyList() else bili.search(query, limit)
+    /**
+     * 「最火的视频 / 相关视频」那两栏：**在网易云站内搜 MV**，不再问 B 站 / 快手 / 抖音。
+     *
+     * 这是 2026-10-14 点名改的：音乐那一屏的视频要在**同一个音乐源地址**里找。
+     * 和上面 [searchMusic] 一样只走这一路、保留站点自己那个顺序（它按热度排），
+     * 不走 [search] 那套跨源归并 —— 归并按 relevance 重排，会把"最火"打散。
+     * 被删掉这一路时回空（那一栏就空着，不去别的站捞一批画面顶上）。
+     */
+    suspend fun searchMvs(query: String, limit: Int): List<MusicVideo> =
+        if (blocked("netease")) emptyList() else musicSource().searchMv(query, limit)
 
-    /** 设置抽屉里那颗「获取」：把这个源的默认那一串（网易云就是热歌榜）摊出来 */
-    suspend fun hotMusic(limit: Int): List<MusicVideo> =
-        if (blocked("netease")) emptyList() else musicSource().hot(limit)
+    /**
+     * 「最火的视频 / 相关视频」那两栏（旧的那一路）：问**所有还没被删掉、而且给的是画面**的那几路。
+     *
+     * 原来这里写死 `bili.search(...)` —— 删掉 B 站这两栏就直接空了，明明快手、抖音还在。
+     * 他要的是"删了一条还有别条，继续在线获取"，所以换成走引擎（跨源合并、单源失败只记那一源）。
+     * `onlyVideo` 那道筛子在引擎里，网易云那一路的歌不会混进来。
+     * 音乐那一屏现在不走这一句了（改走 [searchMvs]），视频那一屏的两栏还在用。
+     */
+    suspend fun searchVideos(query: String, limit: Int): List<MusicVideo> =
+        searcher.search(query, policy.copy(perSourceLimit = limit), onlyVideo = true)
+            .groups.flatMap { it.items }.take(limit)
+
+    /**
+     * 首页「热门音乐」那一栏、它那颗「更多」点开的那一整屏、还有「在线音乐源」那一屏底下
+     * 试拉的那几行，吃的都是这一份：网易云官方四张榜并发拉、每张截 `perBoard` 条、
+     * 按歌曲号去重，再按站点报的发布时间从新到旧排（没报时间的沉底 —— 那是"不知道多新"，见 [OnlineSort]）。
+     *
+     * 不走 [search] 那套跨源归并：理由和 [searchMusic] 一样，它按 relevance 重排会把榜单自己的顺序打散。
+     * 一张榜挂了不影响其余，四张全挂才抛 —— 抛出来的那一句是"为什么整栏空着"的原因。
+     */
+    suspend fun hotMusic(perBoard: Int): List<MusicVideo> =
+        if (blocked("netease")) emptyList()
+        else OnlineSort.Newest.sorted(musicSource().boards(perBoard))
+
+    /**
+     * 存盘那首歌的歌词。只有网易云这一路有歌词接口（B 站/抖音回的是画面，没有词），
+     * 别的源和被删掉的源都回 null —— 调用方据此写"这一路没有歌词"，不去猜。
+     */
+    suspend fun musicLyric(video: MusicVideo): String? =
+        if (video.sourceId != "netease" || blocked("netease")) null else musicSource().lyric(video)
+
+    /**
+     * 本地那一栏的词从这儿来：文件旁边没有同名 .lrc 时，拿"歌名 歌手"去搜、配第一条像的。
+     * 配不上回 null（不拿第一条硬凑），配上了把**配到的是哪一首**带回去给界面写出来。
+     */
+    suspend fun musicLyricByName(query: String): NamedLyric? =
+        if (blocked("netease")) null else musicSource().lyricFor(query)
 
     /**
      * 从"眼前这一首"派生一个搜索词。
@@ -247,15 +351,19 @@ object Online {
             .replace(NOISE_CJK, " ")
             .replace(BLANKS, " ")
             .trim()
-        return listOfNotNull(artist?.takeIf { it.isNotBlank() && fromLibrary }, cleaned)
-            .joinToString(" ").trim().take(MAX_KEYWORD)
+        // `<unknown>` 是 MediaStore 给不出歌手时填的占位串，不是歌手名：拼进去，站内那一型
+        // 就一条都搜不到（2026-10-14 量：`海屿你` 给 11 支 MV，`<unknown> 海屿你` 给 0 支）。
+        // 这一格和界面那几处一样按"空 或 <unknown> 都不算"处理（Shell / QueueSheet / MediaLibrary 同一判据）。
+        return listOfNotNull(
+            artist?.trim()?.takeIf { it.isNotBlank() && it != "<unknown>" && fromLibrary }, cleaned
+        ).joinToString(" ").trim().take(MAX_KEYWORD)
     }
 
     /**
-     * 一屏四栏分两路问：音乐那两栏吃在线音乐源（网易云）搜回来的那一批，
-     * 视频那两栏吃 B 站搜回来的那一批（他点的：音乐吃网易云、视频仍吃 B 站）。
-     * 每族各自按站点报的播放数降序 —— 网易云不给播放数（全 0），降序就是个稳定不动，
-     * 留下的正是它自己那个热度序；B 站那一路给，所以「最火的视频」真的是按人看的多少排。
+     * 一屏四栏分两路问：音乐那两栏吃在线音乐源（网易云）搜单曲回来的那一批，
+     * 视频那两栏吃**同一个网易云地址搜站内 MV** 回来的那一批（他 10-14 点的：音乐界面的视频不要去哔站找）。
+     * 每族各自按站点报的播放数降序 —— 网易云单曲不给播放数（全 0），降序就是个稳定不动，
+     * 留下的正是它自己那个热度序；MV 那一份给，所以「最火的视频」真的是按人看的多少排。
      * 前 3 条摆「最火」，第 4 条往后摆「相关」。
      */
     fun zonesOf(music: List<MusicVideo>, video: List<MusicVideo>): ZoneSplit {

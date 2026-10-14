@@ -16,7 +16,12 @@ data class MusicVideo(
     val playCount: Long = 0,
     /** 歌手那一页要摆头像：只有列表型接口（热门、相关）的 owner 里带 face，合集那一层没有 */
     val artistFaceUrl: String? = null,
-    /** 站点给的分区名（原创音乐/翻唱/MV/日常…）：歌手页那三行筛选芯片里"分区"那一行吃的就是它 */
+    /**
+     * 站点给的分组名。两路各有各的分组：B 站是分区（原创音乐/翻唱/MV/日常…），
+     * 歌手页那三行筛选芯片里"分区"那一行吃的就是它；网易云那张官方榜单名（热歌榜/新歌榜…）
+     * 也落在这同一格上，首页「热门音乐」那一屏"榜单"那一行芯片吃它（一个条目只来自一张榜，
+     * 去重时留的是先回来的那一张）。
+     */
     val category: String? = null,
     /**
      * 这一条是"冲着听来的"还是"冲着看来的"：音乐那一栏点了在原地播，视频那一栏点了要挪到视频 tab。
@@ -24,6 +29,25 @@ data class MusicVideo(
      * 粘地址摊出来的那一串本来就是歌单，走的是另一条规则（原地播），不靠这个字段。
      */
     val music: Boolean = false,
+    /**
+     * 这一条是**站内自己的 MV**（不是"某条视频站稿子"）：取址走的是另一条接口，
+     * 而且那台 CDN 不带来路就回 403（见 [headersForUrl]）。
+     * 只有网易云那一路会置 true —— 它 `givesVideo` 是 false（不许顶进视频那一栏的默认列表），
+     * 但它自己站里有 MV，音乐那一屏的视频两栏要的就是这一批。
+     */
+    val mv: Boolean = false,
+    /**
+     * 站点在**列表里就顺手交出来的播放直链**。只有"列表带址、详情问不通"的那一路用得上（快手：
+     * 详情接口要验证码，能拿到的只有推荐流这一份，而这一份过点就换不到了）。
+     * 其余源留空 —— 空着才走 [MusicVideoSource.resolve] 现换一次。
+     */
+    val directUrl: String? = null,
+    /**
+     * 站点报的发布时间（epoch 毫秒），**0 = 这一路没给**。
+     * 在线那一栏默认「最新在前」吃的就是它，所以 0 和"1970 年发的"必须能分开：
+     * 没给的排最后，不参与比较（`Online.browse` 那一句靠 0 自然沉底，不特判）。
+     */
+    val publishedAtMs: Long = 0,
 ) {
     val key: String get() = "$sourceId/$remoteId"
 }
@@ -36,6 +60,15 @@ data class SearchGroup(
 )
 
 enum class Capability { Search, Resolve }
+
+/**
+ * 一条片子能挑的一档。
+ *
+ * [label] 用**站点自己给的那一句**（B 站是 `support_formats[].display_desc`，实测是 "720P" / "360P"），
+ * 不自己翻译也不自己拼数字；[approxBytes] 是站点报的整片字节数（`durl[0].size`，实测 17989807 / 7626603），
+ * 挑档的人真正在比的是"多大"，不是那串档位编号。
+ */
+data class Rendition(val label: String, val playable: Playable, val approxBytes: Long)
 
 data class Playable(
     val url: String,

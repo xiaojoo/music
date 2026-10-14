@@ -18,7 +18,7 @@ class LocalStubSource(
     override val capabilities = setOf(Capability.Search, Capability.Resolve)
     override val hosts = setOf("stub.invalid")
 
-    override suspend fun search(query: String, limit: Int): List<MusicVideo> {
+    override suspend fun search(query: String, limit: Int, page: Int): List<MusicVideo> {
         // 空查询 = 默认列表：真站点对应的是"进来先给推荐"，占位源给整份目录
         if (query.isBlank()) return items.take(limit)
         return items.map { it to relevance(query, it.title, it.artist) }

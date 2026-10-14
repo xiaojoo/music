@@ -64,10 +64,12 @@ import com.xiaojoo.lightplayer.data.Track
 import com.xiaojoo.lightplayer.ui.IconKind
 import com.xiaojoo.lightplayer.ui.tap
 import com.xiaojoo.lightplayer.ui.LineIcon
+import com.xiaojoo.lightplayer.ui.AudioQuality
 import com.xiaojoo.lightplayer.ui.Lrc
 import com.xiaojoo.lightplayer.ui.LyricLine
 import com.xiaojoo.lightplayer.ui.LyricPage
-import com.xiaojoo.lightplayer.ui.LyricSource
+import com.xiaojoo.lightplayer.ui.lyricFor
+import com.xiaojoo.lightplayer.ui.LyricStore
 import com.xiaojoo.lightplayer.ui.MusicOnlinePage
 import com.xiaojoo.lightplayer.videosource.MusicVideo
 import com.xiaojoo.lightplayer.ui.ModeSheet
@@ -97,17 +99,19 @@ fun PlayerScreen(
     onSettings: () -> Unit,
     onOpenQueue: () -> Unit,
     // 右滑到的第三页（在线）：状态都在壳层，这一屏只画和回动作 —— 和歌词那页一样不带自己的存档
-    /** 一屏四栏都从"搜当前这首歌"那一批结果里分：两族各按播放数降序，前 3 张最火、第 4 条往后相关 */
+    /** 最火/相关那四栏都从"搜当前这首歌"那一批结果里分：两族各按播放数降序，前 3 张最火、第 4 条往后相关 */
     onlineHotMusic: List<MusicVideo>,
     onlineMoreMusic: List<MusicVideo>,
     onlineHotVideo: List<MusicVideo>,
     onlineMoreVideo: List<MusicVideo>,
-    onlineKeyword: String,
     onlineError: String?,
     onlinePlayingId: String?,
     onOnlinePlay: (MusicVideo) -> Unit,
     /** 音乐那一行右端那颗：挂到音频那一路的队尾 */
     onOnlineQueue: (MusicVideo) -> Unit,
+    /** 音乐那一行那颗「存盘」，和正在存盘的那一条的 key */
+    onOnlineDownload: (MusicVideo) -> Unit,
+    onlineDownloadingKey: String?,
     /** 滑到这一页、或换了歌，就问一次「这首歌」；壳层里按关键词去重。这一屏上没有那颗按钮 */
     onOnlineSongsFetch: () -> Unit,
     /** 那一栏里的视频：不在这播，挪到视频 tab 的在线那一栏去播 */
@@ -135,18 +139,24 @@ fun PlayerScreen(
     var trackWarning by remember { mutableStateOf<String?>(null) }
     var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
     var lyricSource by remember { mutableStateOf<String?>(null) }
-    var lyricTreeUri by remember { mutableStateOf<Uri?>(null) }
+    // 选歌词目录那一下系统把授权存了下来，但界面这份状态每次重组都是新的 —— 冷启动要读回来，
+    // 不然前一晚选的文件夹早上一起来就当没选过（见 LyricStore）
+    var lyricTreeUri by remember { mutableStateOf(LyricStore.load(context)) }
+    // 播放页那一格音质：取播放器真在解的那一条（见 AudioQuality），不是我们向站点要的那一档
+    var quality by remember { mutableStateOf<String?>(null) }
 
 
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
+            // 读 + 写一起要：这一格既是歌词的来路，也是存盘歌曲的歌词的去处（只给读，写歌词就只会报"没存下"）
             runCatching {
                 context.contentResolver.takePersistableUriPermission(
-                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
             }
+            LyricStore.save(context, uri)
             lyricTreeUri = uri
         }
     }
@@ -171,6 +181,7 @@ fun PlayerScreen(
 
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 errorMessage = null
+                quality = null
                 title = titleOf(audio, context)
                 artist = audio?.mediaMetadata?.artist?.toString()
                 currentUri = item?.localConfiguration?.uri
@@ -199,6 +210,7 @@ fun PlayerScreen(
 
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 trackWarning = audio?.let { unsupportedTrackOf(it) }
+                quality = audio?.let { qualityOf(it) }
             }
 
             override fun onRepeatModeChanged(mode: Int) {
@@ -226,6 +238,11 @@ fun PlayerScreen(
         if (dragging) return@LaunchedEffect
         while (true) {
             positionMs = audio?.currentPosition ?: 0L
+            /* 音质也跟着这一趟刷，不只挂在 onTracksChanged 上：换条目时我们把那一格清过，
+               而两条都是 mp3/44.1k 时 Media3 认为"轨没变"、不再发 tracks 事件 —— 只等事件的话
+               在线那一条会一直空着（真机 10-14 量到：本地那条出字、点在线那条不出）。
+               同一个字符串写进 mutableStateOf 不引起重组，这一趟是免费的。 */
+            audio?.let { val q = qualityOf(it); if (q != quality) quality = q }
             delay(if (isPlaying) 500L else 1000L)
         }
     }
@@ -237,7 +254,7 @@ fun PlayerScreen(
             lyricSource = null
             return@LaunchedEffect
         }
-        val hit = withContext(Dispatchers.IO) { LyricSource.read(context, uri, lyricTreeUri) }
+        val hit = withContext(Dispatchers.IO) { lyricFor(context, uri, lyricTreeUri, title, artist) }
         lyrics = hit.text?.let { Lrc.parse(it) }.orEmpty()
         lyricSource = hit.status
     }
@@ -278,7 +295,10 @@ fun PlayerScreen(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
-                PageDots(count = 3, index = pagerState.currentPage)
+                /* 第三颗（在线）在**没读到歌名**的时候不画：那一屏是按当前这一首搜的，没歌名它就没内容，
+                   摆一颗点上去只会落到一片空白（他 10-15 点的）。页表还是三页 —— 往右滑仍然滑得过去，
+                   收掉的只是那颗指示。 */
+                PageDots(count = if (title.isNullOrBlank()) 2 else 3, index = pagerState.currentPage)
                 Box(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.CenterEnd
@@ -303,7 +323,7 @@ fun PlayerScreen(
                         cover = cover,
                         playing = isPlaying,
                         title = title,
-                        artist = artist
+                        artist = listOfNotNull(artist, quality).joinToString(" · ").ifBlank { null }
                     )
                 } else if (page == 1) {
                     LyricPage(
@@ -319,11 +339,12 @@ fun PlayerScreen(
                         moreMusic = onlineMoreMusic,
                         hotVideo = onlineHotVideo,
                         moreVideo = onlineMoreVideo,
-                        keyword = onlineKeyword,
                         error = onlineError,
                         playingId = onlinePlayingId,
                         onPlay = onOnlinePlay,
                         onQueue = onOnlineQueue,
+                        onDownload = onOnlineDownload,
+                        downloadingKey = onlineDownloadingKey,
                         onOpenVideo = onOpenVideo
                     )
                 }
@@ -642,6 +663,28 @@ private fun unsupportedTrackOf(player: Player): String? {
     } else {
         "本机无对应视频解码器，画面不会输出：${mime ?: "未知格式"}"
     }
+}
+
+/**
+ * 眼前这一条**真在解**的那一份：选中的那组音轨拿它的 `Format`，没选中就退到第一条音轨组。
+ * 文案规则都在 `AudioQuality` 里，这一处只负责从 `Format` 取数，不产文案。
+ */
+private fun qualityOf(player: Player): String? {
+    val groups = player.currentTracks.groups
+    val group = groups.firstOrNull { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
+        ?: groups.firstOrNull { it.type == C.TRACK_TYPE_AUDIO }
+        ?: return null
+    val f = (0 until group.length)
+        .map { group.getTrackFormat(it) }
+        .firstOrNull { it.sampleMimeType != null } ?: return null
+    val bits = when (f.pcmEncoding) {
+        C.ENCODING_PCM_8BIT -> 8
+        C.ENCODING_PCM_16BIT -> 16
+        C.ENCODING_PCM_24BIT -> 24
+        C.ENCODING_PCM_32BIT -> 32
+        else -> 0
+    }
+    return AudioQuality.label(f.sampleMimeType, f.bitrate.toLong(), f.sampleRate, bits, f.channelCount)
 }
 
 private suspend fun loadCover(context: Context, uri: Uri): ImageBitmap? =

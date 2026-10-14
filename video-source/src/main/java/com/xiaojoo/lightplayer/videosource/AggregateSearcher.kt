@@ -36,8 +36,15 @@ data class SearchReport(
 
 class AggregateSearcher(private val registry: SourceRegistry) {
 
-    suspend fun search(query: String, policy: SearchPolicy = SearchPolicy()): SearchReport = coroutineScope {
-        val sources = registry.searchSources()
+    suspend fun search(
+        query: String,
+        policy: SearchPolicy = SearchPolicy(),
+        /** 只要「能看的」那几路：视频那一栏用它，别把歌放进来 */
+        onlyVideo: Boolean = false,
+        /** 第几批，从 1 起；给"往下滑再要一批"用（各源怎么对待这一句见 [MusicVideoSource.search]） */
+        page: Int = 1,
+    ): SearchReport = coroutineScope {
+        val sources = if (onlyVideo) registry.videoSearchSources() else registry.searchSources()
         val startedAt = System.nanoTime()
         if (sources.isEmpty()) {
             return@coroutineScope SearchReport(emptyList(), emptyMap(), emptySet(), elapsedMs(startedAt), 0)
@@ -51,7 +58,9 @@ class AggregateSearcher(private val registry: SourceRegistry) {
         val jobs = sources.map { src ->
             src.id to async(Dispatchers.IO) {
                 try {
-                    val items = withTimeout(policy.timeoutFor(src.id)) { src.search(query, policy.perSourceLimit) }
+                    val items = withTimeout(policy.timeoutFor(src.id)) {
+                        src.search(query, policy.perSourceLimit, page)
+                    }
                     synchronized(lock) { for (i in items) collected.putIfAbsent(i.key, i) }
                 } catch (e: SourceFailureException) {
                     synchronized(lock) { failures[src.id] = e.failure }

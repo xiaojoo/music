@@ -12,6 +12,7 @@ class FakeSource(
     private val resolveDelaysMs: List<Long> = emptyList(),
     private val resolveFailures: List<SourceFailure> = emptyList(),
     private val playable: Playable = Playable("https://$id.example/x.mp4"),
+    override val givesVideo: Boolean = true,
 ) : MusicVideoSource {
 
     override val displayName: String get() = id
@@ -20,9 +21,13 @@ class FakeSource(
         private set
     var resolveCalls = 0
         private set
+    /** 引擎把"第几批"原样递下来了没有，测试只看这一个数 */
+    var lastPage = 0
+        private set
 
-    override suspend fun search(query: String, limit: Int): List<MusicVideo> {
+    override suspend fun search(query: String, limit: Int, page: Int): List<MusicVideo> {
         searchCalls++
+        lastPage = page
         if (searchDelayMs > 0) delay(searchDelayMs)
         searchFailure?.let { throw SourceFailureException(it) }
         return items.filter { relevance(query, it.title, it.artist) > 0 }.take(limit)

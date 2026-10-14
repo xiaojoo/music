@@ -1,5 +1,11 @@
 package com.xiaojoo.lightplayer.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -34,8 +40,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -65,8 +76,10 @@ private const val SONGS_ROWS = 3
  *
  * 点下去的去处按族分，这是点名定的：**音乐**在**这一屏**播（走音频那一路），
  * **视频**挪到视频 tab 的在线那一栏去播、并且存进那一栏的列表。
- * 四栏吃的是**同一次搜索**的那一批结果（搜当前在放的这一首），不再问第二个接口 ——
+ * 四栏吃的是**同一次搜索**的那一批结果（搜当前在放的这一首）：音乐那两栏问网易云单曲，
+ * 视频那两栏问**同一个网易云地址里的站内 MV** —— 每一屏只问一路，各自记各自的失败。
  * 每个分区族各自按播放数降序，前 3 张摆「最火」，第 4 条往后摆「相关」。
+ * 这一屏不吃 B 站：他 10-14 点的，音乐界面的视频不要去哔站找。
  */
 @Composable
 fun MusicOnlinePage(
@@ -78,13 +91,16 @@ fun MusicOnlinePage(
     hotVideo: List<MusicVideo>,
     /** 相关视频：同一族里第 4 条往后 */
     moreVideo: List<MusicVideo>,
-    /** 这一屏是按哪一句搜的；栏头写出来，搜歪了一眼看得见 */
-    keyword: String,
+    /** 这一路问不通的那句话；四栏全空时它写在正中间，有内容时写在内容顶上 */
     error: String?,
     playingId: String?,
     onPlay: (MusicVideo) -> Unit,
     /** 音乐那一行右端那颗：挂到音频那一路的队尾（和曲库那一行的「加入播放列表」同一只手势） */
     onQueue: (MusicVideo) -> Unit,
+    /** 音乐那一行那颗「存盘」：存的就是点播放时 resolve 回来的同一条直链 */
+    onDownload: (MusicVideo) -> Unit,
+    /** 正在存盘的那一条：那一行的下载墨换成主色，别的行不动 */
+    downloadingKey: String?,
     onOpenVideo: (MusicVideo) -> Unit,
 ) {
     var musicAll by remember { mutableStateOf(false) }
@@ -92,6 +108,20 @@ fun MusicOnlinePage(
     val shownMusic = if (musicAll) moreMusic else moreMusic.take(SONGS_ROWS)
     val shownVideo = if (videoAll) moreVideo else moreVideo.take(RELATED_ROWS)
     val nothing = hotMusic.isEmpty() && hotVideo.isEmpty() && moreMusic.isEmpty() && moreVideo.isEmpty()
+
+    /* 四栏全空 = **数据还没回来**（还没歌名 / 请求正在跑）：这一屏正中一枚转圈的弧，
+       不再摆那一行「先放一首歌，这一屏按它在搜」的红字（他 10-15 点的）。
+       只有真问不通才写字 —— 转圈说不清"挂了"，那一行红字说不清"还在等"。 */
+    if (nothing) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (error != null) {
+                Text(error, color = FailRed, fontSize = 12.sp, textAlign = TextAlign.Center)
+            } else {
+                SpinArc()
+            }
+        }
+        return
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         LazyVerticalGrid(
@@ -105,17 +135,11 @@ fun MusicOnlinePage(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 17.dp)
         ) {
-            /* 四栏全空、或者哪一路挂了才写这一句 —— 它是失败/没得搜的出口，不是统计行。
-               顶上那行「最火 N 张 · 相关 N 条」他点名不要了，但搜挂了总得说一句，
-               不然这一屏就是一片空白，看着像坏了。 */
-            if (nothing || error != null) {
-                item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
-                    Text(
-                        text = error ?: if (keyword.isBlank()) "先放一首歌，这一屏按它在搜" else "还没有内容",
-                        color = if (error != null) Color(0xFFC0392B) else Tokens.InkFaint,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 14.dp)
-                    )
+            /* 有内容还挂着一句失败：那是四栏里某一路没问通（另一路的结果照常摊着）。
+               写在内容顶上那一行，它是失败出口，不是统计行。 */
+            if (error != null) {
+                item(key = "note", span = { GridItemSpan(maxLineSpan) }) {
+                    Text(error, color = FailRed, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp))
                 }
             }
             if (hotMusic.isNotEmpty()) {
@@ -153,7 +177,9 @@ fun MusicOnlinePage(
                         video = v,
                         playing = "online:" + v.key == playingId,
                         onClick = { onPlay(v) },
-                        onQueue = { onQueue(v) }
+                        onQueue = { onQueue(v) },
+                        onDownload = { onDownload(v) },
+                        downloading = downloadingKey == v.key,
                     )
                 }
             }
@@ -235,8 +261,10 @@ private fun WideRow(video: MusicVideo, playing: Boolean, onClick: () -> Unit) {
  * 42dp 方封面 + 12dp 间隙 + 15sp 歌名 + 12sp 歌手（top 2dp），第二行**不放时长**（曲库那条也不放，
  * 时长在播放页和队列面板里都还看得到）。封面用的是 ThumbCorner 那颗，不是网格的 CardCorner。
  *
- * 右端只留「加入播放列表」这一颗：收藏那颗在在线条目上是死的（收藏页打不开 http 那条，
- * 首页那些在线行同样没摆它），摆一颗点不动的比不摆更糟。
+ * 右端两颗：存盘 / 加入播放列表。**下载那颗摆在队列那颗的左边** —— 源页那一屏的右端一列全部
+ * 对齐到「加入播放列表」的墨右沿（见 MusicSourcePage 的 rightShift），队列那颗是那条基准，
+ * 新加的颗只能往左长，放它右边就把整列已认可的对齐挪走了。
+ * 存盘只在按下去到落盘这一段把墨换成主色（行上没别的地方放进度环，颜色是这一族唯一动的东西）。
  */
 @Composable
 internal fun MusicRow(
@@ -244,6 +272,10 @@ internal fun MusicRow(
     playing: Boolean,
     onClick: () -> Unit,
     onQueue: () -> Unit,
+    onDownload: () -> Unit,
+    downloading: Boolean = false,
+    /** 第二行写什么：在线那两屏默认只有歌手，首页那一栏要挤进 时长·发布时间·源名 */
+    sub: String? = null,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().tap(onClick = onClick).padding(vertical = 5.dp),
@@ -266,7 +298,7 @@ internal fun MusicRow(
         Column(modifier = Modifier.weight(1f)) {
             TitleLine(video.title, playing, maxLines = 2, top = 0.dp, size = 15.sp)
             Text(
-                text = video.artist.ifBlank { "未知歌手" },
+                text = sub ?: video.artist.ifBlank { "未知歌手" },
                 color = Tokens.InkFaint,
                 fontSize = 12.sp,
                 maxLines = 1,
@@ -274,6 +306,13 @@ internal fun MusicRow(
                 modifier = Modifier.padding(top = 2.dp)
             )
         }
+        /* 画框 19.14dp 不是随手缩的：这一族按"同一只 13.74dp 正方框、等比不形变"配平（见 Shell 的 RowIcon 注释）。
+           Download 的墨是**高>宽**（中心线 x 0.22..0.78、y 0.18..0.80，笔 1.875dp 圆头各半支），
+           所以管长边的是高：0.62·s + 1.875 = 13.74 → s = 19.14dp，那一下宽落在 0.56·19.14 + 1.875 = 12.59dp。
+           代价：它比右边那颗队列（墨宽 13.74）窄 1.15dp，两颗之间的白缝 26.34dp，比同宽的 27dp 少 0.66dp（≈2px）；
+           墨中心 y 在画框 0.49，比中线高 0.19dp（0.5px），在量化底噪里，不另补。 */
+        RowIcon(IconKind.Download, if (downloading) Tokens.Accent else Tokens.InkFaint,
+            size = 19.14.dp, onClick = onDownload)
         RowIcon(IconKind.PlayQueue, Tokens.InkFaint, onClick = onQueue)
     }
 }
@@ -394,3 +433,36 @@ private fun one(v: Float): String {
     val r = kotlin.math.round(v * 10) / 10.0
     return if (r == kotlin.math.floor(r)) r.toInt().toString() else r.toString()
 }
+
+/** 问不通那一句的红，和播放页底下 errorMessage、源设置那一屏的失败话同一支 */
+private val FailRed = Color(0xFFC0392B)
+
+/**
+ * 数据还没回来时屏幕正中那枚转圈的弧。
+ * 自己画而不用 Material 那只：它带自己的配色和厚度，和这一族 1.5~2dp 的细线图标不是一套。
+ * 一圈 900ms、线性匀速，和视频那一栏「刷新」那颗转的是同一个节奏。
+ */
+@Composable
+private fun SpinArc() {
+    val spin = rememberInfiniteTransition(label = "online-spin")
+    val rot by spin.animateFloat(
+        0f, 360f,
+        infiniteRepeatable(tween(900, easing = LinearEasing)),
+        label = "online-rot",
+    )
+    val side = 26.dp
+    val stroke = 2.dp
+    Canvas(modifier = Modifier.size(side).graphicsLayer { rotationZ = rot }) {
+        val w = stroke.toPx()
+        drawArc(
+            color = Tokens.InkFaint,
+            startAngle = -90f,
+            sweepAngle = 270f,
+            useCenter = false,
+            style = Stroke(width = w, cap = StrokeCap.Round),
+            topLeft = Offset(w / 2f, w / 2f),
+            size = Size(size.width - w, size.height - w),
+        )
+    }
+}
+

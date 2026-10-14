@@ -35,6 +35,14 @@ class OnlineKeywordTest {
     }
 
     @Test
+    fun `MediaStore 那个占位歌手不进搜索词`() {
+        // 真机量到的形状：曲库里读不到歌手时 MediaStore 填的是字面量 `<unknown>`，
+        // 拼进去站内那一型就一条都搜不到（`海屿你` 11 支 MV，`<unknown> 海屿你` 0 支）
+        assertEquals("海屿你", Online.searchKeywordOf("海屿你", "<unknown>", fromLibrary = true))
+        assertEquals("海屿你", Online.searchKeywordOf("海屿你", " <unknown> ", fromLibrary = true))
+    }
+
+    @Test
     fun `无损和动态歌词这类前缀不进搜索词`() {
         val kw = Online.searchKeywordOf("【无损音质】《起风了》动态歌词", "", fromLibrary = false)
         assertFalse(kw, "无损" in kw)

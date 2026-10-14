@@ -1,0 +1,381 @@
+package com.xiaojoo.lightplayer.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.xiaojoo.lightplayer.videosource.MusicVideo
+
+/**
+ * 「视频地址源」那一屏：地址源做成选项卡 + 几行筛选，整屏，不是抽屉。
+ *
+ * 地址源那一行的芯片三态（他点名的那一条）：
+ * - 正常 = 这一路在问；
+ * - **点一下 = 禁用**：芯片变灰、右边多出一颗 X；
+ * - **点 X = 删掉这一路**：芯片整个从名单里没了（连这一路带回来的条目一起收走）；
+ * - 灰的那颗**再点一下 = 重新启用**。
+ * 禁用和删除是两份名单：禁用不动他粘进来的那些（那是他挑好带回来的），删除才带走。
+ *
+ * 其余几组只摆**这一趟真读到的值**：风格只有 B 站的列表带 `tname`（抖音、快手那条不给），
+ * 作者三家都给，发布时间 B 站是秒级时间戳、抖音是卡上那句「· 3天前」推的、快手是 timestamp。
+ * 一组里一个值都没有就不摆那一组（空壳分组不做，和「筛选歌曲」那一屏同一条规矩）。
+ */
+@Composable
+fun VideoSourcePage(
+    sources: List<SourceRow>,
+    pool: List<MusicVideo>,
+    start: VideoFilter,
+    initialUrl: String,
+    onToggleSource: (String) -> Unit,
+    onDeleteSource: (String) -> Unit,
+    onAddUrl: (String) -> Unit,
+    onApply: (VideoFilter) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val now = remember { System.currentTimeMillis() }
+    var draft by remember { mutableStateOf(start) }
+    var text by remember { mutableStateOf(initialUrl) }
+    var stylesOpen by remember { mutableStateOf(false) }
+    var authorsOpen by remember { mutableStateOf(false) }
+    /** 哪一颗正在等"确认删除"：只允许一颗，点别处就换过去 */
+    var pendingDelete by remember { mutableStateOf<String?>(null) }
+
+    val styles = counted(pool.mapNotNull { it.category?.takeIf { c -> c.isNotBlank() } })
+    val authors = counted(pool.map { it.artist }.filter { it.isNotBlank() })
+    val ages = counted(pool.map { VideoAge.of(it.publishedAtMs, now) })
+    val lengths = counted(pool.mapNotNull { VideoLen.of(it.durationMs) })
+    val hit = filterVideos(pool, draft, now).size
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Tokens.ListBg)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .padding(horizontal = Tokens.Dimen.ScreenPad)
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .size(Tokens.Dimen.IconHit)
+                    .tap(onClick = onCancel),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                LineIcon(IconKind.ArrowLeft, size = 22.dp, color = Tokens.InkStrong)
+            }
+            Text(
+                "视频地址源",
+                color = Tokens.InkStrong,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+        // 粘地址那一行还是这一屏的事：抽屉没了，那颗「添加」的入口跟着搬到这里来。
+        // 右内衬 21.8dp 不是 ScreenPad：要把加号那颗的**可见右沿**对到下面组标题那枚折叠箭头的
+        // 墨右沿上。真机量的：箭头墨右沿在设备 x=1019（离屏右 60px），描边右沿先按 17dp 摆出来
+        // 落在 x=1032（差 13px），补这一笔才对平。
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = Tokens.Dimen.ScreenPad, end = 21.8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(Tokens.Dimen.FilterBtnH)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Tokens.CardBg)
+                    .border(1.dp, Tokens.Divider, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                if (text.isEmpty()) {
+                    Text("粘贴一条视频页地址，或一条视频直链", color = Tokens.InkFaint, fontSize = 14.sp)
+                }
+                BasicTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    cursorBrush = SolidColor(Tokens.Accent),
+                    textStyle = TextStyle(color = Tokens.InkStrong, fontSize = 14.sp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = {
+                        if (text.isNotBlank()) { onAddUrl(text.trim()); text = "" }
+                    }),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            // 加号从"一枚裸图标"改成一颗按钮：和左边那条输入框同一套（38dp 高、12dp 圆角、
+            // CardBg + 一道 Divider 描边）。没填东西时按不动、但不消失也不淡（置灰不消失那条规矩）
+            Box(
+                modifier = Modifier
+                    .size(width = 52.dp, height = Tokens.Dimen.FilterBtnH)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Tokens.CardBg)
+                    .border(1.dp, Tokens.Divider, RoundedCornerShape(12.dp))
+                    .tap(enabled = text.isNotBlank()) {
+                        onAddUrl(text.trim()); text = ""
+                    },
+                contentAlignment = Alignment.Center,
+            ) { LineIcon(IconKind.Add, size = 19.dp, color = if (text.isNotBlank()) Tokens.InkStrong else Tokens.InkFaint) }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+        ) {
+            FilterGroup("地址源", collapsible = false, expanded = false, onToggle = {}, topPad = Tokens.Dimen.FilterGapFirstTop) {
+                sources.forEach { r ->
+                    SourceChip(
+                        row = r,
+                        count = pool.count { it.sourceId == r.id },
+                        confirmDelete = pendingDelete == r.id,
+                        onToggle = { pendingDelete = null; onToggleSource(r.id) },
+                        onAskDelete = { pendingDelete = r.id },
+                        onDelete = { pendingDelete = null; onDeleteSource(r.id) },
+                    )
+                }
+            }
+            if (styles.isNotEmpty()) {
+                FilterGroup("风格", styles.size > 12, stylesOpen, { stylesOpen = !stylesOpen }) {
+                    styles.forEach { (name, n) ->
+                        FilterChip(name, n, name in draft.styles) {
+                            draft = draft.copy(styles = draft.styles toggle name)
+                        }
+                    }
+                }
+            }
+            if (authors.isNotEmpty()) {
+                FilterGroup("作者", authors.size > 12, authorsOpen, { authorsOpen = !authorsOpen }) {
+                    authors.forEach { (name, n) ->
+                        FilterChip(name, n, name in draft.authors) {
+                            draft = draft.copy(authors = draft.authors toggle name)
+                        }
+                    }
+                }
+            }
+            if (ages.isNotEmpty()) {
+                FilterGroup("发布时间", collapsible = false, expanded = false, onToggle = {}) {
+                    VideoAge.all.forEach { b ->
+                        val n = ages.firstOrNull { it.first == b }?.second ?: 0
+                        if (n > 0) FilterChip(b, n, b in draft.ages) { draft = draft.copy(ages = draft.ages toggle b) }
+                    }
+                }
+            }
+            if (lengths.isNotEmpty()) {
+                FilterGroup("时长", collapsible = false, expanded = false, onToggle = {}) {
+                    VideoLen.all.forEach { b ->
+                        val n = lengths.firstOrNull { it.first == b }?.second ?: 0
+                        if (n > 0) FilterChip(b, n, b in draft.lengths) { draft = draft.copy(lengths = draft.lengths toggle b) }
+                    }
+                }
+            }
+        }
+
+        if (draft != start || draft.any) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ScreenPad,
+                        top = 12.5.dp, bottom = 18.dp
+                    ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(Tokens.Dimen.FilterBtnH)
+                        .clip(RoundedCornerShape(Tokens.Dimen.FilterBtnR))
+                        .background(Tokens.CardBg)
+                        .border(1.dp, Tokens.Divider, RoundedCornerShape(Tokens.Dimen.FilterBtnR))
+                        .tap { draft = VideoFilter() },
+                    contentAlignment = Alignment.Center
+                ) { Text("重置", color = Tokens.InkStrong, fontSize = 15.sp) }
+                Spacer(Modifier.width(12.dp))
+                Box(
+                    modifier = Modifier
+                        .weight(1.2f)
+                        .height(Tokens.Dimen.FilterBtnH)
+                        .clip(RoundedCornerShape(Tokens.Dimen.FilterBtnR))
+                        .background(Tokens.Accent)
+                        .tap { onApply(draft) },
+                    contentAlignment = Alignment.Center
+                ) { Text("确定（$hit 条）", color = Tokens.InkStrong, fontSize = 15.sp, fontWeight = FontWeight.Medium) }
+            }
+        }
+    }
+}
+
+/**
+ * 地址源那一行的一颗芯片。三态都在**同一颗**上，不另开控件：
+ * - 启用：卡底深字，右边一枚勾；
+ * - 点一下 = 禁用：变灰、勾换成 X；
+ * - 点 X = 进入待确认：那一格换成红底白字「确认删除」（红按他给的参考图取样：#962323），再按才真删；
+ * - 灰的那颗再点一下 = 恢复。
+ *
+ * **整颗定高 36dp**：出勾、出 X、换成「确认删除」都不许把这一行撑高（他点名的那条）。
+ * 宽度可以长（那三个字比一枚图标宽），高度不行。
+ */
+@Composable
+private fun SourceChip(
+    row: SourceRow,
+    count: Int,
+    confirmDelete: Boolean,
+    onToggle: () -> Unit,
+    onAskDelete: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val off = !row.enabled
+    Box(
+        modifier = Modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (off) Tokens.Divider else Tokens.CardBg)
+            .tap(onClick = onToggle)
+            .padding(start = 14.dp, end = if (confirmDelete) 6.dp else 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                row.name,
+                color = if (off) Tokens.Ink else Tokens.InkStrong,
+                fontSize = 14.sp,
+                maxLines = 1,
+                modifier = Modifier.widthIn(max = 180.dp)
+            )
+            Spacer(Modifier.width(5.dp))
+            Text("$count", color = if (off) Tokens.Ink else Tokens.InkFaint, fontSize = 12.sp)
+            Spacer(Modifier.width(3.dp))
+            // 勾和 X 住同一个 28dp 的槽：X 那枚 12dp 的墨居中，左右各空 8dp，所以计数到墨
+            // 是 3 + 8 = 11dp；勾以前是裸的 12dp 图标，那一段就只有 3dp —— 两颗一比较就看出
+            // 左边间隙不一样。他点的是"照 X 那一份"，于是勾也搬进同一只槽里。
+            when {
+                confirmDelete -> Box(
+                    modifier = Modifier
+                        .height(24.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(DeleteRed)
+                        .tap(onClick = onDelete)
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) { Text("确认删除", color = Color.White, fontSize = 12.sp, maxLines = 1) }
+                off -> Box(
+                    modifier = Modifier.size(28.dp).tap(onClick = onAskDelete),
+                    contentAlignment = Alignment.Center,
+                ) { LineIcon(IconKind.Close, size = 12.dp, color = Tokens.Ink) }
+                else -> Box(
+                    modifier = Modifier.size(28.dp),
+                    contentAlignment = Alignment.Center,
+                ) { LineIcon(IconKind.Check, size = 12.dp, color = Tokens.Accent) }
+            }
+        }
+    }
+}
+
+/** 他给的那张参考图上那颗红：取样 (150,35,35) */
+private val DeleteRed = Color(0xFF962323)
+
+private infix fun Set<String>.toggle(v: String): Set<String> = if (v in this) this - v else this + v
+
+private fun counted(items: List<String>): List<Pair<String, Int>> =
+    items.groupingBy { it }.eachCount().entries
+        .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+        .map { it.key to it.value }
+
+/**
+ * 发布时间分档。`0` 是"这一路没给日期"（抖音卡上那句认不出来的时候），单独一档，
+ * 不跟"更早"混 —— 混了就等于把没数据的那些算成老片子。
+ */
+object VideoAge {
+    val all = listOf("一天内", "一周内", "一月内", "半年内", "更早", "站点没给")
+    private const val DAY = 86_400_000L
+
+    fun of(ms: Long, now: Long): String = when {
+        ms <= 0L -> "站点没给"
+        now - ms <= DAY -> "一天内"
+        now - ms <= 7 * DAY -> "一周内"
+        now - ms <= 30 * DAY -> "一月内"
+        now - ms <= 183 * DAY -> "半年内"
+        else -> "更早"
+    }
+}
+
+/** 时长分档。站点没报时长（0）的不进任何一档：那一档摆出来是骗人的 */
+object VideoLen {
+    val all = listOf("1分内", "1~5分", "5~15分", "15~30分", "30分以上")
+
+    fun of(ms: Long): String? = when {
+        ms <= 0L -> null
+        ms < 60_000L -> all[0]
+        ms < 300_000L -> all[1]
+        ms < 900_000L -> all[2]
+        ms < 1_800_000L -> all[3]
+        else -> all[4]
+    }
+}
+
+/** 那一屏的筛选草稿：四组，空集 = 那一组不筛 */
+data class VideoFilter(
+    val styles: Set<String> = emptySet(),
+    val authors: Set<String> = emptySet(),
+    val ages: Set<String> = emptySet(),
+    val lengths: Set<String> = emptySet(),
+) {
+    val any: Boolean get() = styles.isNotEmpty() || authors.isNotEmpty() || ages.isNotEmpty() || lengths.isNotEmpty()
+}
+
+/**
+ * 池子里筛得下的那些。粘进来的那几条（`onlineItems`）不走这一句 —— 那是他挑好带回来的，
+ * 和「筛选歌曲」那一屏同一口径。认不出时长的条目在选了时长那一组时会被筛掉，这是筛选本来的意思。
+ */
+fun filterVideos(items: List<MusicVideo>, f: VideoFilter, now: Long): List<MusicVideo> =
+    if (!f.any) items else items.filter { v ->
+        (f.styles.isEmpty() || v.category.orEmpty() in f.styles) &&
+            (f.authors.isEmpty() || v.artist in f.authors) &&
+            (f.ages.isEmpty() || VideoAge.of(v.publishedAtMs, now) in f.ages) &&
+            (f.lengths.isEmpty() || VideoLen.of(v.durationMs) in f.lengths)
+    }
