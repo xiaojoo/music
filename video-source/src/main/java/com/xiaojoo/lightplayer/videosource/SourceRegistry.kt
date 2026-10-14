@@ -42,6 +42,12 @@ class SourceRegistry(sources: List<MusicVideoSource> = emptyList()) {
     fun searchSources(): List<MusicVideoSource> =
         order.filter { it.id !in disabled && Capability.Search in it.capabilities }
 
+    /**
+     * 其中**给的是能看的画面**那几路。视频那一栏的默认列表和「最火的视频」问的是这个，
+     * 不是上面那个 —— 上面那个会把网易云那一路的歌混进来。
+     */
+    fun videoSearchSources(): List<MusicVideoSource> = searchSources().filter { it.givesVideo }
+
     fun resolveSource(id: String): MusicVideoSource? =
         byId[id]?.takeIf { it.id !in disabled && Capability.Resolve in it.capabilities }
 

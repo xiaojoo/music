@@ -141,4 +141,14 @@ class AggregateSearcherTest {
         val url = (resolved as ResolveOutcome.Ready).playable.url
         assertTrue(url, url.startsWith("https://stub.invalid/mv/"))
     }
+
+    /** 往下滑要下一批走的是同一个入口：page 必须原样递到每一路，不许在引擎里丢掉 */
+    @Test
+    fun `page 那一句原样递到每一路`() = runBlocking {
+        val a = FakeSource(id = "a", items = listOf(mv("a", "1", "晴天")))
+        val report = AggregateSearcher(SourceRegistry(listOf(a)))
+            .search("晴天", policy.copy(perSourceLimit = 5), page = 4)
+        assertEquals(1, report.groups.size)
+        assertEquals("每一路收到的页号", 4, a.lastPage)
+    }
 }

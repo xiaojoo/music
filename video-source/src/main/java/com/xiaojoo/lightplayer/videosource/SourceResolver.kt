@@ -19,7 +19,8 @@ class SourceResolver(private val registry: SourceRegistry, private val retry: Re
         // 整次 resolve 的上界由 attempts × timeoutMs + 退避决定，不在这里兜。
         val outcome = retry.run {
             try {
-                if (timeoutMs == null) src.resolve(video) else withTimeout(timeoutMs) { src.resolve(video) }
+                val budget = src.resolveTimeoutMs ?: timeoutMs
+                if (budget == null) src.resolve(video) else withTimeout(budget) { src.resolve(video) }
             } catch (e: TimeoutCancellationException) {
                 throw SourceFailureException(SourceFailure.TimedOut("${src.id} 单次取址超 ${timeoutMs}ms"))
             }

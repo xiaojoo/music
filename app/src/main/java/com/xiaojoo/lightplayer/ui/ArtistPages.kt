@@ -434,7 +434,7 @@ private fun IconHit(onClick: () -> Unit, content: @Composable () -> Unit) {
 
 /** 芯片：选中填主色，没选中白底 —— 参考图那三行就是这个样式 */
 @Composable
-private fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
+internal fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
     Text(
         text = text,
         color = Tokens.InkStrong,

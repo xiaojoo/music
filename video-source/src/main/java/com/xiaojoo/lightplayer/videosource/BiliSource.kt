@@ -24,13 +24,13 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
      * 空查询 = 热门列表（`/web-interface/popular`，实测不登录、不要 cookie 就回 code=0）。
      * 带关键词 = wbi 签名的搜索（见 [searchSigned]），2026-10-13 起这一支是做的了。
      */
-    override suspend fun search(query: String, limit: Int): List<MusicVideo> =
-        if (query.isBlank()) popular(limit) else searchSigned(query, limit)
+    override suspend fun search(query: String, limit: Int, page: Int): List<MusicVideo> =
+        if (query.isBlank()) popular(limit, page) else searchSigned(query, limit, page)
 
     /** 站点默认那一串：一页只有 20 条，要多少翻多少；站点说 no_more 就停，不再多问一次 */
-    private suspend fun popular(limit: Int): List<MusicVideo> {
+    private suspend fun popular(limit: Int, startPage: Int = 1): List<MusicVideo> {
         val out = ArrayList<MusicVideo>()
-        var page = 1
+        var page = startPage
         while (out.size < limit) {
             val data = fetch.get(
                 "$POPULAR_API?ps=$PAGE_SIZE&pn=$page",
@@ -56,6 +56,7 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
                         category = o.optString("tname").takeIf { it.isNotBlank() },
                         // 热门这一份每条都带自己的 tid（实测 76 美食制作 / 193 MV / 31 翻唱 / 138 搞笑…）
                         music = o.optInt("tid") in MUSIC_TIDS,
+                        publishedAtMs = o.optLong("pubdate") * 1_000,
                     )
                 )
                 if (out.size >= limit) break
@@ -80,10 +81,10 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
      * - 服务端不认 `rid` 分区过滤（实测 rid=3 / rid=130 / 不带，三组结果逐位相同），所以
      *   音乐还是视频只能本地按 tid 判，见 [MUSIC_TIDS]。
      */
-    private suspend fun searchSigned(query: String, limit: Int): List<MusicVideo> {
+    private suspend fun searchSigned(query: String, limit: Int, startPage: Int = 1): List<MusicVideo> {
         val mixin = wbiMixin()
         val out = ArrayList<MusicVideo>()
-        var page = 1
+        var page = startPage
         while (out.size < limit) {
             val url = "$SEARCH_API?" + signed(
                 mapOf(
@@ -120,6 +121,7 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
                         category = o.optString("typename").takeIf { it.isNotBlank() },
                         // tid 在这份接口里是字符串（实测 30 条全是 "193" 这种写法），别按数字读
                         music = (o.optString("typeid").toIntOrNull() ?: -1) in MUSIC_TIDS,
+                        publishedAtMs = o.optLong("pubdate") * 1_000,
                     )
                 )
                 if (out.size >= limit) break
@@ -206,6 +208,7 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
             durationMs = data.optLong("duration") * 1_000,
             pageUrl = "https://www.bilibili.com/video/$bvid",
             artworkUrl = data.optString("pic").takeIf { it.isNotBlank() },
+            publishedAtMs = data.optLong("pubdate") * 1_000,
         )
     }
 
@@ -256,6 +259,7 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
                         artworkUrl = coverOf(arc.optString("pic")),
                         playCount = arc.optJSONObject("stat")?.optLong("view") ?: 0,
                         category = arc.optString("type_name").takeIf { it.isNotBlank() },
+                        publishedAtMs = arc.optLong("pubdate") * 1_000,
                         music = topTid in MUSIC_TIDS,
                     )
                 )
@@ -277,6 +281,7 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
                 playCount = views,
                 artistFaceUrl = upFace,
                 category = data.optString("tname").takeIf { it.isNotBlank() },
+                publishedAtMs = data.optLong("pubdate") * 1_000,
                 music = topTid in MUSIC_TIDS,
             )
         }
@@ -323,24 +328,91 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
                 playCount = o.optJSONObject("stat")?.optLong("view") ?: 0,
                 artistFaceUrl = coverOf(o.optJSONObject("owner")?.optString("face").orEmpty()),
                 category = o.optString("tname").takeIf { it.isNotBlank() },
+                publishedAtMs = o.optLong("pubdate") * 1_000,
             )
         }
     }
 
-    override suspend fun resolve(video: MusicVideo): Playable {
+    /**
+     * 默认那一档 = 站点当前能给的最高一档。
+     *
+     * 原来这里写死 `qn=32`（480P），而 2026-10-14 实测那一趟回的是 `quality=16` —— 站点把 480P
+     * 降到了 360P，也就是这一路一直在下 360P，而 720P 不登录就拿得到（同一支片子 17,989,807
+     * 对 7,626,603 字节，量过）。`qn=127` 是"给我最好的"那个问法，实测回 `quality=64`。
+     */
+    override suspend fun resolve(video: MusicVideo): Playable = playableOf(playData(video, QN_BEST))
+
+    /**
+     * 这一条能挑的几档。2026-10-14 实测（不登录、`fnval=0&platform=html5`）：
+     * `accept_quality=[64,16]`、`accept_description=["高清 720P","流畅 360P"]`、
+     * `support_formats[].display_desc` 是短的那一句（"720P"/"360P"），每档的 `durl[0].size` 各给各的。
+     * 1080P/4K 在 `fnval=4048` 那趟的 `support_formats` 里列着，可那一趟 `durl` 回 0 条、只有分流的
+     * DASH —— 单 url 交给播放器就没声音，所以不登录能挑的就这两档，别照列表里那六档画。
+     *
+     * 每一档的地址只在自己那一次请求里给（不是拿最高那条改个参数），所以有几档就要问几次；
+     * 最高那档上面那次已经问到了，不再问第二遍 —— 一支片子两档 = 两次请求。
+     */
+    override suspend fun qualities(video: MusicVideo): List<Rendition> {
+        val top = playData(video, QN_BEST)
+        val granted = top.optInt("quality")
+        val offered = top.optJSONArray("accept_quality").intList()
+        if (offered.size < 2) return emptyList()
+        val labels = labelsOf(top)
+        val out = ArrayList<Rendition>()
+        for (qn in offered) {
+            val d = if (qn == granted) top else playData(video, qn)
+            /* 站点答的 quality 不等于问的那一档 = 这档它其实不给，得丢掉。
+               这条不是防御：qn=32 被降到 16 就是在这儿被抓出来的，照单画会画出一档点不动的 480P。 */
+            if (d.optInt("quality") != qn) continue
+            out.add(Rendition(labels[qn] ?: qn.toString(), playableOf(d), d.durlSize()))
+        }
+        return out.sortedByDescending { it.approxBytes }
+    }
+
+    /** 问一次 playurl。`high_url_protection=1` 是原来就在的那一颗，别去掉 */
+    private suspend fun playData(video: MusicVideo, qn: Int): JSONObject {
         val bvid = video.remoteId.substringBefore('|')
         /* 搜索那一栏的条目 cid 是空的（那接口就是不给，实测 300 条一条都没有），先问一次 view 补上。
            view 走的是全局那支 UA + 首页 Referer —— 这一对是实测通的，别换成 webHeaders() 那支。 */
         val cid = video.remoteId.substringAfter('|')
             .ifBlank { entry(video.pageUrl).remoteId.substringAfter('|') }
-        val data = fetch.get(
-            "$PLAY_API?bvid=$bvid&cid=$cid&qn=32&fnval=0&platform=html5&high_url_protection=1",
+        return fetch.get(
+            "$PLAY_API?bvid=$bvid&cid=$cid&qn=$qn&fnval=0&platform=html5&high_url_protection=1",
             headersForUrl(video.pageUrl),
         ).requireData()
+    }
+
+    private fun playableOf(data: JSONObject): Playable {
         val url = data.optJSONArray("durl")?.optJSONObject(0)?.optString("url")
             ?: throw SourceFailureException(SourceFailure.Parse("这条片子只给了 DASH 分流，没有整片地址"))
         return Playable(url = url, headers = headersForUrl(url))
     }
+
+    /** 档位标签用站点自己给的那一句，它下面还跟一句"准高清/流畅"，那一行装不下也不如这个数字直白 */
+    private fun labelsOf(data: JSONObject): Map<Int, String> {
+        val arr = data.optJSONArray("support_formats") ?: return emptyMap()
+        val out = HashMap<Int, String>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val q = o.optInt("quality")
+            val s = o.optString("display_desc")
+            if (q > 0 && s.isNotBlank()) out[q] = s
+        }
+        return out
+    }
+
+    private fun JSONArray?.intList(): List<Int> {
+        if (this == null) return emptyList()
+        val out = ArrayList<Int>()
+        for (i in 0 until length()) {
+            val v = optInt(i)
+            if (v > 0 && v !in out) out.add(v)
+        }
+        return out
+    }
+
+    private fun JSONObject.durlSize(): Long =
+        optJSONArray("durl")?.optJSONObject(0)?.optLong("size") ?: 0L
 
     /** 站点的 code!=0 一律算"这页没给数据"，别把空 data 往下传 */
     private fun String.requireData(): JSONObject {
@@ -368,6 +440,8 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
         private const val COVER_W = 400
         private const val COVER_H = 360
         private const val PLAY_API = "https://api.bilibili.com/x/player/playurl"
+        /** "给我最好的"那个问法：实测不登录回 `quality=64`（720P），问 32 反被降到 16 */
+        private const val QN_BEST = 127
         private const val RELATED_API = "https://api.bilibili.com/x/web-interface/archive/related"
         private val EM_TAG = Regex("</?em[^>]*>")
 

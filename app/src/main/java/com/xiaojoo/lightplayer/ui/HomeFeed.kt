@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -19,12 +20,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,23 +46,34 @@ import com.xiaojoo.lightplayer.data.Online
 import com.xiaojoo.lightplayer.data.Playlist
 import com.xiaojoo.lightplayer.data.Track
 import com.xiaojoo.lightplayer.videosource.MusicVideo
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 首页那一屏：搜索条 → 五颗入口 → 大横幅 → 两列大卡 → 三张行列表卡。
  *
  * 每一块喂的都是这台机上真有的东西，栏名跟着数据走：
- * 横幅和两列卡是 B 站热门（同一批数据切两段，不重复摆条目），「最近入库」是 MediaStore 按
- * 文件时间排的前几条，「最近播放」是播放历史，「我的歌单」是自建歌单。
+ * 横幅和两列卡是各源默认那一串里**冲着看来的**那些（B 站热门、快手推荐流），
+ * 「热门音乐」是在线音乐源那一路的官方榜单拉回来的那一批（四张榜去重、按站点报的发布时间排）；
+ * 「最近播放」是播放历史，「我的歌单」是自建歌单。
+ * 两栏是**两次拉取**：横幅和两列卡吃 `Online.browse`，热门音乐吃 `Online.hotMusic` ——
+ * 前者给的是画面、后者给的是歌，没有一条会出现在两栏里。
  * 哪一块没数据，那一块整块不摆 —— 空栏头比没有栏头更难看。
  */
 @Composable
 fun HomeFeed(
     playlists: List<Playlist>,
     tracksOf: (Playlist) -> List<Track>,
-    fresh: List<Track>,
+    /** 在线音乐源那一路的官方榜单拉回来的那一批，已经按发布时间排好（站点没报时间的那些沉在最后） */
+    hot: List<MusicVideo>,
+    playingId: String?,
     history: List<Track>,
     favorites: Set<String>,
     picks: List<MusicVideo>,
+    /** 行上那一格写的源名：拿源自己报的那个，不在界面这边抄一份对照表 */
+    sourceLabel: (String) -> String?,
+    downloadingKey: String?,
     onSearch: () -> Unit,
     onArtists: () -> Unit,
     onCharts: () -> Unit,
@@ -67,11 +84,16 @@ fun HomeFeed(
     onPlayList: (List<Track>, Int) -> Unit,
     onToggleFavorite: (Track) -> Unit,
     onPlayPick: (MusicVideo) -> Unit,
+    onQueuePick: (MusicVideo) -> Unit,
+    onDownloadPick: (MusicVideo) -> Unit,
+    /** 栏头那颗「更多」：点开「热门音乐」那一整屏 */
+    onMoreHot: () -> Unit,
 ) {
     val banner = picks.take(5)
     val cards = picks.drop(5)
-    val freshRows = fresh.take(5)
     val histRows = history.take(5)
+    // 这一栏只摆前 5 条，「更多」那颗点开一整屏（他 10-14 改的点）—— 就地折叠那一版撤干净了
+    val hotRows = hot.take(5)
     // 栏头要和它下面那张卡左右对齐：卡片吃 ScreenPad，栏头就得自己补同一条内衬
     val headPad = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad).padding(bottom = 8.dp)
 
@@ -80,8 +102,12 @@ fun HomeFeed(
             .fillMaxSize()
             .background(Tokens.ListBg)
             .statusBarsPadding(),
-        // 迷你条是盖在这一屏上的浮层，最后一张卡的尾巴会被它压住：底部留给它一条自己的高
-        contentPadding = PaddingValues(bottom = 96.dp)
+        /* 底部这条缝原来是照"和卡片间间隙一样"定的：真机量两张卡之间 156px = 56.7dp。
+           他 10-15 看了说这一档太高，只要它的一半 → **28.35dp**（78px）。
+           再往前那一版写 96dp，理由是"迷你条是浮层会压住最后一张卡" —— 那句不成立：
+           MainActivity 那列里迷你条和底栏是滚动区（`Box(weight 1f)`）的**兄弟行**，视口本来就停在它们上面，
+           96.8dp 全是空白（他 10-14 圈出来的就是这一截）。 */
+        contentPadding = PaddingValues(bottom = 28.35.dp)
     ) {
         item(key = "search") { SearchPill(onClick = onSearch) }
 
@@ -115,17 +141,43 @@ fun HomeFeed(
             }
         }
 
-        if (freshRows.isNotEmpty()) {
-            item(key = "fresh:head") { SectionHead("最近入库", "按文件时间", modifier = headPad) }
-            item(key = "fresh:panel") {
+        if (hotRows.isNotEmpty()) {
+            item(key = "hot:head") {
+                SectionHead(
+                    title = "热门音乐",
+                    note = "按发布时间",
+                    action = "更多",
+                    actionIcon = IconKind.ChevronRight,
+                    onAction = onMoreHot,
+                    modifier = headPad
+                )
+            }
+            item(key = "hot:panel") {
                 PanelCard {
-                    freshRows.forEachIndexed { i, t ->
-                        TrackRow(
-                            track = t,
-                            favorite = t.uri.toString() in favorites,
-                            onClick = { onPlayList(freshRows, i) },
-                            onFavorite = { onToggleFavorite(t) },
-                        )
+                    hotRows.forEach { v ->
+                        // 左内衬补 12.7dp。这一行右端那两颗的墨右沿本来就落在"离卡片右沿 12.7dp"
+                        // 那一条上（那是 MusicSourcePage 里 rightShift 那个常数保证的），而以前左边一格没给，
+                        // 封面直接贴在卡片左沿 —— 真机量到左缝 0px、右缝 36px(=13.1dp，含 1px 抗锯齿晕)。
+                        // 补成同一个数，这一行的左右两条缝才是同一根线（他 10-14 点的）。
+                        Box(modifier = Modifier.padding(start = 12.7.dp)) {
+                            MusicRow(
+                                video = v,
+                                playing = "online:" + v.key == playingId,
+                                onClick = { onPlayPick(v) },
+                                onQueue = { onQueuePick(v) },
+                                onDownload = { onDownloadPick(v) },
+                                downloading = downloadingKey == v.key,
+                                // 第二行：歌手 · 时长 · 发布时间 · 源名。站点没给的那一格直接不写，
+                                // 不拿"未知"占位；音质那一格列表里拿不到（网易云 6/6 空、B 站和快手列表不报），
+                                // 所以这里不标 —— 它只在取址之后才存在，写在播放页和队列那一行
+                                sub = listOfNotNull(
+                                    v.artist.takeIf { it.isNotBlank() },
+                                    MediaLibrary.fmtDuration(v.durationMs).takeIf { v.durationMs > 0 },
+                                    fmtPublished(v.publishedAtMs),
+                                    sourceLabel(v.sourceId),
+                                ).joinToString(" · "),
+                            )
+                        }
                     }
                 }
             }
@@ -372,4 +424,173 @@ private fun TrackRow(
             }
         }
     }
+}
+
+/**
+ * 发布时间那一格：站点没报（0）就不写这一格，不拿"未知"占位。
+ * 只到月：首页那一行挤着歌手·时长·时间·源名四项，写到日就换行了。
+ */
+private fun fmtPublished(ms: Long): String? =
+    if (ms <= 0) null else SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date(ms))
+
+/**
+ * 「热门音乐」那一整屏：首页那一栏的「更多」点开它，摆的是拉回来的**全部**（首页只摆 5 条）。
+ *
+ * 顶上那一套照「歌手」那一屏抄（他 10-14 点的）：← 那颗 + 34sp 大标题 + **三行筛选芯片** +
+ * 一行状态字 + 列表。芯片吃的是条目身上真有的字段（见 [HotFilter]），摆不出来的条件不编。
+ * 行还是同一只 `MusicRow`、第二行同样那四项。左右内衬钉在**迷你条那一行同一对数**（他 10-14 点的）：
+ * 左 `ScreenPad` 20dp、右 `ColEndPad` 6.6dp —— 迷你条那行的最右那颗墨右沿就是靠这一对压在内容右边界上的，
+ * 所以这一屏的行右端那两颗和下面迷你条那三颗是同一条竖线。标题和状态字只吃左边那一格。
+ * 它是"页面"不是"抽屉" —— 底栏那一整条在这屏上是消失的（`bottomInset` 那一格跟着 `showBar` 走）。
+ */
+@Composable
+fun HotMusicPage(
+    hot: List<MusicVideo>,
+    playingId: String?,
+    sourceLabel: (String) -> String?,
+    downloadingKey: String?,
+    onPlay: (MusicVideo) -> Unit,
+    onQueue: (MusicVideo) -> Unit,
+    onDownload: (MusicVideo) -> Unit,
+    onBack: () -> Unit,
+    bottomInset: Boolean,
+) {
+    val rows = remember(hot) { HotFilter.rows(hot) }
+    // 每行选中第几颗，0 恒是"全部"。按 rows 的行长开：多一行芯片不会有一行的点击落空
+    var picks by remember { mutableStateOf(List(rows.size) { 0 }) }
+    val now = remember(hot) { System.currentTimeMillis() }
+    val shown = remember(hot, picks, now) { HotFilter.apply(hot, picks, rows, now) }
+    val filtered = picks.any { it != 0 }
+    val boards = remember(hot) { hot.mapNotNull { it.category }.distinct().size }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Tokens.ListBg)
+            .statusBarsPadding()
+            .then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
+    ) {
+        // 唯一钉住的一行：左右内衬和下面对齐（标题、芯片、行都是 15dp）
+        Box(
+            modifier = Modifier.fillMaxWidth()
+                .padding(start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ColEndPad)
+                .size(Tokens.Dimen.IconHit),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Box(
+                modifier = Modifier.size(Tokens.Dimen.IconHit).tap(onClick = onBack),
+                contentAlignment = Alignment.CenterStart
+            ) { LineIcon(IconKind.ArrowLeft, size = 22.dp, color = Tokens.InkStrong) }
+        }
+        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+            item(key = "title") {
+                Text(
+                    "热门音乐", color = Tokens.InkStrong, fontSize = 34.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = Tokens.Dimen.ScreenPad)
+                )
+            }
+            itemsIndexed(rows, key = { r, _ -> "hotchip$r" }) { r, labels ->
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth().padding(top = if (r == 0) 12.dp else 10.dp),
+                    contentPadding = PaddingValues(start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ColEndPad),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp)
+                ) {
+                    items(labels, key = { "$r:$it" }) { label ->
+                        Chip(text = label, selected = picks.getOrElse(r) { 0 } == labels.indexOf(label)) {
+                            picks = List(rows.size) { i ->
+                                if (i == r) labels.indexOf(label) else picks.getOrElse(i) { 0 }
+                            }
+                        }
+                    }
+                }
+            }
+            item(key = "status") {
+                Text(
+                    text = when {
+                        hot.isEmpty() -> "还没有内容：回「在线音乐源」那一屏点刷新再问一次"
+                        filtered -> "筛出 ${shown.size} / ${hot.size} 首"
+                        else -> "$boards 张榜单 · 共 ${hot.size} 首 · 按发布时间"
+                    },
+                    color = Tokens.InkFaint, fontSize = 13.sp,
+                    modifier = Modifier.padding(start = Tokens.Dimen.ScreenPad, top = 12.dp, bottom = 4.dp)
+                )
+            }
+            items(shown, key = { "hotall-" + it.key }) { v ->
+                Box(modifier = Modifier.padding(start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ColEndPad)) {
+                    MusicRow(
+                        video = v,
+                        playing = "online:" + v.key == playingId,
+                        onClick = { onPlay(v) },
+                        onQueue = { onQueue(v) },
+                        onDownload = { onDownload(v) },
+                        downloading = downloadingKey == v.key,
+                        sub = listOfNotNull(
+                            v.artist.takeIf { it.isNotBlank() },
+                            MediaLibrary.fmtDuration(v.durationMs).takeIf { v.durationMs > 0 },
+                            fmtPublished(v.publishedAtMs),
+                            sourceLabel(v.sourceId),
+                        ).joinToString(" · "),
+                    )
+                }
+            }
+            item(key = "tail") { Spacer(modifier = Modifier.height(20.dp)) }
+        }
+    }
+}
+
+/**
+ * 「热门音乐」那一屏的三行筛选。只碰字符串和数字，能在 JVM 上单测。
+ *
+ * 三行各自独立（选中一行不清掉另一行），每行第 0 颗恒是「全部」：
+ * ① 榜单 —— 从**这批里现数**（条目多的排前面），不写死一张榜表：哪一张问挂了，芯片跟着少一颗；
+ * ② 发布时间 —— 站点没报的那些单独一档「未报时间」，不塞进「更早」（那是"不知道"不是"老"）；
+ * ③ 时长 —— 和歌手那一屏同一把数（3 分钟内 / 10 分钟内 / 更长）。
+ *
+ * 两档不做：
+ * - 播放数：网易云列表不给（全 0），摆上去就是一条筛了等于没筛的芯片；
+ * - 源：这一屏整批都来自 `Online.hotMusic` 那一路（只有网易云），那一行只有「全部 / 网易云」两颗，
+ *   和上面那条是同一个死控件理由。条目上那一格源名照写，只是不拿来筛。
+ */
+object HotFilter {
+    const val ALL = "全部"
+    private const val DAY = 86_400_000L
+
+    fun rows(items: List<MusicVideo>): List<List<String>> {
+        val boards = items.mapNotNull { it.category }.groupingBy { it }.eachCount()
+            .entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .map { it.key }
+        return listOf(
+            listOf(ALL) + boards,
+            listOf(ALL, "一年内", "三年内", "更早", "未报时间"),
+            listOf(ALL, "3分钟内", "10分钟内", "更长"),
+        )
+    }
+
+    fun apply(items: List<MusicVideo>, picks: List<Int>, labels: List<List<String>>, nowMs: Long): List<MusicVideo> =
+        items.filter { v ->
+            labels.indices.all { r ->
+                val row = labels[r]
+                matches(v, r, row.getOrElse(picks.getOrElse(r) { 0 }) { row.first() }, nowMs)
+            }
+        }
+
+    fun matches(v: MusicVideo, row: Int, label: String, nowMs: Long): Boolean =
+        when (row) {
+            0 -> label == ALL || v.category == label
+            1 -> when (label) {
+                ALL -> true
+                "未报时间" -> v.publishedAtMs <= 0L
+                "一年内" -> v.publishedAtMs > 0L && nowMs - v.publishedAtMs <= 365L * DAY
+                "三年内" -> v.publishedAtMs > 0L && nowMs - v.publishedAtMs <= 3L * 365L * DAY
+                "更早" -> v.publishedAtMs > 0L && nowMs - v.publishedAtMs > 3L * 365L * DAY
+                else -> true
+            }
+            else -> when (label) {
+                ALL -> true
+                "3分钟内" -> v.durationMs in 1..180_000L
+                "10分钟内" -> v.durationMs > 180_000L && v.durationMs <= 600_000L
+                "更长" -> v.durationMs > 600_000L
+                else -> true
+            }
+        }
 }

@@ -60,3 +60,58 @@ class LrcTest {
         assertEquals(1, Lrc.indexAt(lines, 999999L))
     }
 }
+
+class LyricMatchTest {
+
+    @Test
+    fun 候选名带歌名和整份文件名两种() {
+        assertEquals(listOf("晴天.lrc", "晴天.mp3.lrc"), LyricMatch.candidates("晴天.mp3"))
+        // 没扩展名的显示名：两条撞成一条，不重复找第二遍
+        assertEquals(listOf("晴天.lrc"), LyricMatch.candidates("晴天"))
+    }
+
+    @Test
+    fun 歌词在歌曲那一格不是文件夹根() {
+        assertEquals(
+            listOf("周杰伦", "叶惠美"),
+            LyricMatch.segmentsOf(
+                "/storage/emulated/0/Music",
+                "/storage/emulated/0/Music/周杰伦/叶惠美/晴天.mp3"
+            )
+        )
+        // 歌就在根上：零层，调用方据此直接在根里找
+        assertEquals(emptyList<String>(), LyricMatch.segmentsOf("/storage/emulated/0/Music", "/storage/emulated/0/Music/晴天.mp3"))
+        // 尾斜杠是界面拼出来的常见形状，不能因此判成"不在这颗 tree 里"
+        assertEquals(listOf("A"), LyricMatch.segmentsOf("/sd/Music/", "/sd/Music/A/s.mp3"))
+    }
+
+    @Test
+    fun 歌不在这颗树下就退回根上找() {
+        // 换了挂载点、或者选的是别的目录：不能拿半截路径去走下去（会找错格）
+        assertEquals(null, LyricMatch.segmentsOf("/storage/emulated/0/Music", "/storage/sdcard1/Music/a/晴天.mp3"))
+        assertEquals(null, LyricMatch.segmentsOf("", "/storage/emulated/0/Music/晴天.mp3"))
+        // 同名前缀的另一棵树（/sd/Music vs /sd/MusicX）不算命中
+        assertEquals(null, LyricMatch.segmentsOf("/sd/Music", "/sd/MusicX/a/晴天.mp3"))
+    }
+
+    @Test
+    fun 纯ASCII歌词不会被认成GBK() {
+        val raw = "[00:01.00]Hello"
+        assertEquals(raw, LyricMatch.decode(raw.toByteArray(Charsets.UTF_8)))
+    }
+
+    @Test
+    fun GBK的中文能解出来() {
+        val raw = "[00:01.00]故事是小明"
+        val gbk = raw.toByteArray(charset("GBK"))
+        // 这一串按 UTF-8 严格解会抛，所以必须回到 GBK，而不是解成一堆替换符
+        assertEquals(raw, LyricMatch.decode(gbk))
+    }
+
+    @Test
+    fun UTF8带BOM不会把第一句变成乱码() {
+        val raw = "[00:01.00]第一句"
+        val withBom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) + raw.toByteArray(Charsets.UTF_8)
+        assertEquals(raw, LyricMatch.decode(withBom))
+    }
+}

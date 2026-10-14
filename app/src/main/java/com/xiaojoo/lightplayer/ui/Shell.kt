@@ -2171,7 +2171,7 @@ fun FilterPage(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FilterGroup(
+internal fun FilterGroup(
     title: String,
     collapsible: Boolean,
     expanded: Boolean,
@@ -2179,7 +2179,30 @@ private fun FilterGroup(
     topPad: Dp = Tokens.Dimen.FilterGapTop,
     chips: @Composable FlowRowScope.() -> Unit
 ) {
-    // 组名一行，右端放折叠箭头（照你给的那张图：箭头在组标题右边，不在芯片里）。
+    FilterHead(title, collapsible, expanded, onToggle, topPad)
+    FlowRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Tokens.Dimen.ScreenPad),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        maxLines = if (expanded) Int.MAX_VALUE else 3
+    ) { chips() }
+}
+
+/**
+ * 组标题那一行，从 [FilterGroup] 里分出来单独能用：「在线音乐源」那一屏有一组不是芯片、
+ * 是一串行，但它标题的几何必须和别的组一模一样 —— 行高/内衬/字号抄第二份就会漂，
+ * 而这两组标题在同一屏上下挨着，差 1px 都看得出来。
+ */
+@Composable
+internal fun FilterHead(
+    title: String,
+    collapsible: Boolean = false,
+    expanded: Boolean = false,
+    onToggle: () -> Unit = {},
+    topPad: Dp = Tokens.Dimen.FilterGapTop,
+) {
     // 这一行锁死高 FilterHeadH：不然歌手组那颗 34dp 的箭头盒会把行撑高，
     // 标题到芯片的缝比时长组那一条宽 25px。
     Row(
@@ -2216,18 +2239,10 @@ private fun FilterGroup(
             }
         }
     }
-    FlowRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Tokens.Dimen.ScreenPad),
-        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        maxLines = if (expanded) Int.MAX_VALUE else 3
-    ) { chips() }
 }
 
 @Composable
-private fun FilterChip(label: String, count: Int, on: Boolean, onClick: () -> Unit) {
+internal fun FilterChip(label: String, count: Int, on: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             // 行距/列距挪到 FlowRow 的 spacedBy 上了：挂在每颗芯片自己的 bottom 内衬上，

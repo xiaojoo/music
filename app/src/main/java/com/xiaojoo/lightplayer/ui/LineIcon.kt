@@ -339,6 +339,12 @@ fun LineIcon(
                 drawLine(color, Offset(s * 0.57426f, s * 0.26274f), Offset(s * 0.68293f, s * 0.37140f), st, StrokeCap.Round)
             }
 
+            // 对勾：选中那颗。两笔，短笔 45° 落到底、长笔从那儿甩上去
+            IconKind.Check -> {
+                drawLine(color, Offset(s * 0.22f, s * 0.50f), Offset(s * 0.42f, s * 0.70f), st, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.42f, s * 0.70f), Offset(s * 0.78f, s * 0.32f), st, StrokeCap.Round)
+            }
+
             IconKind.Close -> {
                 drawLine(color, Offset(s * 0.24f, s * 0.24f), Offset(s * 0.76f, s * 0.76f), st, StrokeCap.Round)
                 drawLine(color, Offset(s * 0.76f, s * 0.24f), Offset(s * 0.24f, s * 0.76f), st, StrokeCap.Round)
@@ -516,7 +522,7 @@ enum class IconKind {
     Play, Pause, Next, Prev, Repeat, Queue, ChevronDown, ChevronRight,
     Home, MusicNote, Video, Person, Add, Favorite, FavoriteLine, PlayAdd, PlayQueue, SquareAdd, Share, PinTop, Trash,
     Download, ArrowLeft, Search, PlaylistAdd, Sort,
-    Close, Drag, Speed, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh
+    Close, Drag, Speed, Check, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh
 }
 
 /** 三尖倒圆角的实心三角：每个尖沿两条邻边各让进 t = r / tan(θ/2)（θ 是该尖的内角），

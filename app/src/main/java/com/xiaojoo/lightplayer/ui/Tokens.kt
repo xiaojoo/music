@@ -100,6 +100,7 @@ object Tokens {
         val IconHit = 48.dp                   // 视觉 18dp，命中区补到 48dp
         val IconPitch = 69.dp                 // 中心间距 208px = 69dp
         val LyricLineHeight = 47.dp           // 行距 141±2px = 47dp
+        val LyricEndBand = 32.dp            // 歌词上下内衬 = 一行白缝 99px（真机量的，见 LyricPage）
         val PlayButton = 64.dp                // 中央播放键的命中区（圆底已删，只剩这块按得着的方）
         val SideIcon = 24.dp
 
