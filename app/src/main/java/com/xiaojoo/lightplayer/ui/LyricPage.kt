@@ -29,9 +29,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -185,7 +187,48 @@ fun LyricPage(
     }
 }
 
-/** 没选中的一行：和改之前同一份几何（盒高下限 47dp、内衬 16/4dp、居中、长句照旧换行） */
+/**
+ * 一行歌词的墨。选中和没选中**共用这一份**，而且**在行盒里上下居中** ——
+ *
+ * 之前这里没有外层盒子，`heightIn(min=47)` 直接把 Text 撑到 47dp、字画在它顶头（顶对齐），
+ * 选中那一行的字落在行盒 y=4..27（中心 15.5dp），而高亮底中心在 23.5dp、时间/▶ 也在 23.5dp
+ * —— 字比它的底和两翼高出 8dp（他 10-16 圈的"背景要在文字上上下居中"就是这个 8dp）。
+ *
+ * 居中之后这四条同时成立：行盒仍 47dp（不撑高）、高亮到上下两行同缝、高亮在文字上上下居中、
+ * 点选前后字不动。代价：**整页歌词的墨会一次性往下走 8dp**（行距 47dp 一格不变），
+ * 之后点哪一行都不再动。
+ */
+@Composable
+private fun LyricText(
+    text: String,
+    active: Boolean,
+    color: Color,
+    horizontalPad: Dp,
+    maxLines: Int,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = Tokens.Dimen.LyricLineHeight),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            color = color,
+            fontSize = if (active) 19.sp else 16.sp,
+            fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+            textAlign = TextAlign.Center,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = horizontalPad, vertical = 4.dp)
+        )
+    }
+}
+
+/** 没选中的一行：和选中那一行走同一份 [LyricText]（盒高下限 47dp、内衬 16/4dp、字在行盒里居中） */
 @Composable
 private fun LyricRow(
     text: String,
@@ -193,8 +236,9 @@ private fun LyricRow(
     onArt: Boolean,
     onClick: () -> Unit,
 ) {
-    Text(
+    LyricText(
         text = text,
+        active = active,
         /* 非当前行分两支：默认档保持改之前那支（Ink 压 55%），画幅档另走量过的「次要」那一档。
            合不成一支 —— 这两支在默认页底上差 0.08（2.34 / 2.42），那一屏他已经认可过，
            不能为了画幅顺手挪；而 0.55 那支稀释法压在图上只剩 2.25，掉到三档判据（≥3.0）之外。
@@ -204,14 +248,9 @@ private fun LyricRow(
             onArt -> Tokens.ArtInkFaint
             else -> Tokens.Ink.copy(alpha = 0.55f)
         },
-        fontSize = if (active) 19.sp else 16.sp,
-        fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
-        textAlign = TextAlign.Center,
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = Tokens.Dimen.LyricLineHeight)
-            .tap(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 4.dp)
+        horizontalPad = 16.dp,
+        maxLines = Int.MAX_VALUE,
+        modifier = Modifier.tap(onClick = onClick)
     )
 }
 
@@ -229,11 +268,23 @@ private val PillFlank = 46.dp
 private val PillInset = 3.dp
 
 /**
+ * 左端那个时间离行盒左沿的间隙，取到和右端 ▶ 离右沿一样多。
+ *
+ * ▶ 那颗按 `LineIcon.Play` 的路径常数离线算（不量像素）：24dp 画框下墨宽 **12.257dp**、
+ * 墨中心在画框 12.717（右偏 0.717dp = `ColInkShift` 补掉的那 0.71dp），补完就是居中在 46dp 的格子里。
+ * 所以右边间隙 = (46 − 12.257) / 2 = **16.87dp** = 46.4px → 取 16.9dp（差 0.03dp = 0.08px）。
+ */
+private val PillTimeStart = 16.9.dp
+
+/**
  * 选中那一行：圆角底 + 左端时间 + 中间词 + 右端 ▶，照他 10-15 附的那张参考图。
  *
  * 行盒下限就是没选中的那行那一档（47dp），里面每一样都不许高过它 —— 选中态在行间挪的时候
  * 行距一格不变；长句和没选中那行一样允许换到第二行（两行 19sp ≈ 46dp，仍不超 47dp）。
  * 高亮底比行盒上下各让 [PillInset]，所以它到上一行、下一行的白缝同长。
+ *
+ * 中间那句走 [LyricText]（和没选中那行同一份、同一个居中），所以字、高亮底、时间、▶
+ * 四条的中心都在行盒中线 23.5dp 上 —— 点选前后不动，底也正好把字上下包住。
  */
 @Composable
 private fun LyricPill(
@@ -262,16 +313,13 @@ private fun LyricPill(
                 .clip(corner)
                 .background(if (onArt) Tokens.ArtPill else Tokens.CardBg)
         )
-        Text(
+        LyricText(
             text = text,
+            active = active,
             color = if (active) Tokens.inkStrong(onArt) else Tokens.ink(onArt),
-            fontSize = if (active) 19.sp else 16.sp,
-            fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
             // 左右各让开一格，长句不会压到时间和 ▶ 底下；让开的两格等宽，所以中心还在屏心
-            modifier = Modifier.padding(horizontal = PillFlank + 4.dp)
+            horizontalPad = PillFlank + 8.dp,
+            maxLines = 2,
         )
         Text(
             text = timeText,
@@ -280,8 +328,8 @@ private fun LyricPill(
             maxLines = 1,
             modifier = Modifier
                 .align(Alignment.CenterStart)
-                .padding(start = 10.dp)
-                .width(PillFlank - 10.dp)
+                .padding(start = PillTimeStart)
+                .width(34.dp)
         )
         Box(
             modifier = Modifier
