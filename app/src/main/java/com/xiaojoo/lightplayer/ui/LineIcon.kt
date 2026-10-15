@@ -388,6 +388,39 @@ fun LineIcon(
                 }
             }
 
+            /* 画幅：一张方相框，里面一颗太阳加一座山 —— 播放页右上角那颗「换中间那一格」。
+               外沿按齿轮那颗收：中心线正好落在 x/y 0.28986..0.71014（跨 0.42028 画框），
+               和 Settings 那条路径同一只方框，所以两颗的墨外沿逐位相同 ——
+               22dp 画框 + 默认笔画 0.075 画框时都是 (0.42028+0.075)×22 = 10.91dp = 30px。
+               原来是 0.16..0.84 横着一大块（墨 45.7×36px），摆在齿轮旁边就是一颗大一颗小。
+               改成方的而不是等比缩小，是因为等比缩会把画框一起缩到 14.5dp、
+               笔画跟着细到 1.09dp（齿轮是 1.65dp），一粗一细。 */
+            IconKind.Photo -> {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(s * 0.28986f, s * 0.28986f),
+                    size = androidx.compose.ui.geometry.Size(s * 0.42028f, s * 0.42028f),
+                    cornerRadius = CornerRadius(s * 0.05f),
+                    style = Stroke(width = st, join = StrokeJoin.Round)
+                )
+                drawCircle(
+                    color = color, radius = s * 0.033f, center = Offset(s * 0.385f, s * 0.400f),
+                    style = Stroke(width = st)
+                )
+                // 山：折线两端都收在相框内沿里面（内沿 = 0.28986 + 半个笔画 = 0.3274）
+                val ridge = listOf(
+                    0.335f to 0.655f, 0.440f to 0.545f, 0.515f to 0.615f, 0.585f to 0.555f, 0.665f to 0.655f
+                )
+                for (i in 0 until ridge.size - 1) {
+                    drawLine(
+                        color,
+                        Offset(s * ridge[i].first, s * ridge[i].second),
+                        Offset(s * ridge[i + 1].first, s * ridge[i + 1].second),
+                        st, StrokeCap.Round
+                    )
+                }
+            }
+
             // 视频方向旋转：一圈弧线带箭头，中间一个直角标记
             IconKind.Rotate -> {
                 val r = s * 0.30f
@@ -558,7 +591,7 @@ enum class IconKind {
     Play, Pause, Next, Prev, Repeat, Queue, ChevronDown, ChevronRight,
     Home, MusicNote, Video, Person, Shirt, Add, Favorite, FavoriteLine, PlayAdd, PlayQueue, SquareAdd, Share, PinTop, Trash,
     Download, ArrowLeft, Search, PlaylistAdd, Sort,
-    Close, Drag, Speed, Check, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh
+    Close, Drag, Speed, Check, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh, Photo
 }
 
 /** 三尖倒圆角的实心三角：每个尖沿两条邻边各让进 t = r / tan(θ/2)（θ 是该尖的内角），

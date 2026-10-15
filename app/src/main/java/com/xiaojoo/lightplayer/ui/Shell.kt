@@ -151,11 +151,11 @@ fun BottomBar(tab: AppTab, onSelect: (AppTab) -> Unit) {
                 LineIcon(
                     kind,
                     size = if (selected) 22.dp else 20.dp,
-                    color = if (selected) Tokens.InkStrong else Tokens.InkFaint
+                    color = if (selected) Tokens.Accent else Tokens.InkFaint
                 )
                 Text(
                     text = label,
-                    color = if (selected) Tokens.InkStrong else Tokens.InkFaint,
+                    color = if (selected) Tokens.Accent else Tokens.InkFaint,
                     fontSize = 11.sp,
                     fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
                     modifier = Modifier.padding(top = 3.dp)
@@ -1774,7 +1774,10 @@ fun NowPlayingBar(
         // ColInkShift：▶ 的墨中心在画框右 0.0304·画框，不补的话"心↔播放"比"播放↔队列"窄 4px；
         // 暂停和队列两颗的墨中心本来就落在自己盒正中（队列只偏 0.67px），不补
         RowIcon(
-            if (playing) IconKind.Pause else IconKind.Play, Tokens.InkStrong,
+            // 在放的那一颗吃主题色（装扮换过就跟着换），停着的那一颗仍是墨色：
+            // 这一条里只有它是状态，另外两颗（心、队列）本来各自有颜色
+            if (playing) IconKind.Pause else IconKind.Play,
+            if (playing) Tokens.Accent else Tokens.InkStrong,
             size = if (playing) Tokens.Dimen.ColPause else Tokens.Dimen.ColPlay,
             inkShift = if (playing) 0.dp else Tokens.Dimen.ColInkShift
         ) { onTogglePlay() }
@@ -2312,8 +2315,9 @@ internal fun FilterHead(
     }
 }
 
+/** 一颗可选中的芯片。`count` 给 null 就只写标签 —— 装扮页那一行「5 秒 / 10 秒」没有数可报。 */
 @Composable
-internal fun FilterChip(label: String, count: Int, on: Boolean, onClick: () -> Unit) {
+internal fun FilterChip(label: String, count: Int? = null, on: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             // 行距/列距挪到 FlowRow 的 spacedBy 上了：挂在每颗芯片自己的 bottom 内衬上，
@@ -2332,8 +2336,10 @@ internal fun FilterChip(label: String, count: Int, on: Boolean, onClick: () -> U
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.widthIn(max = 180.dp)
             )
-            Spacer(Modifier.width(5.dp))
-            Text("$count", color = if (on) Color.White else Tokens.InkFaint, fontSize = 12.sp)
+            if (count != null) {
+                Spacer(Modifier.width(5.dp))
+                Text("$count", color = if (on) Color.White else Tokens.InkFaint, fontSize = 12.sp)
+            }
         }
     }
 }

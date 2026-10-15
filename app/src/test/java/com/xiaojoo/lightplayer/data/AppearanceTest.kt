@@ -89,6 +89,41 @@ class AppearanceTest {
         assertEquals(2.44, Appearance.contrast(defaultBg, inks[2].second), 0.01)
     }
 
+    // ── 系统那两条的图标深浅 + 铺图之后的混合 ─────────────────────────────
+
+    @Test
+    fun 混合就是屏幕上真画出来的那一步() {
+        assertEquals(0xFF808080.toInt(), Appearance.blend(white, 0xFF000000.toInt(), 0.5f))
+        // 0% 全透回去、100% 全盖住：两端必须精确，否则"图压在底色上"那一步是估的
+        assertEquals(0xFF000000.toInt(), Appearance.blend(white, 0xFF000000.toInt(), 0f))
+        assertEquals(white, Appearance.blend(white, 0xFF000000.toInt(), 1f))
+    }
+
+    @Test
+    fun 图标深浅按黑白色谁赢判且中灰那一档能翻边() {
+        assertTrue(Appearance.lightAppearance(white))                  // 亮底配深字
+        assertTrue(Appearance.lightAppearance(defaultBg))              // 今天那档列表灰
+        assertFalse(Appearance.lightAppearance(0xFF000000.toInt()))    // 暗底配白字
+        // 这把尺子必须能翻边：等对比度那一点在亮度 0.179，折回 sRGB 是 117 —— 两侧各取一个
+        assertTrue(Appearance.lightAppearance(gray(180)))
+        assertFalse(Appearance.lightAppearance(gray(100)))
+    }
+
+    /** 铺图之后卡片不能塌到页底里去：白纱比图厚，所以任何一张图下卡片都还亮一档 */
+    @Test
+    fun 铺图之后卡片仍比页底亮一档() {
+        val card = 0xFFFAFAFA.toInt()
+        val base = 0xFFF1F4F9.toInt()
+        for (v in 0..255 step 17) {
+            val photo = gray(v)
+            val overCard = Appearance.luminance(Appearance.blend(card, photo, Appearance.CARD_ALPHA))
+            val overStrip = Appearance.luminance(Appearance.blend(photo, base, Appearance.IMAGE_ALPHA))
+            assertTrue("整条带都是 $v 的那张图下，卡片不再比页底亮", overCard > overStrip)
+        }
+    }
+
+    private fun gray(v: Int) = 0xFF000000.toInt() or (v shl 16) or (v shl 8) or v
+
     private companion object {
         const val FLOOR = 0.9
     }

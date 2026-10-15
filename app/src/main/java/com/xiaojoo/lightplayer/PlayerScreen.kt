@@ -11,11 +11,13 @@ import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,6 +28,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -46,10 +51,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -58,6 +68,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.xiaojoo.lightplayer.data.Appearance
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import com.xiaojoo.lightplayer.data.PlayHistory
 import com.xiaojoo.lightplayer.data.Track
@@ -65,12 +76,14 @@ import com.xiaojoo.lightplayer.ui.IconKind
 import com.xiaojoo.lightplayer.ui.tap
 import com.xiaojoo.lightplayer.ui.LineIcon
 import com.xiaojoo.lightplayer.ui.AudioQuality
+import com.xiaojoo.lightplayer.ui.clockOf
 import com.xiaojoo.lightplayer.ui.Lrc
 import com.xiaojoo.lightplayer.ui.LyricLine
 import com.xiaojoo.lightplayer.ui.LyricPage
 import com.xiaojoo.lightplayer.ui.lyricFor
 import com.xiaojoo.lightplayer.ui.LyricStore
 import com.xiaojoo.lightplayer.ui.MusicOnlinePage
+import com.xiaojoo.lightplayer.ui.Skin
 import com.xiaojoo.lightplayer.videosource.MusicVideo
 import com.xiaojoo.lightplayer.ui.ModeSheet
 import com.xiaojoo.lightplayer.ui.ScrubBar
@@ -116,6 +129,8 @@ fun PlayerScreen(
     onOnlineSongsFetch: () -> Unit,
     /** 那一栏里的视频：不在这播，挪到视频 tab 的在线那一栏去播 */
     onOpenVideo: (MusicVideo) -> Unit,
+    /** 右上角那颗「画幅」：开的是中间那一格换什么的那一整屏（黑胶唱机 / 歌曲海报 / 自选图片） */
+    onOpenArt: () -> Unit,
     /** 播放页那三页当前在哪一页：从视频 tab 按系统返回键退回来时，要落回「在线」那一页 */
     startPage: Int,
     onPage: (Int) -> Unit,
@@ -266,22 +281,60 @@ fun PlayerScreen(
         onNowPlaying(currentUri)
         val uri = currentUri ?: return@LaunchedEffect
         cover = loadCover(context, uri)
+        // 「播放画幅」那一屏是盖在这一屏上面的整屏子页，它看不到这一格的局部状态，从镜子拿
+        Skin.cover.value = cover
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Tokens.playerBackground())
-            .statusBarsPadding()
-    ) {
+    val pagerState = rememberPagerState(initialPage = startPage, pageCount = { 3 })
+
+    /* 画幅档开着：整屏背景是那张图，这一屏的字全走白的那一套。
+       第三页（在线）不算：那一屏是列表，栏头那几行压在图上读不清，它照旧用页底那档灰。 */
+    val onArt = Tokens.artOn && pagerState.currentPage != 2
+
+    /* 画幅铺到状态栏和导航条底下，那两条的图标深浅就归这一屏管（和视频那一屏同一个走法）。
+       不用去量那张图有多亮：图上那层纱是 InkStrong 按 ART_SCRIM_ALPHA 盖下去的，图再白，
+       混完也不超过 113 —— 白字一定赢，所以 onArt 一律按白字。PlayerArtTest 扫 0..255 钉这一条。 */
+    DisposableEffect(onArt, Tokens.LightSystemIcons) {
+        val ctl = (context as? android.app.Activity)?.window
+            ?.let { WindowCompat.getInsetsController(it, it.decorView) }
+        val light = if (onArt) false else Tokens.LightSystemIcons
+        ctl?.isAppearanceLightStatusBars = light
+        ctl?.isAppearanceLightNavigationBars = light
+        onDispose {
+            val back = Tokens.LightSystemIcons
+            ctl?.isAppearanceLightStatusBars = back
+            ctl?.isAppearanceLightNavigationBars = back
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        val art = Tokens.artBitmap
+        if (onArt && art != null) {
+            Image(
+                bitmap = art,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Tokens.ArtScrim.copy(alpha = Appearance.ART_SCRIM_ALPHA))
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Tokens.playerBackground())
+            )
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
                 .padding(horizontal = Tokens.Dimen.ScreenPad)
         ) {
             Spacer(Modifier.height(12.dp))
-
-            val pagerState = rememberPagerState(initialPage = startPage, pageCount = { 3 })
 
             // 第三页是滑进来的，不给它另摆一颗键 —— 和歌词同一只入口（ dots + 右滑 ）
             /* 只在**滑到这一页**那一下问一次。这一屏上点封面、展开、暂停都不该再发搜索请求（他点名的），
@@ -298,18 +351,34 @@ fun PlayerScreen(
                 /* 第三颗（在线）在**没读到歌名**的时候不画：那一屏是按当前这一首搜的，没歌名它就没内容，
                    摆一颗点上去只会落到一片空白（他 10-15 点的）。页表还是三页 —— 往右滑仍然滑得过去，
                    收掉的只是那颗指示。 */
-                PageDots(count = if (title.isNullOrBlank()) 2 else 3, index = pagerState.currentPage)
+                PageDots(count = if (title.isNullOrBlank()) 2 else 3, index = pagerState.currentPage, onArt = onArt)
                 Box(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.CenterEnd
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(Tokens.Dimen.IconHit)
-                            .tap(onClick = onSettings),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        LineIcon(IconKind.Settings, size = 22.dp, color = Tokens.Ink)
+                    /* 两颗并排。命中盒从 48dp 见方收成 28×48dp：48 见方里那颗 30px 的墨两边各空 51px，
+                       两颗挨着排就是 94px（34.2dp）的空 —— 他要"右边间隙小一点"，按系数 0.5 收到 47px。
+                       间隙 = 盒宽 − 墨宽（和 ColBox 那一族同一条算式）：28 − 10.91 = 17.1dp。
+                       尾巴那 10dp 是把整对往回挪，好让齿轮的墨右沿仍停在原来的 x=974，
+                       不然收了盒它会被顶到内容边界上去。高仍 48dp（28dp 只是宽，77×132px 按得着）。
+                       左右两块等宽，所以中间那三颗点仍在屏心。 */
+                    Row(modifier = Modifier.padding(end = Tokens.Dimen.ArtIconEndPad)) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = Tokens.Dimen.ArtIconBox, height = Tokens.Dimen.IconHit)
+                                .tap(onClick = onOpenArt),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            LineIcon(IconKind.Photo, size = 22.dp, color = Tokens.ink(onArt))
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(width = Tokens.Dimen.ArtIconBox, height = Tokens.Dimen.IconHit)
+                                .tap(onClick = onSettings),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            LineIcon(IconKind.Settings, size = 22.dp, color = Tokens.ink(onArt))
+                        }
                     }
                 }
             }
@@ -323,7 +392,10 @@ fun PlayerScreen(
                         cover = cover,
                         playing = isPlaying,
                         title = title,
-                        artist = listOfNotNull(artist, quality).joinToString(" · ").ifBlank { null }
+                        artist = listOfNotNull(artist, quality).joinToString(" · ").ifBlank { null },
+                        lines = lyrics,
+                        positionMs = positionMs,
+                        onArt = onArt
                     )
                 } else if (page == 1) {
                     LyricPage(
@@ -331,7 +403,8 @@ fun PlayerScreen(
                         positionMs = positionMs,
                         source = lyricSource,
                         onSeek = { ms -> onTakeover(); audio?.seekTo(ms) },
-                        onPickFolder = { folderPicker.launch(null) }
+                        onPickFolder = { folderPicker.launch(null) },
+                        onArt = onArt
                     )
                 } else {
                     MusicOnlinePage(
@@ -361,8 +434,11 @@ fun PlayerScreen(
                 }
             }
 
-            /* 进度条和那五个键只在封面那一页摆。歌词页点一行就能跳，在线页整页是内容 ——
-               底下再挂一条控制区，两页都白占一截高度（他点名要的）。 */
+            /* 进度条和那五个键只在封面那一页摆。歌词页点一行选中、再点那颗 ▶ 才跳，在线页整页是内容 ——
+               底下再挂一条控制区，两页都白占一截高度（他点名要的）。
+               滚动歌词那一格不在这里 —— 它挪到封面那一页里面去了，见 CoverPage：挂在外面的话，
+               它上面那截空是 pager 自己的余量（真机量到 51dp），隔不到进度条这一侧来，
+               "和歌名的间隙与和底部的间隙一样"这条就只能在 pager 里面用两个等权重空档给。 */
             if (pagerState.currentPage == 0) {
                 ProgressRow(
                     positionMs = positionMs,
@@ -380,7 +456,8 @@ fun PlayerScreen(
                         speed = v
                         onTakeover()
                         audio?.setPlaybackSpeed(v)
-                    }
+                    },
+                    onArt = onArt
                 )
 
                 Spacer(Modifier.height(6.dp))
@@ -396,7 +473,8 @@ fun PlayerScreen(
                         onTakeover()
                         if (c.isPlaying) c.pause() else c.play()
                     },
-                    onQueue = onOpenQueue
+                    onQueue = onOpenQueue,
+                    onArt = onArt
                 )
 
                 Spacer(Modifier.height(14.dp))
@@ -432,13 +510,16 @@ private fun CoverPage(
     cover: ImageBitmap?,
     playing: Boolean,
     title: String?,
-    artist: String?
+    artist: String?,
+    lines: List<LyricLine>,
+    positionMs: Long,
+    onArt: Boolean
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(Modifier.weight(0.34f))
+        Spacer(Modifier.height(Tokens.Dimen.CoverTopGap))
 
         // 参考图卡片 323x293dp（宽:高 = 1.10），铺满内容宽度
         Box(
@@ -446,49 +527,105 @@ private fun CoverPage(
                 .fillMaxWidth()
                 .aspectRatio(1.103f)
         ) {
-            Turntable(
-                cover = cover,
-                playing = playing,
-                modifier = Modifier.fillMaxSize()
-            )
+            /* 画幅档（海报/自选）这一格是**空的**：那张图已经铺在整屏底下了，再画一块卡片底
+               就成了图上贴一个方框。格子照旧占位，所以换档的时候歌名和歌手一格不挪。 */
+            if (!onArt) {
+                Turntable(
+                    cover = cover,
+                    playing = playing,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
         Text(
             text = title ?: "未选择文件",
-            color = Tokens.InkStrong,
+            color = Tokens.inkStrong(onArt),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.padding(top = 22.dp)
         )
         Text(
             text = artist ?: "未知歌手",
-            color = Tokens.Ink,
+            color = Tokens.ink(onArt),
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 6.dp)
         )
-        Spacer(Modifier.weight(1f))
+
+        /* 滚动歌词塞在歌手行下面那一整块余量里**居中**：到歌名的缝和到进度条的缝是同一条，
+           这条是居中给的，不是我挑出来的数。
+           顶上那道缝已经从 `weight(0.34f)` 改成定值 [Tokens.Dimen.CoverTopGap] —— 两个权重一起
+           分余量的话，这一格从 66dp 长到 110dp 会把封面顶上去 11dp；钉死上面那一条，
+           涨跌全落在这一只盒子里，封面一格不挪。
+           没歌词的那首歌这一格高 0dp，这只盒子里空着 —— 和改之前逐位相同。 */
+        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            LyricStrip(lines = lines, positionMs = positionMs, onArt = onArt)
+        }
+    }
+}
+
+/** 进度条上面那一格的一条：五行里的一句，单行、居中 */
+@Composable
+private fun StripLine(text: String, active: Boolean, onArt: Boolean) {
+    Text(
+        text = text,
+        color = if (active) Tokens.inkStrong(onArt) else Tokens.inkFaint(onArt),
+        fontSize = if (active) 18.sp else 15.sp,
+        fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+        textAlign = TextAlign.Center,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(Tokens.Dimen.LyricStripSlot)
+    )
+}
+
+/**
+ * 进度条上面那五行滚动歌词：当前句落在正中那一格，上下各两句。
+ *
+ * 走法和歌词那一屏同一套（LazyColumn + animateScrollToItem），不是自己算 translationY ——
+ * 窗口自己滚的话，跨句那一下要么跳要么得再写一套插值。
+ * `scrollToItem(i)` 把第 i 项对齐到**内衬之后**（真机 10-15 量的：给它 cur−1，当前句落在最下那一格），
+ * 所以这里传 `current` 本身、上下各留两格的顶/底内衬，当前句才正好压在正中间。
+ *
+ * **没有歌词的那首歌整条不摆**（高 0dp，那一屏逐位回到改之前）：摆五行空的是把封面顶上去一截去装没东西。
+ */
+@Composable
+private fun LyricStrip(lines: List<LyricLine>, positionMs: Long, onArt: Boolean) {
+    if (lines.isEmpty()) return
+    val state = rememberLazyListState()
+    val current = Lrc.indexAt(lines, positionMs).coerceAtLeast(0)
+    val slot = Tokens.Dimen.LyricStripSlot
+
+    LaunchedEffect(current, lines) {
+        state.animateScrollToItem(current)
+    }
+
+    LazyColumn(
+        state = state,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(slot * 5),
+        contentPadding = PaddingValues(top = slot * 2, bottom = slot * 2)
+    ) {
+        itemsIndexed(lines) { i, line ->
+            StripLine(text = line.text, active = i == current, onArt = onArt)
+        }
     }
 }
 
 @Composable
-private fun LyricPage(title: String?) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(
-            text = if (title == null) "选择文件后显示歌词" else "暂无歌词",
-            color = Tokens.InkFaint,
-            style = MaterialTheme.typography.bodyMedium
-        )
-    }
-}
-
-@Composable
-private fun PageDots(count: Int, index: Int) {
+private fun PageDots(count: Int, index: Int, onArt: Boolean) {
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
         repeat(count) { i ->
             Box(
                 Modifier
                     .size(width = if (i == index) 14.dp else 6.dp, height = 6.dp)
-                    .background(if (i == index) Tokens.Ink else Tokens.InkFaint.copy(alpha = 0.5f), CircleShape)
+                    .background(
+                        if (i == index) Tokens.ink(onArt) else Tokens.inkFaint(onArt).copy(alpha = 0.5f),
+                        CircleShape
+                    )
             )
         }
     }
@@ -503,7 +640,8 @@ private fun ProgressRow(
     onDrag: (Float) -> Unit,
     onSeek: (Long) -> Unit,
     speed: Float,
-    onSpeed: (Float) -> Unit
+    onSpeed: (Float) -> Unit,
+    onArt: Boolean
 ) {
     var menu by remember { mutableStateOf(false) }
     ScrubBar(
@@ -511,21 +649,24 @@ private fun ProgressRow(
         enabled = enabled,
         onDragStart = onDragStart,
         onDrag = onDrag,
-        onDragEnd = { f -> onSeek((f * durationMs).toLong()) }
+        onDragEnd = { f -> onSeek((f * durationMs).toLong()) },
+        idleColor = if (onArt) Tokens.ArtTrackIdle else Tokens.TrackIdle,
+        playedColor = if (onArt) Tokens.ArtTrackPlayed else Tokens.TrackPlayed,
+        thumbColor = Tokens.inkStrong(onArt)
     )
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(fmt(positionMs), color = Tokens.InkFaint, style = MaterialTheme.typography.bodySmall)
+        Text(clockOf(positionMs), color = Tokens.inkFaint(onArt), style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.weight(1f))
         Text(
             text = "倍速 ${if (speed % 1f == 0f) speed.toInt().toString() else speed}x",
-            color = Tokens.Ink,
+            color = Tokens.ink(onArt),
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier
                 .tap { menu = true }
                 .padding(horizontal = 8.dp, vertical = 4.dp)
         )
         Spacer(Modifier.weight(1f))
-        Text(fmt(durationMs), color = Tokens.InkFaint, style = MaterialTheme.typography.bodySmall)
+        Text(clockOf(durationMs), color = Tokens.inkFaint(onArt), style = MaterialTheme.typography.bodySmall)
     }
     // 原来是贴在文字下面的一个小下拉菜单，够不着也不好点，改成整块底部抽屉
     if (menu) {
@@ -546,7 +687,8 @@ private fun ControlRow(
     onPrev: () -> Unit,
     onNext: () -> Unit,
     onPlayPause: () -> Unit,
-    onQueue: () -> Unit
+    onQueue: () -> Unit,
+    onArt: Boolean
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -560,12 +702,12 @@ private fun ControlRow(
                 Player.REPEAT_MODE_ONE -> IconKind.LoopOne
                 else -> IconKind.OrderSeq
             },
-            color = if (repeatMode == Player.REPEAT_MODE_OFF) Tokens.Ink else Tokens.Accent,
+            color = if (repeatMode == Player.REPEAT_MODE_OFF) Tokens.ink(onArt) else Tokens.Accent,
             size = Tokens.Dimen.LoopIcon,
             stroke = Tokens.Dimen.LoopStroke,
             onClick = onPickMode
         )
-        HitIcon(IconKind.Prev, color = Tokens.InkStrong, size = Tokens.Dimen.PrevNextIcon, onClick = onPrev)
+        HitIcon(IconKind.Prev, color = Tokens.inkStrong(onArt), size = Tokens.Dimen.PrevNextIcon, onClick = onPrev)
         // 圆底删掉后这颗就是枚裸三角，按参考图三颗同色同量级；命中区还是原来那块 64dp 的方
         Box(
             modifier = Modifier
@@ -576,13 +718,13 @@ private fun ControlRow(
             LineIcon(
                 kind = if (playing) IconKind.Pause else IconKind.Play,
                 size = if (playing) Tokens.Dimen.PauseIcon else Tokens.Dimen.PlayIcon,
-                color = Tokens.InkStrong,
+                color = Tokens.inkStrong(onArt),
                 modifier = Modifier.offset(x = if (playing) 0.dp else Tokens.Dimen.PlayInkShift)
             )
         }
-        HitIcon(IconKind.Next, color = Tokens.InkStrong, size = Tokens.Dimen.PrevNextIcon, onClick = onNext)
+        HitIcon(IconKind.Next, color = Tokens.inkStrong(onArt), size = Tokens.Dimen.PrevNextIcon, onClick = onNext)
         HitIcon(
-            IconKind.Queue, color = Tokens.InkStrong,
+            IconKind.Queue, color = Tokens.inkStrong(onArt),
             size = Tokens.Dimen.QueueIcon, stroke = Tokens.Dimen.QueueStroke, onClick = onQueue
         )
     }
@@ -697,11 +839,3 @@ private suspend fun loadCover(context: Context, uri: Uri): ImageBitmap? =
             bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
         }.getOrNull()
     }
-
-private fun fmt(ms: Long): String {
-    val total = ms / 1000
-    val h = total / 3600
-    val m = (total % 3600) / 60
-    val s = total % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
-}

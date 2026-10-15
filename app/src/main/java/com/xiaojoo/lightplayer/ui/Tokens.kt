@@ -2,6 +2,8 @@ package com.xiaojoo.lightplayer.ui
 
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import com.xiaojoo.lightplayer.data.Appearance
 
@@ -10,8 +12,8 @@ object Tokens {
     // 底色：播放页与列表页是两档不同的灰，实测差 (5,4,6)，别合并成一档
     val PlayerBg = Color(0xFFECF0F3)          // (236,240,243) 上半屏恒定
     val ListBg = Color(0xFFF1F4F9)            // (241,244,249)
-    val CardBg = Color(0xFFFAFAFA)            // 唱机外框 (250,250,250)
-    val NavBg = Color(0xFFFFFFFF)             // 底栏与迷你条同一档纯白（2026-10-10 他点名要白色）
+    private val DefaultCardBg = Color(0xFFFAFAFA)   // 唱机外框 (250,250,250)
+    private val DefaultNavBg = Color(0xFFFFFFFF)    // 底栏与迷你条同一档纯白（2026-10-10 他点名要白色）
 
     // 底部暖渐变：实测 y≈1850 起，到屏幕底
     val WarmTop = Color(0xFFE6E6E6)           // (236,230,230) @y1900
@@ -20,7 +22,15 @@ object Tokens {
 
     val InkStrong = Color(0xFF1A1A1A)         // 当前行歌词 / 标题
     val Ink = Color(0xFF5F6062)               // 参考图非当前行墨色中位 (95,96,98)
-    val InkFaint = Color(0xFF9B9EA3)
+    private val DefaultInkFaint = Color(0xFF9B9EA3)
+    /**
+     * 次要那一档墨：铺了本地图片就往上顶一档（顶到 Ink 那一档）。
+     * 真机量过：这张图上「收藏」那两个字 1.93、「装扮」1.78、宫格数字 2.23~2.35，
+     * 而默认档（241 灰底）是 2.44 —— 图透上来多少，这一档就掉多少，卡片加白纱也补不回来
+     * （把卡片提到 0.75 只从 1.78 到 2.1）。图是他要点开的东西，不能为了字把图压回去，
+     * 所以动字不动图。代价：铺图时这一档和正文那一档并成同一支，层次少一级。
+     */
+    val InkFaint: Color get() = if (Skin.image.value == null) DefaultInkFaint else Ink
     val Track = Color(0xFFBCBCBC)             // 迷你条、分隔线那一支灰（上一张参考图量来的）
     // 参考图未播段是 7% 白、已播段 22% 白（同一支颜色只变深浅）。我们这边浅色底上白叠不上去，
     // 换成同一支墨的深浅：未播压到 7% 墨，已播 22% 墨（压在 231 底上实测 18.2% 不够，另给一支）。
@@ -45,6 +55,74 @@ object Tokens {
         Skin.bg.value == Appearance.UNSET -> PlayerBg
         else -> Color(Skin.bg.value)
     }
+    /** 底栏和迷你条那一档：默认还是他 10-10 点名那档纯白，装扮选了底色就跟着那一档走 */
+    val NavBg: Color get() = if (Skin.bg.value == Appearance.UNSET) DefaultNavBg else Color(Skin.bg.value)
+    /**
+     * 浮在页底上的控件与卡片那一档（那颗搜索胶囊、首页那两张卡）。
+     * **不跟装扮的底色走** —— 跟了就和页底同色，那颗胶囊直接化在背景里（10-15 装完第一版就没了）。
+     * 默认仍是纯白一格不动；铺了图才和卡片一起半透。
+     */
+    val Surface: Color get() =
+        if (Skin.image.value == null) DefaultNavBg else DefaultNavBg.copy(alpha = Appearance.CARD_ALPHA)
+    /** 卡片那一档：只在铺了本地图片时半透（让图从卡片底下透出来），默认档和纯色档仍是实心 */
+    val CardBg: Color get() =
+        if (Skin.image.value == null) DefaultCardBg else DefaultCardBg.copy(alpha = Appearance.CARD_ALPHA)
+    /**
+     * 卡片那一档的**实心**版：给"整屏不铺图"的那几屏用。
+     * 视频那一屏的地址源设置就是这种 —— 它是盖在视频列表上面的，页底一透就透出后面的片子，
+     * 输入框里那行网址压在画面上读不了（2026-10-15 他点名这一屏不要透明）。
+     */
+    val CardSolid: Color = DefaultCardBg
+
+    // ── 画幅：播放页中间那一格换成海报/自选图之后，那张图铺成整屏背景，字压在图上。
+    //    图上面盖一层墨色纱（不透明度见 [Appearance.ART_SCRIM_ALPHA] 那段账），这一屏的三档墨全换成白。
+    /** 画幅该铺的那一张：海报档是这首歌自带的封面，自选档是他挑的那张；唱机档或还没到手回 null */
+    val artBitmap: ImageBitmap? get() = when (Skin.artMode.value) {
+        Appearance.ART_POSTER -> Skin.cover.value
+        Appearance.ART_IMAGE -> Skin.artImage.value
+        else -> null
+    }
+
+    /** 有没有真铺上画幅：图没到手就不算，否则白字会先压在浅色页底上闪一下（那是"看不见字"那一类） */
+    val artOn: Boolean get() = artBitmap != null
+
+    /** 压在图上那一层纱：就是正文那支墨，不另挑色 */
+    val ArtScrim: Color get() = InkStrong
+
+    /** 图上「标题/当前句/图标」那一档 */
+    val ArtInkStrong: Color = Color.White
+
+    /** 图上「歌手行/非当前句」那一档 */
+    val ArtInk: Color = Color.White.copy(alpha = Appearance.ART_INK_BODY_ALPHA)
+
+    /** 图上「两端时间/上一句下一句」那一档 */
+    val ArtInkFaint: Color = Color.White.copy(alpha = Appearance.ART_INK_FAINT_ALPHA)
+
+    /** 图上进度条那两段：0.28 / 0.85。PlayerArtTest 量的判据是"两段各自对底、以及两段互比，都不低于默认档" */
+    val ArtTrackIdle: Color = Color.White.copy(alpha = 0.28f)
+    val ArtTrackPlayed: Color = Color.White.copy(alpha = 0.85f)
+
+    /** 歌词页选中那一条的底：白透一层，不透明才压得住底下那张图 */
+    val ArtPill: Color = Color.White.copy(alpha = 0.14f)
+
+    /** 播放页那三档墨的取色：画幅开着走白那一套，否则回到实测那三档 */
+    fun inkStrong(onArt: Boolean) = if (onArt) ArtInkStrong else InkStrong
+    fun ink(onArt: Boolean) = if (onArt) ArtInk else Ink
+    fun inkFaint(onArt: Boolean) = if (onArt) ArtInkFaint else InkFaint
+
+    /**
+     * 状态栏压在后面那条带**实际**是什么色：没铺图就是壳层底色；铺了图是"图按 IMAGE_ALPHA
+     * 压在底色上"混出来的那一次 —— 和屏幕上真画出来的那一步是同一个算式，不是估的。
+     * 顶带平均色见 Skin.stripArgb（解图那一趟数出来的）。
+     */
+    val StatusStrip: Color get() {
+        val tint = Skin.topTint.value
+        return if (tint == null) SkinBase
+        else Color(Appearance.blend(tint, SkinBase.toArgb(), Appearance.IMAGE_ALPHA))
+    }
+
+    /** 系统状态栏 / 导航条的图标用深还是用白，只看上面那一条带有多亮 */
+    val LightSystemIcons: Boolean get() = Appearance.lightAppearance(StatusStrip.toArgb())
 
     // 底部暖渐变那三档不动：装扮换的是上半屏，暖色那一条是播放页自己的身份
     fun playerBackground(): Brush = Brush.verticalGradient(
@@ -117,9 +195,24 @@ object Tokens {
         val FilterBtnH = 38.dp                // 底部两颗按钮：44 → 38（×0.86）
         val FilterBtnR = 12.dp                // 圆角 22 → 12（×0.55），不再是对边衬的胶囊
         val IconHit = 48.dp                   // 视觉 18dp，命中区补到 48dp
+        // 播放页右上角那两颗（画幅 / 齿轮）的命中盒**宽**。高仍是 IconHit。
+        // 48 见方的盒里那颗 30px 的墨两边各空 51px，两颗挨着排就是 94px = 34.2dp 的空；
+        // 间隙 = 盒宽 − 墨宽（ColBox 那一族同一条算式）→ 28dp − 10.91dp = 17.1dp，正好是原来的一半。
+        val ArtIconBox = 28.dp
+        /** 收完盒之后把整对往回挪这么多，齿轮的墨右沿才仍停在原来的 x=974 */
+        val ArtIconEndPad = 10.dp
         val IconPitch = 69.dp                 // 中心间距 208px = 69dp
         val LyricLineHeight = 47.dp           // 行距 141±2px = 47dp
         val LyricEndBand = 32.dp            // 歌词上下内衬 = 一行白缝 99px（真机量的，见 LyricPage）
+        // 封面页最上面那道缝。原来是 `weight(0.34f)`，在 10-15 那版布局里量到 17.33dp（=47.7px）——
+        // 改成定值只有一个理由：滚动歌词那一格变高（3 行 → 5 行）的时候，它和歌手行下面那只盒子
+        // 是按权重分同一截余量的，权重不动的话封面会跟着往上/下挪十几 dp。
+        // 定值把封面钉死，多出来/少掉的那一截全落到歌手行下面的盒子里去。
+        // 代价：换到更高/更矮的屏上这一道不再跟着屏高缩放（这台机是唯一参考机，见 README）。
+        val CoverTopGap = 17.3.dp
+        // 进度条上面那五行滚动歌词：一格 22dp、五行 110dp。
+        // 22dp 那一格吃的是当前句 18sp：CJK 一行盒 ≈ 20.7dp，留 1.3dp 呼吸，不再高。
+        val LyricStripSlot = 22.dp
         val PlayButton = 64.dp                // 中央播放键的命中区（圆底已删，只剩这块按得着的方）
         val SideIcon = 24.dp
 

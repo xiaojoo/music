@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -99,7 +100,7 @@ fun AppearancePage(
         ) { Skin.setBg(context, Appearance.BACKGROUNDS[it].second) }
 
         FilterHead("本地图片", topPad = 12.dp)
-        ImageCell(onPickImage, onClearImage)
+        ImageCell(Skin.image.value, "选图片", "未铺图", onPickImage, onClearImage)
         Text(
             "整屏铺图，压淡一档让字读得清",
             color = Tokens.InkFaint,
@@ -161,10 +162,20 @@ private fun Swatch(color: Color, selected: Boolean) {
     }
 }
 
-/** 本地图片那一格：左边 88dp 方格既是图也是入口，右边那颗「清除」没图时置灰不消失 */
+/**
+ * 本地图片那一格：左边 88dp 方格既是图也是入口，右边那颗「清除」没图时置灰不消失。
+ *
+ * 装扮页和「播放画幅」那一屏共用这一份 —— 同一族五项（方格尺寸/圆角/描边/那颗清除的置灰态）
+ * 抄第二份一定漂，而这两格在同一台机上会上下挨着看到。
+ */
 @Composable
-private fun ImageCell(onPickImage: () -> Unit, onClearImage: () -> Unit) {
-    val img = Skin.image.value
+internal fun ImageCell(
+    img: ImageBitmap?,
+    emptyLabel: String,
+    offLabel: String,
+    onPickImage: () -> Unit,
+    onClearImage: () -> Unit,
+) {
     val corner = RoundedCornerShape(Tokens.Dimen.CardCorner)
     Row(
         modifier = Modifier
@@ -185,7 +196,7 @@ private fun ImageCell(onPickImage: () -> Unit, onClearImage: () -> Unit) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     LineIcon(IconKind.Add, size = 26.dp, color = Tokens.InkFaint)
                     Text(
-                        "选图片",
+                        emptyLabel,
                         color = Tokens.InkFaint,
                         fontSize = 11.sp,
                         modifier = Modifier.padding(top = 4.dp)
@@ -208,7 +219,7 @@ private fun ImageCell(onPickImage: () -> Unit, onClearImage: () -> Unit) {
             contentAlignment = Alignment.Center
         ) {
             Text(
-                if (img == null) "未铺图" else "清除",
+                if (img == null) offLabel else "清除",
                 color = if (img == null) Tokens.InkFaint.copy(alpha = 0.45f) else Tokens.InkStrong,
                 fontSize = 14.sp
             )
