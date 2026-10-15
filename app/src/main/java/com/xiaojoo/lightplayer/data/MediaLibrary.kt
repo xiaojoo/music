@@ -18,9 +18,9 @@ data class Track(
 /**
  * 一条 uri 是不是视频。判类型只认这一处：MediaStore 的 uri 自带 /video/，
  * SAF 和文件名那一路按扩展名认。
- * 为什么要有这条：`resolve()` 回来的 Track 一律写 isVideo=false，
- * 从那条路进来的视频被记进历史时就带着错标记（真机 100 条里有 7 条），
- * 于是 .mp4 会出现在「音乐」那一栏里。
+ * 记历史和 `resolve()` 两处都吃它。早先 `resolve()` 把这一格写死成 false，
+ * 从那条路进来的视频就带着错标记（真机 100 条里有 7 条），于是 .mp4 会出现在「音乐」那一栏里 ——
+ * 开机装回队列那一路也照这一格挑，所以同一条视频被装进了音频那台（2026-10-15 他圈的那个）。
  */
 fun isVideoUri(raw: String): Boolean {
     val path = raw.substringBefore('?')
@@ -115,12 +115,12 @@ object MediaLibrary {
                     artist = artist,
                     durationMs = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION)),
                     sizeBytes = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)),
-                    isVideo = false
+                    isVideo = isVideoUri(raw)
                 )
             }
         }.getOrNull() ?: run {
             // 查不到（文件被删/没权限）也要显示，不然歌单里会凭空少一行而没人知道为什么
-            Track(0L, uri, raw.substringAfterLast('/').ifBlank { "已失效的条目" }, null, 0L, 0L, false)
+            Track(0L, uri, raw.substringAfterLast('/').ifBlank { "已失效的条目" }, null, 0L, 0L, isVideoUri(raw))
         }
     }
 

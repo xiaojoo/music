@@ -582,16 +582,22 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
 
     fun play(uris: List<Uri>, index: Int, tracks: List<Track>) {
         if (uris.isEmpty()) return
-        queueTracks = tracks
-        queueStart = index.coerceIn(0, uris.size - 1)
-        /* 两路分开：这一串是视频就交给池里那台（会话换过去），是歌就交给音频那台。
+        val at = index.coerceIn(0, uris.size - 1)
+        /* 两路分开，而且**按点下去的那一条**分：是视频就交给池里那台（会话换过去），是歌就交给音频那台。
            以前两路共用一台，从视频列表点一条会把音频那串顶掉，底栏「音乐」那一屏于是画出
            那条视频的海报 —— MMR 对 mp4 会回吐一帧画面当"内嵌封面"。
+           以前按**第一条**判类型：「我的」那排最近播放交出来的是音乐+视频混的一串，第一条是歌、
+           点的却是第三条视频，整串（含那几条视频）就进了音频那台，音乐那一屏又画出视频
+           （2026-10-15 他点的"按点的那条取同类"）。两路本来就不能共一串，所以只留同类那几条，
+           队列起点按留下的这一份重算。
            起播本身仍不改页：在「我的」/列表页点的就留在原地，只让迷你条换成这一条。 */
-        val video = tracks.firstOrNull()?.isVideo ?: QueueEntry.isVideoUri(uris[0].toString())
+        val video = tracks.getOrNull(at)?.isVideo ?: QueueEntry.isVideoUri(uris[at].toString())
+        val keep = tracks.filter { it.isVideo == video }
+        queueTracks = keep
+        queueStart = keep.indexOfFirst { it.uri == uris[at] }.coerceAtLeast(0)
         val first = PlayerPool.members().firstOrNull()
         if (video && first != null) PlayerPool.use(first) else PlayerPool.useAudio()
-        pendingQueue = uris.map { MediaItem.fromUri(it) } to queueStart
+        pendingQueue = keep.map { MediaItem.fromUri(it.uri) } to queueStart
     }
 
     /* 在线那一路的下推：条目不在本地扫描结果里，所以 MediaItem 必须自带 mediaId 和元数据 ——
@@ -1519,10 +1525,14 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
        （服务被系统重建后还留着、或这一局已经点过歌）就不装。不走 pendingQueue —— 那条末尾会 play()。
 
        装哪一串按这个优先级：
-       ① 上一次那串里**本地曲库认得出的**那些 —— 名字、时长都取得到；
+       ① 上一次那串里**本地曲库认得出的那些歌** —— 名字、时长都取得到；
        ② 一条都不剩就**默认装本地音乐列表**。
        在线那几条不进这一串：存的是带签名的直链（站点那边会过期），而且名字取不回来 —— 真机上他圈出来的
-       正是这个：封面页写着「850137046-1-16.mp4 / 未知歌手」。 */
+       正是这个：封面页写着「850137046-1-16.mp4 / 未知歌手」。
+       本地**视频**同样不进：它在媒体库里查得到、`isRemote` 也不认它是远端，一路照①装进来，
+       音乐那一屏就把这条视频画成"在放的歌"（2026-10-15 他红框圈的就是这个：
+       上一次那串是 `content://media/external/video/media/11166`，开机封面页写着 ac6c83…dad / AAC 128 kbps）。
+       迷你条不受这一条约束 —— 它照旧跟着上一次那一条走。 */
     var queueRestored by remember { mutableStateOf(false) }
     LaunchedEffect(controller, audioTracks, mediaGranted) {
         if (queueRestored) return@LaunchedEffect
@@ -1554,9 +1564,10 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
            挂起的这一支取消掉 —— 标记已经留下 true，之后每次进来都直接 return，永远装不上。
            00:02 那三行日志量的就是这个：三行"进入"、后面一句分支日志都没有。 */
         val saved = withContext(Dispatchers.IO) { lastRepo.queue() }
+        // 只留音频那一路：视频在媒体库里查得到，照①装进来就成了"音乐那一屏在放一条视频"
         val local = withContext(Dispatchers.IO) {
             MediaLibrary.resolve(context, saved.filterNot { LastPlayed.isRemote(it) })
-        }
+        }.filter { !it.isVideo }
         // 规则本身在 `LastPlayed.keepForRestore`（纯函数，JVM 上单测钉着）：
         // ① 上一次那串里本地还查得到的，照上一次的顺序；② 一条不剩就装整份本地音乐列表
         val src = LastPlayed.keepForRestore(saved, local.map { it.uri.toString() })
