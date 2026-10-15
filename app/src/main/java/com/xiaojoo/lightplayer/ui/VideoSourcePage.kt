@@ -92,7 +92,7 @@ fun VideoSourcePage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.Backdrop)
+            .background(Tokens.SkinBase)
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
@@ -132,7 +132,7 @@ fun VideoSourcePage(
                     .weight(1f)
                     .height(Tokens.Dimen.FilterBtnH)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Tokens.CardBg)
+                    .background(Tokens.CardSolid)
                     .border(1.dp, Tokens.Divider, RoundedCornerShape(12.dp))
                     .padding(horizontal = 12.dp),
                 contentAlignment = Alignment.CenterStart,
@@ -162,7 +162,7 @@ fun VideoSourcePage(
                 modifier = Modifier
                     .size(width = 52.dp, height = Tokens.Dimen.FilterBtnH)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Tokens.CardBg)
+                    .background(Tokens.CardSolid)
                     .border(1.dp, Tokens.Divider, RoundedCornerShape(12.dp))
                     .tap(enabled = text.isNotBlank() && !urlBusy) {
                         onAddUrl(text.trim()); text = ""
@@ -226,6 +226,12 @@ fun VideoSourcePage(
                     }
                 }
             }
+            // 末排芯片 → 屏底补一条缝，宽度和「组标题 → 芯片」同档（FilterGapTail = 真机 35px），
+            // 口径抄筛选音乐那一屏（d347744）。底部那两颗（重置/确定）摆出来时不补：
+            // 那时这条缝由动作行自己的 top 内衬给，无条件加就叠成两条。
+            if (draft == start && !draft.any) {
+                Spacer(Modifier.height(Tokens.Dimen.FilterGapTail))
+            }
         }
 
         if (draft != start || draft.any) {
@@ -243,7 +249,7 @@ fun VideoSourcePage(
                         .weight(1f)
                         .height(Tokens.Dimen.FilterBtnH)
                         .clip(RoundedCornerShape(Tokens.Dimen.FilterBtnR))
-                        .background(Tokens.CardBg)
+                        .background(Tokens.CardSolid)
                         .border(1.dp, Tokens.Divider, RoundedCornerShape(Tokens.Dimen.FilterBtnR))
                         .tap { draft = VideoFilter() },
                     contentAlignment = Alignment.Center
@@ -287,7 +293,7 @@ private fun SourceChip(
         modifier = Modifier
             .height(36.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(if (off) Tokens.Divider else Tokens.CardBg)
+            .background(if (off) Tokens.Divider else Tokens.CardSolid)
             .tap(onClick = onToggle)
             .padding(start = 14.dp, end = if (confirmDelete) 6.dp else 2.dp),
         contentAlignment = Alignment.Center,

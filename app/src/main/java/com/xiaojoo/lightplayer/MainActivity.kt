@@ -76,6 +76,7 @@ import com.xiaojoo.lightplayer.data.PinnedRepository
 import com.xiaojoo.lightplayer.ui.AddToPlaylistDialog
 import com.xiaojoo.lightplayer.ui.ApiSearchPage
 import com.xiaojoo.lightplayer.ui.AppearancePage
+import com.xiaojoo.lightplayer.ui.PlayerArtPage
 import com.xiaojoo.lightplayer.ui.Skin
 import com.xiaojoo.lightplayer.ui.LyricStore
 import com.xiaojoo.lightplayer.ui.LyricWriter
@@ -495,7 +496,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     val bar = rememberBarState(controller, remember { lastRepo.uri()?.let { Uri.parse(it) } })
     var history by remember { mutableStateOf(PlayHistory.list(context)) }
     // null | history | songs | videos | favorites | playlists | filter | search | online |
-    // artists | artist-search | artist:<歌手名> | pl:<歌单id> | local-search | appearance | music-source
+    // artists | artist-search | artist:<歌手名> | pl:<歌单id> | local-search | appearance |
+    // player-art | music-source
     var page by remember { mutableStateOf<String?>(null) }
     // 搜索词存在壳层：搜索是一个整屏页，开着它的时候列表页不挂着，词存在列表页里会跟着一起没
     var searchQuery by remember { mutableStateOf("") }
@@ -519,6 +521,11 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
        选完立刻把字节拷进 filesDir（见 Skin.applyImage）：内容 uri 出了这一次就读不到了 */
     val bgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) scope.launch { Skin.applyImage(context, uri) }
+    }
+    /* 播放页那一格的自选图：和背景图同一类（只读那一张、选完立刻拷进 filesDir），
+       但是**另一个文件**——装扮铺的是各页往下透的那层底，这一张只归播放页那一格 */
+    val artPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch { Skin.applyArt(context, uri) }
     }
 
     fun playlistOf(p: String?): Playlist? =
@@ -1782,11 +1789,26 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
        只有音乐/视频两个 tab 本身不收 —— 那两屏整页就是播放器/视频，条子在那儿反而挡画面。
        筛选页也收：这一屏底部要留给"重置/确定"那两颗（2026-10-12 他点名，红框圈的就是条子那一条）。
        装扮页也收（2026-10-15 他点名）：换的正是这一屏往下透出去的那层底，条子横在底下挡掉一条，
-       换一颗色板看不出换没换。 */
+       换一颗色板看不出换没换。
+       「播放画幅」那一屏同一条理由也收（和装扮同一族：换的就是身后那一屏的样子），
+       而且它尾巴那句说明正落在条子那一格上。 */
     val showBar = bar.shown != null && page != "filter" && page != "appearance" &&
+        page != "player-art" &&
         !(page == null && (tab == AppTab.Music || tab == AppTab.Video))
     // 迷你条这一条是视频还是歌：先认曲库里查到的那条，查不到（SAF 选进来的文件）再按 uri 形状判
     val barIsVideo = barTrack?.isVideo ?: bar.shown?.let { QueueEntry.isVideoUri(it.toString()) } ?: false
+
+    /* 系统那两条（状态栏 / 导航条）的图标深浅跟着页底走：装扮挑了暗一点的底色、
+       或者铺了一张顶上发暗的图，那档"深字"就会把时钟和电量糊没。
+       视频页那一屏自己按成白字 —— 子组件的 effect 排在组合序的后面，所以那一屏仍由它说了算。 */
+    LaunchedEffect(Tokens.LightSystemIcons) {
+        (context as? Activity)?.window?.let { w ->
+            WindowCompat.getInsetsController(w, w.decorView).apply {
+                isAppearanceLightStatusBars = Tokens.LightSystemIcons
+                isAppearanceLightNavigationBars = Tokens.LightSystemIcons
+            }
+        }
+    }
 
     /* 切 tab 不动播放：视频在放，切到音乐/首页/我的都继续放，会话也不换人 ——
        这一路的实现从头到尾没变过（他点名"一直保留之前的视频实现"）。
@@ -1956,6 +1978,13 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     onBack = { leavePage() },
                     bottomInset = !showBar,
                 )
+            } else if (page == "player-art") {
+                PlayerArtPage(
+                    onPickImage = { artPicker.launch("image/*") },
+                    onClearImage = { Skin.clearArt(context) },
+                    onBack = { leavePage() },
+                    bottomInset = !showBar,
+                )
             } else if (page != null) {
                 TrackListPage(
                     title = pageTitle,
@@ -2077,6 +2106,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     // 这一屏不再给「重试」那颗，但滑到这一页 / 换歌还是要自动问一次（触发在 PlayerScreen）
                     onOnlineSongsFetch = { fetchMusicOnlineSongs() },
                     onOpenVideo = { v -> openInVideoOnline(v) },
+                    onOpenArt = { openPage("player-art") },
                     startPage = musicPlayerPage,
                     onPage = { musicPlayerPage = it }
                 )

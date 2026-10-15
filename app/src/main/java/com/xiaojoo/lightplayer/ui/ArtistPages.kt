@@ -441,7 +441,7 @@ internal fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
         fontSize = 13.sp,
         modifier = Modifier
             .clip(RoundedCornerShape(17.dp))
-            .background(if (selected) Tokens.Accent else Tokens.NavBg)
+            .background(if (selected) Tokens.Accent else Tokens.Surface)
             .tap(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 8.dp)
     )

@@ -255,7 +255,7 @@ internal fun SearchPill(placeholder: String, sidePad: Dp, onClick: () -> Unit) {
             .fillMaxWidth()
             .padding(horizontal = sidePad, vertical = 10.dp)
             .clip(RoundedCornerShape(18.dp))
-            .background(Tokens.NavBg)
+            .background(Tokens.Surface)
             .tap(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -346,7 +346,7 @@ private fun PickCard(video: MusicVideo, onClick: () -> Unit) {
         modifier = Modifier
             .width(173.dp)
             .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
-            .background(Tokens.NavBg)
+            .background(Tokens.Surface)
             .tap(onClick = onClick)
     ) {
         Box(
@@ -385,7 +385,7 @@ private fun PanelCard(content: @Composable () -> Unit) {
             .fillMaxWidth()
             .padding(horizontal = Tokens.Dimen.ScreenPad)
             .clip(RoundedCornerShape(Tokens.Dimen.SheetCorner))
-            .background(Tokens.NavBg)
+            .background(Tokens.Surface)
             .padding(vertical = 4.dp)
     ) { content() }
 }
