@@ -83,7 +83,7 @@ fun ArtistListPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding()
     ) {
         // 唯一钉住的一行。左右内衬和下面对齐：标题、芯片、行都是 15dp
@@ -168,7 +168,7 @@ fun ArtistSearchPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding()
     ) {
         Box(
@@ -282,7 +282,7 @@ fun ArtistSongsPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
     ) {
         Box(modifier = Modifier.fillMaxWidth().height(340.dp).background(Tokens.Track)) {
             remoteCover(coverAt(artist?.faceUrl, 750, 750))?.let {
@@ -293,7 +293,7 @@ fun ArtistSongsPage(
                 modifier = Modifier.fillMaxSize().background(
                     Brush.verticalGradient(
                         0f to Color.Black.copy(alpha = 0.25f), 0.55f to Color.Transparent,
-                        1f to Tokens.ListBg
+                        1f to Tokens.Backdrop
                     )
                 )
             )

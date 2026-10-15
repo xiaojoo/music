@@ -75,7 +75,7 @@ fun OnlinePage(onBack: () -> Unit, onPlay: (MusicVideo) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {

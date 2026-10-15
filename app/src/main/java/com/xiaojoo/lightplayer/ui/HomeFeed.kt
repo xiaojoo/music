@@ -110,7 +110,7 @@ fun HomeFeed(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding(),
         /* 底部这条缝原来是照"和卡片间间隙一样"定的：真机量两张卡之间 156px = 56.7dp。
            他 10-15 看了说这一档太高，只要它的一半 → **28.35dp**（78px）。
@@ -480,7 +480,7 @@ fun HotMusicPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding()
             .then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
     ) {

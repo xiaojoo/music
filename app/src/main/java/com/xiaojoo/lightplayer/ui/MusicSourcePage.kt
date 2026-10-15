@@ -122,7 +122,7 @@ fun MusicSourcePage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding()
             .then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
     ) {

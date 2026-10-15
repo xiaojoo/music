@@ -527,13 +527,36 @@ fun LineIcon(
                 drawLine(color, Offset(s * 0.50f, s * 0.22f), Offset(s * 0.50f, s * 0.78f), st, StrokeCap.Round)
                 drawLine(color, Offset(s * 0.22f, s * 0.50f), Offset(s * 0.78f, s * 0.50f), st, StrokeCap.Round)
             }
+
+            // 装扮那颗 T 恤：轮廓拆成一段段圆头直线，只有领口那一段是弧。
+            // 墨框 x 0.14..0.86 / y 0.24..0.78，和旁边「视频」那颗（0.14..0.86 + 半个笔画）同档大小
+            IconKind.Shirt -> {
+                val pts = listOf(
+                    0.38f to 0.24f, 0.22f to 0.30f, 0.14f to 0.48f, 0.30f to 0.42f,
+                    0.30f to 0.78f, 0.70f to 0.78f, 0.70f to 0.42f, 0.86f to 0.48f,
+                    0.78f to 0.30f, 0.62f to 0.24f,
+                )
+                for (i in 0 until pts.size - 1) {
+                    drawLine(
+                        color,
+                        Offset(s * pts[i].first, s * pts[i].second),
+                        Offset(s * pts[i + 1].first, s * pts[i + 1].second),
+                        st, StrokeCap.Round
+                    )
+                }
+                val collar = Path().apply {
+                    moveTo(s * 0.62f, s * 0.24f)
+                    quadraticTo(s * 0.50f, s * 0.36f, s * 0.38f, s * 0.24f)
+                }
+                drawPath(collar, color, style = Stroke(width = st, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
         }
     }
 }
 
 enum class IconKind {
     Play, Pause, Next, Prev, Repeat, Queue, ChevronDown, ChevronRight,
-    Home, MusicNote, Video, Person, Add, Favorite, FavoriteLine, PlayAdd, PlayQueue, SquareAdd, Share, PinTop, Trash,
+    Home, MusicNote, Video, Person, Shirt, Add, Favorite, FavoriteLine, PlayAdd, PlayQueue, SquareAdd, Share, PinTop, Trash,
     Download, ArrowLeft, Search, PlaylistAdd, Sort,
     Close, Drag, Speed, Check, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh
 }

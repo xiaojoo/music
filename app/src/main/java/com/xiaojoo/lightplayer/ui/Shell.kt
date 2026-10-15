@@ -527,7 +527,9 @@ fun MineScreen(
     onToggleFavoritePlaylist: (Playlist) -> Unit,
     onOpenFavorites: () -> Unit,
     /** 顶上那颗搜索框：点进去是只搜本机曲库的那一屏（音乐 + 视频两路一起） */
-    onOpenSearch: () -> Unit
+    onOpenSearch: () -> Unit,
+    /** 卡片右端那颗「装扮」：换主题色 / 换背景色 / 铺一张本地图 */
+    onOpenAppearance: () -> Unit
 ) {
     var showDialog by remember { mutableStateOf(false) }
     var expandLists by remember { mutableStateOf(false) }
@@ -558,7 +560,7 @@ fun MineScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding()
     ) {
         item { SearchPill("搜索音乐、视频", Tokens.Dimen.ScreenPad, onClick = onOpenSearch) }
@@ -591,6 +593,17 @@ fun MineScreen(
                         StatChip("${videos.size} 个视频")
                         StatChip(MediaLibrary.fmtSize(songs.sumOf { it.sizeBytes } + videos.sumOf { it.sizeBytes }))
                     }
+                }
+                // 装扮那颗：图标在上、两个字在下，和下面那一行三格同一族（26dp 线描 + 13sp 标签 + 同一支墨）。
+                // 宽给满 IconHit 48dp：上下两截合起来正好 48dp 方，不然只有文字那一段按得着
+                Column(
+                    modifier = Modifier
+                        .width(Tokens.Dimen.IconHit)
+                        .tap(onClick = onOpenAppearance),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    LineIcon(IconKind.Shirt, size = 26.dp, color = Tokens.InkFaint)
+                    Text("装扮", color = Tokens.InkFaint, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
                 }
             }
         }
@@ -930,7 +943,7 @@ fun PlaylistListPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding()
             // 迷你条露在下面的时候，导航条那一段由它铺满，页面再留一次就凭空多出一截空高
             .then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
@@ -1123,7 +1136,7 @@ fun TrackListPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding()
             // 迷你条露在下面的时候，导航条那一段由它铺满，页面再留一次就凭空多出一截空高
             .then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
@@ -2123,7 +2136,7 @@ fun FilterPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.ListBg)
+            .background(Tokens.Backdrop)
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {

@@ -3,6 +3,7 @@ package com.xiaojoo.lightplayer.ui
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.xiaojoo.lightplayer.data.Appearance
 
 // 全部数值来自 2026-10-09 对三张 QQ 音乐参考截图的像素测量（1080x2340，按 dpr 3.0 折算成 dp）
 object Tokens {
@@ -26,11 +27,28 @@ object Tokens {
     val TrackIdle = Color(0xFFD7D7D7)         // 231 底色上 7% 墨 = 215
     val TrackPlayed = Color(0xFFB4B4B4)       // 231 底色上 22% 墨 = 180
     val Divider = Color(0xFFD4D6D8)           // 抽屉里的分行线：Track 往卡片底色混一半，比 Track 淡一档
-    val Accent = Color(0xFF06C755)            // 参考图绿色（播放态/开关）
+    private val DefaultAccent = Color(0xFF06C755)  // 参考图绿色（播放态/开关）；装扮没换主题色时就是它
     val FavoriteTileBg = Color(0xFFF1D3D3)    // 选单抽屉里「收藏」那枚格子的粉底：参考图避开白心的两处各采一次，都是 (241,211,211)
 
-    val playerBackground: Brush = Brush.verticalGradient(
-        0f to PlayerBg, 0.78f to PlayerBg, 0.86f to WarmTop, 0.94f to WarmMid, 1f to WarmBottom
+    // ── 装扮：下面四支是"活"的，读 Skin 那三个档。读发生在组合期间，所以换一颗色板
+    //    会把用到它的每一屏各自重画一遍，不需要往子组件往下传色。
+    //    默认档（UNSET）逐支回到上面那批实测数，所以没装扮过的界面是 Δ0 不变。
+    /** 主题色：选中芯片、播放态、开关、收藏心、底部动作那颗实心键，芯片上是白字 */
+    val Accent: Color get() = Skin.accent.value.let { if (it == Appearance.UNSET) DefaultAccent else Color(it) }
+    /** 壳层最外面那一层，恒不透明：本地背景图就铺在它上面，各页的根底再压它一层 */
+    val SkinBase: Color get() = if (Skin.bg.value == Appearance.UNSET) ListBg else Color(Skin.bg.value)
+    /** 各整屏页的根底。铺了图就透明（让壳层那张透出来，只在壳层混合一次，不叠两层洗白） */
+    val Backdrop: Color get() = if (Skin.image.value != null) Color.Transparent else SkinBase
+    /** 播放页上半屏：默认档是 PlayerBg 不是 ListBg（这两档实测差 (5,4,6)，本来就不许合并） */
+    val PlayerTop: Color get() = when {
+        Skin.image.value != null -> Color.Transparent
+        Skin.bg.value == Appearance.UNSET -> PlayerBg
+        else -> Color(Skin.bg.value)
+    }
+
+    // 底部暖渐变那三档不动：装扮换的是上半屏，暖色那一条是播放页自己的身份
+    fun playerBackground(): Brush = Brush.verticalGradient(
+        0f to PlayerTop, 0.78f to PlayerTop, 0.86f to WarmTop, 0.94f to WarmMid, 1f to WarmBottom
     )
 
     object Dimen {
