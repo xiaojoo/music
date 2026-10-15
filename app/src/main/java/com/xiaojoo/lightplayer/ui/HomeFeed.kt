@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiaojoo.lightplayer.data.MediaLibrary
@@ -118,7 +119,7 @@ fun HomeFeed(
            96.8dp 全是空白（他 10-14 圈出来的就是这一截）。 */
         contentPadding = PaddingValues(bottom = 28.35.dp)
     ) {
-        item(key = "search") { SearchPill(onClick = onSearch) }
+        item(key = "search") { SearchPill("搜索音乐", 10.dp, onClick = onSearch) }
 
         if (banner.isNotEmpty()) item(key = "banner") { Banner(videos = banner, onPlay = onPlayVideoPick) }
 
@@ -242,13 +243,17 @@ fun HomeFeed(
     }
 }
 
-/** 顶部那条搜索胶囊：点了进搜索整屏页。参考图右端那两颗（识曲、登录）我们没有，不摆 */
+/**
+ * 顶部那条搜索胶囊：点了进搜索整屏页。参考图右端那两颗（识曲、登录）我们没有，不摆。
+ * 「我的」那一屏顶上那颗共用这一只 —— 五项（内衬/圆角/底色/字号/字色）抄第二份就会漂。
+ * 左右那一条单独给：首页那颗吃 10dp，「我的」那颗要和下面那张卡片同一条竖线（ScreenPad 20dp）。
+ */
 @Composable
-private fun SearchPill(onClick: () -> Unit) {
+internal fun SearchPill(placeholder: String, sidePad: Dp, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 10.dp)
+            .padding(horizontal = sidePad, vertical = 10.dp)
             .clip(RoundedCornerShape(18.dp))
             .background(Tokens.NavBg)
             .tap(onClick = onClick)
@@ -257,7 +262,7 @@ private fun SearchPill(onClick: () -> Unit) {
     ) {
         LineIcon(IconKind.Search, size = 17.dp, color = Tokens.InkFaint)
         Spacer(modifier = Modifier.width(7.dp))
-        Text("搜索音乐", color = Tokens.InkFaint, fontSize = 14.sp)
+        Text(placeholder, color = Tokens.InkFaint, fontSize = 14.sp)
     }
 }
 

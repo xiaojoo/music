@@ -525,7 +525,9 @@ fun MineScreen(
     favoriteCount: Int,
     favoritePlaylistIds: Set<Long>,
     onToggleFavoritePlaylist: (Playlist) -> Unit,
-    onOpenFavorites: () -> Unit
+    onOpenFavorites: () -> Unit,
+    /** 顶上那颗搜索框：点进去是只搜本机曲库的那一屏（音乐 + 视频两路一起） */
+    onOpenSearch: () -> Unit
 ) {
     var showDialog by remember { mutableStateOf(false) }
     var expandLists by remember { mutableStateOf(false) }
@@ -559,7 +561,9 @@ fun MineScreen(
             .background(Tokens.ListBg)
             .statusBarsPadding()
     ) {
-        item { Spacer(Modifier.height(14.dp)) }
+        item { SearchPill("搜索音乐、视频", Tokens.Dimen.ScreenPad, onClick = onOpenSearch) }
+        // 这颗胶囊自带 10dp 下内衬，补 4dp 凑成这一页原来那条 14dp 的顶缝（卡片没挪窝）
+        item { Spacer(Modifier.height(4.dp)) }
         item {
             // 参考图这块是账号+会员+现金活动；本工程没有账号，同一块版面只放真统计，不照抄文案
             Row(
@@ -1376,53 +1380,85 @@ fun TrackListPage(
                     .fillMaxWidth()
             ) {
                 itemsIndexed(visible, key = { i, t -> "tl$i-" + t.uri }) { i, t ->
-                    PressableRow(
-                        onClick = { onPlayList(visible, i) },
+                    TrackLine(
+                        track = t,
+                        index = i,
+                        q = q,
+                        thumbs = thumbs,
+                        favorite = t.uri.toString() in favorites,
+                        onPlay = { onPlayList(visible, i) },
                         onLongClick = { _, _ -> menuFor = t },
-                        verticalPad = 3.dp,
-                        endPad = Tokens.Dimen.ColEndPad
-                    ) {
-                        Text(
-                            text = "${i + 1}",
-                            color = Tokens.InkFaint,
-                            fontSize = 14.sp,
-                            modifier = Modifier.width(30.dp)
-                        )
-                        if (thumbs) {
-                            CoverBox(track = t, side = 42.dp, badge = false)
-                            Spacer(Modifier.width(12.dp))
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(matchInk(t.name, q), color = Tokens.InkStrong, fontSize = 15.sp)
-                            // 第二行只放歌手：时长不在列表里显示（播放页、队列面板里都还看得到）
-                            Text(
-                                text = matchInk(
-                                    t.artist?.takeIf { a -> a.isNotBlank() && a != "<unknown>" }
-                                        ?: "未知歌手", q
-                                ),
-                                color = Tokens.InkFaint,
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(top = 2.dp)
-                            )
-                        }
-                        // 两颗：收藏 / 加入播放列表。挨着排、中间不塞 Spacer，
-                        // 同一只盒（39.5dp）、同一只画框（25dp）、同一支笔画（1.875dp）——
-                        // 归一之后每颗墨都是 12.5dp 宽且居中，所以白缝恒等于 27dp，
-                        // 不用再按每颗的墨宽去凑盒宽。栏位见 RowIcon
-                        val fav = t.uri.toString() in favorites
-                        // 和视频页、歌单页那一颗同一套规矩：已收藏实心、未收藏只描边
-                        RowIcon(if (fav) IconKind.Favorite else IconKind.FavoriteLine,
-                            if (fav) Tokens.Accent else Tokens.InkFaint) {
-                            onToggleFavorite(t)
-                        }
-                        // 闭合三角形 + 一枚加号压在它的下斜边上（挖口见 LineIcon 该分支）
-                        RowIcon(IconKind.PlayQueue, Tokens.InkFaint) { onQueueAdd(t) }
-                        // 「更多」那颗按他要求撤掉；同一份菜单还在，长按这一行调出（onLongClick 见上）
-                    }
+                        onToggleFavorite = { onToggleFavorite(t) },
+                        onQueueAdd = { onQueueAdd(t) },
+                    )
                 }
                 item { Spacer(Modifier.height(20.dp)) }
             }
         }
+    }
+}
+
+/**
+ * 一条曲目行：序号 +（视频那些页才有）封面 + 两行字 + 右端两颗。
+ *
+ * 从 [TrackListPage] 里分出来是因为「我的」那屏本地搜索要摆同一族行：行高、内衬、字号、
+ * 右端那两颗的栏位抄第二份就会漂，而这两处会上下挨着看（他 10-13 为筛选页那两行标题定过同一条规矩）。
+ */
+@Composable
+internal fun TrackLine(
+    track: Track,
+    index: Int,
+    /** 搜索词：命中那一段描成绿，空词就是原样 */
+    q: String,
+    thumbs: Boolean,
+    favorite: Boolean,
+    onPlay: () -> Unit,
+    onLongClick: ((top: Int, height: Int) -> Unit)? = null,
+    onToggleFavorite: () -> Unit,
+    onQueueAdd: () -> Unit,
+) {
+    PressableRow(
+        onClick = onPlay,
+        onLongClick = onLongClick,
+        verticalPad = 3.dp,
+        endPad = Tokens.Dimen.ColEndPad
+    ) {
+        Text(
+            text = "${index + 1}",
+            color = Tokens.InkFaint,
+            fontSize = 14.sp,
+            modifier = Modifier.width(30.dp)
+        )
+        if (thumbs) {
+            CoverBox(track = track, side = 42.dp, badge = false)
+            Spacer(Modifier.width(12.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(matchInk(track.name, q), color = Tokens.InkStrong, fontSize = 15.sp)
+            // 第二行只放歌手：时长不在列表里显示（播放页、队列面板里都还看得到）
+            Text(
+                text = matchInk(
+                    track.artist?.takeIf { a -> a.isNotBlank() && a != "<unknown>" }
+                        ?: "未知歌手", q
+                ),
+                color = Tokens.InkFaint,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        // 两颗：收藏 / 加入播放列表。挨着排、中间不塞 Spacer，
+        // 同一只盒（39.5dp）、同一只画框（25dp）、同一支笔画（1.875dp）——
+        // 归一之后每颗墨都是 12.5dp 宽且居中，所以白缝恒等于 27dp，
+        // 不用再按每颗的墨宽去凑盒宽。栏位见 RowIcon
+        // 和视频页、歌单页那一颗同一套规矩：已收藏实心、未收藏只描边
+        RowIcon(
+            if (favorite) IconKind.Favorite else IconKind.FavoriteLine,
+            if (favorite) Tokens.Accent else Tokens.InkFaint,
+            onClick = onToggleFavorite
+        )
+        // 闭合三角形 + 一枚加号压在它的下斜边上（挖口见 LineIcon 该分支）
+        RowIcon(IconKind.PlayQueue, Tokens.InkFaint, onClick = onQueueAdd)
+        // 「更多」那颗按他要求撤掉；同一份菜单还在，长按这一行调出（onLongClick 见调用方）
     }
 }
 
@@ -1634,7 +1670,7 @@ private fun CoverPaint(thumb: ImageBitmap?, placeholder: String, side: Dp, badge
 
 /** 整行（含两侧留白）都是热区和按下底色；内容自己缩进，长按把行的位置交出去给菜单当锚 */
 @Composable
-private fun PressableRow(
+internal fun PressableRow(
     onClick: () -> Unit,
     onLongClick: ((top: Int, height: Int) -> Unit)? = null,
     verticalPad: Dp = 12.dp,
