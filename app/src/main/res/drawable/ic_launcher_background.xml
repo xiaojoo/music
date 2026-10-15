@@ -1,0 +1,17 @@
+<!-- 色带四档是从参考图那条对角线上逐点采出来的实测值，不是挑的近似色。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear"
+                android:startX="18" android:startY="94" android:endX="94" android:endY="18">
+            <item android:offset="0.000" android:color="#FF0A85D9"/>
+            <item android:offset="0.333" android:color="#FF0BA3F7"/>
+            <item android:offset="0.667" android:color="#FF2AD2FB"/>
+            <item android:offset="1.000" android:color="#FF5FEDE6"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
