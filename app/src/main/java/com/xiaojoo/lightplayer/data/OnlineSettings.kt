@@ -1,6 +1,8 @@
 package com.xiaojoo.lightplayer.data
 
 import android.content.Context
+import com.xiaojoo.lightplayer.videosource.ApiSource
+import com.xiaojoo.lightplayer.videosource.ApiSourceList
 import com.xiaojoo.lightplayer.videosource.OnlineSort
 
 /** 在线那一路的设置：上次粘过的地址。存一份，顶栏和右侧设置抽屉读的是同一个值。视频/音乐各一份文件 */
@@ -55,11 +57,26 @@ class OnlineSettings(context: Context, pref: String = "online") {
         p.edit().putString(KEY_SORT, s.name).apply()
     }
 
+    /**
+     * 「地址源」那一串。存在**另一份文件**里（`OnlineSettings(context, "api_search")`）——
+     * 这一路不接注册表，和网易云那一路、视频那三路都不共用一个值（他 10-15 点的"不使用之前的源"）。
+     *
+     * 存的是一个 JSON 数组，元素就是界面/引擎共用的那一份描述（见 `ApiSource`）。
+     * **一个都不预置**：仓库是公开的，代码里不写任何一家域名，所以刚装上那一行只有「添加地址源」。
+     * 认不出来的那几条整条丢掉而不是整串作废 —— 手改过 prefs 或者版本换了格式，界面还得能用。
+     */
+    fun apiSources(): List<ApiSource> = ApiSourceList.decode(p.getString(KEY_API_SOURCES, "").orEmpty())
+
+    fun saveApiSources(items: List<ApiSource>) {
+        p.edit().putString(KEY_API_SOURCES, ApiSourceList.encode(items)).apply()
+    }
+
     companion object {
         private const val KEY_URL = "url"
         private const val KEY_GONE = "sources_gone"
         private const val KEY_REMOVED = "sources_removed"
         private const val KEY_MUSIC_URL = "music_url"
         private const val KEY_SORT = "video_sort"
+        private const val KEY_API_SOURCES = "api_sources"
     }
 }

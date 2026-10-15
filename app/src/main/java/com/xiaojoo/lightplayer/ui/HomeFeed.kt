@@ -84,6 +84,12 @@ fun HomeFeed(
     onPlayList: (List<Track>, Int) -> Unit,
     onToggleFavorite: (Track) -> Unit,
     onPlayPick: (MusicVideo) -> Unit,
+    /**
+     * 横幅和「精选视频」那两列点下去走的这一路：**视频那一路**（在线那台实例 + 存进视频页的「在线」栏），
+     * 不是 [onPlayPick] 那条音频路。这两批条目本来就是"冲着看来的"（`browse(onlyVideo = true)` 给的），
+     * 播在音频那台上就只有声没有画，迷你条也按"不像视频"把人送进音乐页（他 10-15 点的）。
+     */
+    onPlayVideoPick: (MusicVideo) -> Unit,
     onQueuePick: (MusicVideo) -> Unit,
     onDownloadPick: (MusicVideo) -> Unit,
     /** 栏头那颗「更多」：点开「热门音乐」那一整屏 */
@@ -91,6 +97,9 @@ fun HomeFeed(
 ) {
     val banner = picks.take(5)
     val cards = picks.drop(5)
+    /* 栏头那一句写的是**这一批里真有几个源**，不是抄死的「B 站热门」：这一批问的就是「视频地址源」
+       那一屏配下来的那几路（注册表按删除名单筛过），删掉 B 站只剩快手时，栏头跟着变成「快手」。 */
+    val pickNote = picks.mapNotNull { sourceLabel(it.sourceId) }.distinct().joinToString("、").ifBlank { null }
     val histRows = history.take(5)
     // 这一栏只摆前 5 条，「更多」那颗点开一整屏（他 10-14 改的点）—— 就地折叠那一版撤干净了
     val hotRows = hot.take(5)
@@ -111,7 +120,7 @@ fun HomeFeed(
     ) {
         item(key = "search") { SearchPill(onClick = onSearch) }
 
-        if (banner.isNotEmpty()) item(key = "banner") { Banner(videos = banner, onPlay = onPlayPick) }
+        if (banner.isNotEmpty()) item(key = "banner") { Banner(videos = banner, onPlay = onPlayVideoPick) }
 
         item(key = "entries") {
             Row(
@@ -127,7 +136,7 @@ fun HomeFeed(
         }
 
         if (cards.isNotEmpty()) {
-            item(key = "picks:head") { SectionHead("精选视频", "B 站热门", modifier = headPad) }
+            item(key = "picks:head") { SectionHead("精选视频", pickNote, modifier = headPad) }
             item(key = "picks:row") {
                 LazyRow(
                     modifier = Modifier.fillMaxWidth(),
@@ -135,7 +144,7 @@ fun HomeFeed(
                     horizontalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
                     items(cards, key = { "picks:" + it.key }) { v ->
-                        PickCard(video = v, onClick = { onPlayPick(v) })
+                        PickCard(video = v, onClick = { onPlayVideoPick(v) })
                     }
                 }
             }

@@ -5,7 +5,11 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import com.xiaojoo.lightplayer.videosource.AggregateSearcher
+import com.xiaojoo.lightplayer.videosource.ApiQuality
+import com.xiaojoo.lightplayer.videosource.ApiSong
+import com.xiaojoo.lightplayer.videosource.ApiSource
 import com.xiaojoo.lightplayer.videosource.BiliSource
+import com.xiaojoo.lightplayer.videosource.CustomApiSource
 import com.xiaojoo.lightplayer.videosource.DouyinSource
 import com.xiaojoo.lightplayer.videosource.Fetcher
 import com.xiaojoo.lightplayer.videosource.KuaishouSource
@@ -114,13 +118,17 @@ object Online {
     /** B 站：粘页地址换一条自带音频的 mp4（要 Referer，见模块里的 headersForUrl） */
     private val bili = BiliSource(http)
 
+    /** 抖音那颗内核的挂窗（让那一页在内核里算"可见"）：这面墙由 MainActivity 在 onCreate 交进来 */
+    @Volatile
+    var douyinHost: ViewHost? = null
+
     /**
      * 抖音：粘页地址（或分享文案里那条短链）→ 内部文件 id → 无水印单文件；外加精选那一屏的列表。
      * 取 id 和读列表都要一颗真内核（那条接口裸 HTTP 回 403、列表那一屏只回壳，见 DouyinWebView），
      * 所以这一路的源得等 [init] 递进 context 才建得出来 —— registry 改成 lazy 就是这个原因。
      * 两个入口共用同一颗内核对象：它每次问都是一建一毁，不留实例。
      */
-    private val douyinWebView by lazy { DouyinWebView(app) }
+    private val douyinWebView by lazy { DouyinWebView(app) { douyinHost } }
     private val douyin by lazy { DouyinSource(douyinWebView, douyinWebView) }
 
     /**
@@ -215,8 +223,22 @@ object Online {
      *
      * 这一路的关键词搜索不做：实测回 `status_code 2483`「请先登录，再继续搜索吧」，那是要账号的。
      */
+    /**
+     * 抖音那一屏的列表**先不进在线池子**。
+     *
+     * 真机量过：列表那一屏交得出 10~28 张卡，可卡上那 19 位换不到播放地址 —— 单条页在那颗内核里
+     * 20 秒、40~50 次探测全部交不出文件 id，挂到窗口上（decorView 全屏那一层）也一样。
+     * 留在池子里的净效果是：每碰到一条抖音就白等才失败，还把整栏翻页拖慢。
+     *
+     * 下一方案（在页面里截 `fetch`/`XHR` 的详情响应）**也已经量完了，同样不通**：那条请求页面确实发
+     * （约 2.0 秒），但服务器答 `200 + 0 字节`，重问 38 次、换两个域名全一样 —— 详见 `DouyinWebView.load`。
+     * 所以这一路的"能看不能播"是站点的决定，不是我们少读了一处；要放回池子，得先有一条不依赖
+     * 那个接口就能拿到地址的路子。粘地址那一路不动（它现在 8 秒就报失败）。
+     */
+    private const val douyinInPool = false
+
     suspend fun browseWithKernel(limit: Int = 30, page: Int = 1): List<MusicVideo> =
-        if (!registry.isEnabled(douyin.id)) emptyList() else douyin.search("", limit, page)
+        if (!douyinInPool || !registry.isEnabled(douyin.id)) emptyList() else douyin.search("", limit, page)
 
     suspend fun resolve(video: MusicVideo): ResolveOutcome = resolver.resolve(video, timeoutMs = 6_000)
 
@@ -285,6 +307,20 @@ object Online {
      */
     suspend fun searchMusic(query: String, limit: Int): List<MusicVideo> =
         if (blocked("netease")) emptyList() else musicSource().search(query, limit)
+
+    /**
+     * 「自定义接口」搜索那一屏那一面单独的墙。它**不在上面那个 registry 里** ——
+     * 不参与聚合搜索、也不被「视频地址源」/「在线音乐源」那两屏读到（他 10-15 点的：不使用之前的源）。
+     * 地址由那一屏自己带进来，空着就当场说"还没填接口地址"，这里不备默认值。
+     */
+    private val api = CustomApiSource(post)
+
+    /** 搜一批：原样抛失败，让那一屏能说出为什么，而不是写"没搜到"（和 [searchMusic] 同一条规矩） */
+    suspend fun apiSearch(src: ApiSource, keyword: String): List<ApiSong> = api.search(src, keyword)
+
+    /** 点一行 / 存盘之前现换那一条的直链：站点签的是"这一条、这一刻"，所以不存第二次 */
+    suspend fun apiUrlOf(src: ApiSource, song: ApiSong, quality: ApiQuality): Playable =
+        api.urlOf(src, song, quality)
 
     /**
      * 「最火的视频 / 相关视频」那两栏：**在网易云站内搜 MV**，不再问 B 站 / 快手 / 抖音。

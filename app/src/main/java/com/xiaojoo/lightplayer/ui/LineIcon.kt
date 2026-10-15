@@ -230,12 +230,18 @@ fun LineIcon(
                只有 0.0435 画框 = 1.2px，比一支笔画（1.875dp = 5.2px）还近 —— 要留 2px 缝就得把
                30.9px 长的底边切掉 19.5px，三角看着是断的。挪开之后 8 倍超采样量到两块墨
                最近 3.25px、重叠像素 0。 */
+            /* 加入播放列表：一枚三角 + 右下角一个加号。三角现在是**真等边** ——
+               原来那条竖边 0.39444、顶点横距 0.38，两斜边算出来 0.4281，是个腰比底长的等腰三角
+               （他 10-15 点的"三角不是等边"）。等边的横高是 a·√3/2 = 0.39444×0.866025 = 0.341606，
+               所以顶点从 0.64274 收到 0.604346。
+               补的是横、没动竖：竖边（底）一格不缩，加号那颗也一格没动，所以整颗的墨外接框
+               还是 0.26274..0.73726 那只正方框（宽=高=0.4745），和这一族"同一只框、等比不形变"不打架。 */
             IconKind.PlayQueue -> {
                 drawPath(
                     Path().apply {
                         moveTo(s * 0.26274f, s * 0.26274f)
                         lineTo(s * 0.26274f, s * 0.65718f)
-                        lineTo(s * 0.64274f, s * 0.45996f)
+                        lineTo(s * 0.604346f, s * 0.45996f)
                         close()
                     }, color,
                     style = Stroke(width = st, cap = StrokeCap.Round, join = StrokeJoin.Round)
@@ -450,15 +456,22 @@ fun LineIcon(
             /* 旗形加号：竖笔 + 飘带 + 右下加号。整套 y 比对称位置高 0.025 —— 原来按 0.20/0.72 那组数画，
                墨外接框落在 0.1475..0.8975，中心 0.5225，和并排的 > （中心正好 0.5）差 1.5px，
                真机量到之后整体上移补平，别再"顺手改成整数"。 */
+            /* 「歌单 / 新建歌单」那颗。加号压在框的右上角上、四臂等长；方框四条边都在，
+               只在上边和右边各让出一截，让加号和框之间留得住一道缝。
+               上一版报的"断口 1.5px"是**中心线**距离 —— 一支圆头笔画的半径就有 1.85px，两边一叠，
+               缝被糊死等于没有（他圈出来说"这里留个小间隙啊"，眼睛对、我的数错）。
+               缝要看得见，中心线距必须大过一支笔画 0.075：这里取 0.120，
+               净缝 = (0.120 − 0.075) × 49.5 = **真机 2.2px**。代价是加号从 12.9px 收到 10.4px、
+               上边保住 54%（再留大缝就继续吃框）。
+               框 0.487 见方钉在左下、加号中心落在右上角 (0.691, 0.309)；六段外接 0.592 x 0.592
+               （长宽比 1.0000），含 0.075 圆头的墨 33.0 x 33.0px @18dp —— 正方。 */
             IconKind.PlaylistAdd -> {
-                drawLine(color, Offset(s * 0.30f, s * 0.175f), Offset(s * 0.30f, s * 0.575f), st, StrokeCap.Round)
-                val flag = Path().apply {
-                    moveTo(s * 0.30f, s * 0.175f)
-                    cubicTo(s * 0.52f, s * 0.155f, s * 0.60f, s * 0.275f, s * 0.74f, s * 0.275f)
-                }
-                drawPath(flag, color, style = Stroke(width = st))
-                drawLine(color, Offset(s * 0.52f, s * 0.695f), Offset(s * 0.80f, s * 0.695f), st, StrokeCap.Round)
-                drawLine(color, Offset(s * 0.66f, s * 0.555f), Offset(s * 0.66f, s * 0.835f), st, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.204f, s * 0.309f), Offset(s * 0.204f, s * 0.796f), st, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.204f, s * 0.796f), Offset(s * 0.691f, s * 0.796f), st, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.691f, s * 0.796f), Offset(s * 0.691f, s * 0.534f), st, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.204f, s * 0.309f), Offset(s * 0.466f, s * 0.309f), st, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.586f, s * 0.309f), Offset(s * 0.796f, s * 0.309f), st, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.691f, s * 0.204f), Offset(s * 0.691f, s * 0.414f), st, StrokeCap.Round)
             }
 
             IconKind.ArrowLeft -> {

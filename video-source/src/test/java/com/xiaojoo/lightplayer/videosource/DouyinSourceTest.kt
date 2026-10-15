@@ -1,6 +1,8 @@
 package com.xiaojoo.lightplayer.videosource
 
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -150,6 +152,88 @@ class DouyinSourceTest {
     }
 
     @Test
+    fun 截到的detail报文里取出内部id() {
+        val d = DouyinSource.parseCaptured(captured(DETAIL))!!
+        assertEquals("v0200fg10000daae2u7og65t0qoa2sk0", d.videoId)
+        assertEquals("当你在2026年再次听到这首歌 #pokerface", d.title)
+        assertEquals(67_036L, d.durationMs)
+    }
+
+    @Test
+    fun 截到几条里挑第一条真有地址的() {
+        // 页面先发的那一条只带上下文（没有 play_addr），后面那条才带地址
+        val d = DouyinSource.parseCaptured(captured("""{"aweme_detail":{"desc":"只有壳"}}""", DETAIL))!!
+        assertEquals("v0200fg10000daae2u7og65t0qoa2sk0", d.videoId)
+    }
+
+    @Test
+    fun 问过的接口一条条报得出地址和状态() {
+        val log = DouyinSource.capturedLog(
+            logged("$DETAIL_URL|200|0", "https://www.douyin.com/service/2/abtest_config/|200|48856"),
+        )
+        assertEquals(2, log.size)
+        assertEquals("$DETAIL_URL|200|0", log[0])
+        assertTrue(DouyinSource.capturedLog(null).isEmpty())
+        assertTrue(DouyinSource.capturedLog("[]").isEmpty())
+    }
+
+    @Test
+    fun 没截到或截到不是JSON就不编一个条目() {
+        assertNull(DouyinSource.parseCaptured(captured()))
+        assertNull(DouyinSource.parseCaptured("[]"))
+        assertNull(DouyinSource.parseCaptured("null"))
+        assertNull(DouyinSource.parseCaptured(""))
+        assertNull(DouyinSource.parseCaptured(null))
+        assertNull("风控那一页回的 HTML 也不抛，让调用方继续轮询", DouyinSource.parseCaptured(captured("<html>风控</html>")))
+        assertNull("uri 不是 v 开头的那种（站点给的空占位）不算拿到", DouyinSource.parseCaptured(captured(DETAIL.replace("v0200", "null"))))
+        assertTrue(DouyinSource.capturedLog(null).isEmpty())
+    }
+
+    @Test
+    fun 首屏那段SSR的JSON里也取得到id() {
+        // RENDER_DATA 的真实形状：路由键 → loaderData → 页键 → videoInfoRes.item_list[0] 就是那条 aweme
+        val aweme = JSONObject(DETAIL).getJSONObject("aweme_detail")
+        val doc = JSONObject().put(
+            "video/7686432847778982833",
+            JSONObject().put(
+                "loaderData",
+                JSONObject().put(
+                    "video",
+                    JSONObject().put(
+                        "videoInfoRes",
+                        JSONObject().put("item_list", JSONArray().put(aweme)),
+                    ),
+                ),
+            ),
+        )
+        val quoted = "\"" + doc.toString().replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        val d = DouyinSource.parseRendered(quoted)!!
+        assertEquals("v0200fg10000daae2u7og65t0qoa2sk0", d.videoId)
+        assertEquals(67_036L, d.durationMs)
+        assertNull("那一页没带首屏数据就是没有，不编", DouyinSource.parseRendered("\"{}\""))
+        assertNull(DouyinSource.parseRendered("null"))
+    }
+
+    /** 装成 `evaluateJavascript(CAP_JS)` 回的那一串：外层带引号、里面的引号带反斜杠 */
+    private fun captured(vararg bodies: String): String {
+        val arr = JSONArray()
+        bodies.forEach {
+            arr.put(JSONObject().put("u", DETAIL_URL).put("b", it))
+        }
+        return quoted(arr)
+    }
+
+    /** 装成 `evaluateJavascript(ALL_JS)` 回的那一串 */
+    private fun logged(vararg entries: String): String {
+        val arr = JSONArray()
+        entries.forEach { arr.put(it) }
+        return quoted(arr)
+    }
+
+    private fun quoted(arr: JSONArray): String =
+        "\"" + arr.toString().replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    @Test
     fun 列表那一屏变成条目() = runBlocking {
         val src = DouyinSource(
             DetailPage { error("取列表不该去开单条页") },
@@ -199,5 +283,20 @@ class DouyinSourceTest {
 
     private companion object {
         private const val DAY = 86_400_000L
+
+        /** 那一页自己发的那条接口（裸 HTTP 回 403，所以要截） */
+        private const val DETAIL_URL = "https://www.douyin.com/aweme/v1/web/item/detail/?aweme_id=7686432847778982833"
+
+        /**
+         * 截回来的报文形状（字段名和嵌套照站点那一份，值是按 [DETAIL_URL] 那条编的）：
+         * id 在 `aweme_detail.video.play_addr.uri`，时长是毫秒，标题在 `desc`。
+         */
+        private const val DETAIL = """
+            {"aweme_detail":{"aweme_id":"7686432847778982833",
+             "desc":"当你在2026年再次听到这首歌 #pokerface","duration":67036,
+             "author":{"nickname":"拉小提琴的王主任"},
+             "video":{"play_addr":{"uri":"v0200fg10000daae2u7og65t0qoa2sk0",
+                        "url_list":["https://v.douyin.com/x/"],"width":1080,"height":1920}}}}
+            """
     }
 }

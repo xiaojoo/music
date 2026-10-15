@@ -108,6 +108,8 @@ fun OnlineFeed(
     resetTick: Int,
     /** 滑到离栏尾三格以内时喊一声：外面去要下一批（重复喊由外面挡） */
     onMore: () -> Unit,
+    /** 这一条应该挂在哪台成员身上的那个 mediaId：只有"这台成员手里就是这一条"时，它报的尺寸才算数 */
+    mediaIdOf: (Track) -> String,
 ) {
     var sortOpen by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
@@ -275,6 +277,7 @@ fun OnlineFeed(
                         current = i == pager.currentPage,
                         waitingSide = blockedNow,
                         playingUrl = playingUrl,
+                        mediaIdOf = mediaIdOf,
                         downloadProgress = if (downloadingUrl == t.uri.toString()) downloadProgress else null,
                         busy = downloadingUrl == null,
                         onTap = { onPlay(t, i) },
@@ -310,7 +313,19 @@ fun OnlineFeed(
 private object FeedCovers {
     private val keep = LinkedHashMap<String, ImageBitmap>(0, 0.75f, true)
 
+    /** 封面的**原图**宽高比：`blurOf` 会把它缩到 36px 宽，比例被量化（1280×720 → 36×20 = 1.8，真值 1.7778），
+     *  拿量化后的那份去兜画面比例会让格子在"封面先到、尺寸后到"那一步跳 2.73dp（=7.5px）。原图比例单独存一份。 */
+    private val asp = LinkedHashMap<String, Float>(0, 0.75f, true)
+
     @Synchronized fun get(url: String?): ImageBitmap? = url?.let { keep[it] }
+
+    @Synchronized fun aspect(url: String?): Float? = url?.let { asp[it] }
+
+    @Synchronized fun putAspect(url: String?, a: Float) {
+        if (url == null || !a.isFinite() || a <= 0f) return
+        asp[url] = a
+        while (asp.size > 40) asp.remove(asp.keys.first())
+    }
 
     @Synchronized fun put(url: String?, bmp: ImageBitmap) {
         if (url == null) return
@@ -330,6 +345,8 @@ private fun OnlinePage(
     /** 左右哪一条还没到手：等待的样子摆在这一页的底部（和抖音同一处） */
     waitingSide: Boolean,
     playingUrl: String?,
+    /** 只有"这台成员手里就是这一条"时，它身上的尺寸/状态才算这一格的（否则读回来的是上一条的） */
+    mediaIdOf: (Track) -> String,
     downloadProgress: Float?,
     busy: Boolean,
     onTap: () -> Unit,
@@ -338,8 +355,12 @@ private fun OnlinePage(
     onDelete: () -> Unit,
     onLongPress: () -> Unit,
 ) {
-    var vidW by remember(player) { mutableIntStateOf(player?.videoSize?.width ?: 0) }
-    var vidH by remember(player) { mutableIntStateOf(player?.videoSize?.height ?: 0) }
+    /* 按"这一台 + 这一条"存，初值一律 0：原来写的是 `remember(player)` 且从 `player.videoSize` 起 ——
+       池子只有三台、来回滑和筛选瞬移都会复用，于是**上一条**的尺寸会当成这一条的用（真机量到
+       换条之后 190ms 里 `视频=1280x720`，而那一格已经是另一条了）。
+       真实尺寸由下面那颗监听、或"成员手里就是这一条"时的那次回读填进来。 */
+    var vidW by remember(player, track.uri) { mutableIntStateOf(0) }
+    var vidH by remember(player, track.uri) { mutableIntStateOf(0) }
     var playing by remember(player) { mutableStateOf(player?.isPlaying == true) }
     /* 这一条到没到手：缓冲好（STATE_READY）才算。没到手之前这一页不给画面，只给循环点 ——
        他看到的"上一个视频还挂着"，根因是下一条还没拉下来，不是渲染层没藏住。 */
@@ -369,10 +390,15 @@ private fun OnlinePage(
            于是这一条早就在手上的时候，进这一栏的头几帧仍然退回"模糊封面 + 三个循环点"，
            画面按兜底比例摆、宽高要等下一次状态跳变才回来。真机量到 3–4 帧（124–165ms），
            就是他报的"点进在线闪一下"。顺带"在不在放"也要重读：监听只报**变化**，
-           不重读就会一直停在 false —— 画面在动、标签却写「已暂停」还挂着三角。 */
-        ready = p.playbackState == Player.STATE_READY
-        p.videoSize?.let { if (it.width > 0 && it.height > 0) { vidW = it.width; vidH = it.height } }
-        playing = p.isPlaying
+           不重读就会一直停在 false —— 画面在动、标签却写「已暂停」还挂着三角。
+           **但这一回读只在"这台成员手里就是这一条"的时候做**：池子只有三台、来回滑会复用，
+           无条件读就把**上一条**的尺寸读进这一格，而它排在封面比例前面 —— 横屏 16:9 会被
+           竖屏那格整幅拉开（他 10-15 报"还是存在"的那一处就是这个）。 */
+        if (p.currentMediaItem?.mediaId == mediaIdOf(track)) {
+            ready = p.playbackState == Player.STATE_READY
+            p.videoSize?.let { if (it.width > 0 && it.height > 0) { vidW = it.width; vidH = it.height } }
+            playing = p.isPlaying
+        }
         onDispose { p.removeListener(l) }
     }
 
@@ -398,7 +424,12 @@ private fun OnlinePage(
             val hit = FeedCovers.get(cover)
             value = hit
             if (hit == null) {
-                val blurred = cover?.let { withContext(Dispatchers.IO) { loadCover(it) } }?.let { blurOf(it) }
+                val raw = cover?.let { withContext(Dispatchers.IO) { loadCover(it) } }
+                val blurred = raw?.let {
+                    // 原图比例先存下来（下面那一级兜底吃它），再交给 blurOf 量化成 36px 宽
+                    FeedCovers.putAspect(cover, it.width.toFloat() / it.height)
+                    blurOf(it)
+                }
                 if (blurred != null) {
                     FeedCovers.put(cover, blurred)
                     value = blurred
@@ -415,7 +446,22 @@ private fun OnlinePage(
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)))
         }
 
-        val a = if (vidW > 0 && vidH > 0) vidW.toFloat() / vidH else 0.75f
+        /* 摆这一格的比例，四级，顺序是量出来的：
+           1. **这一条自己的画面尺寸**（`onVideoSizeChanged` 报的，唯一一定对的）；
+           2. **这一格表面现在那一帧的比例**（`shown`）—— 换条那一瞬表面还挂着上一帧，
+              按上一帧的比例摆才不会歪；矩阵量到按封面比例兜会出 `218.18 → 698.18`（1320px）那一跳：
+              那条是竖屏片子，B 站给它的封面却是横构图缩略图，**封面比例不等于画面比例**；
+           3. **这一条封面的原图比例**（该格还没有任何历史时才有意义，比 0.75 准）；
+           4. 0.75 兜底。
+           原来只有 1 和 4，`视频=0x0` 那一窗（冷启动量到 1446ms）就把 16:9 整幅拉进 1080×1440。
+           用普通数组而不是 state：它只在这一格里自己读自己写，写成 state 会为一次重组再排一轮。 */
+        val shown = remember(player) { floatArrayOf(0f) }
+        val own = if (vidW > 0 && vidH > 0) vidW.toFloat() / vidH else 0f
+        val a = when {
+            own > 0f -> { shown[0] = own; own }
+            shown[0] > 0f -> shown[0]
+            else -> FeedCovers.aspect(cover) ?: 0.75f
+        }
         BoxWithConstraints(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
@@ -425,15 +471,30 @@ private fun OnlinePage(
             // contain：两个维度都不放大，比例不变
             val picW = if (pageW / pageH > a) pageH * a else pageW
             val picH = if (pageW / pageH > a) pageH else pageW / a
+            // 临时探针（量"筛选后闪过一帧画面撑满屏幕"）：把这一格每次重算用的四个数都写出来。
+            // 要看的是 vidW/vidH 有没有 0 的那几帧 —— 0 时比例兜底 0.75，
+            // 横屏片子会被塞进 1080×1440 那一格（TextureView 不做信箱，整幅拉满），就是他看到的那一帧。
+            if (current) {
+                Log.i(
+                    "PicBox", "成员#" + System.identityHashCode(player) +
+                        " 视频=${vidW}x${vidH} 页=${pageW}x${pageH} 画面=${picW}x${picH}" +
+                        " a=$a ready=$ready 在放=$playing 「${track.name.take(10)}」",
+                )
+            }
             // 只有当前页才摆这块画面。TextureView 一旦离开组合，它那块表面就没了，
             // 上一条的最后一帧没有地方可以继续挂着；新页进来时是一枚全新的表面。
             // （试过用 graphicsLayer 的 alpha 藏：对 TextureView 无效，残影照旧。）
-            if (current) {
+            /* 但这一条正好可以反过来用：**画面尺寸和封面比例两样都没到手时不摆这块表面**。
+               真机量到筛选瞬移那一窗有 46ms 是 `视频=0x0` 且封面还没进组合 —— 那一格按兜底算成
+               1080×1440，而表面身上还挂着上一条 16:9 的最后一帧，于是被整幅拉开 = 他报的
+               "闪过一帧把画面撑满屏幕"。宁可这 46ms 只给循环点，也不摆一张歪的。 */
+            if (current && (own > 0f || shown[0] > 0f || FeedCovers.aspect(cover) != null)) {
                 AndroidView(
                     factory = { c ->
                         /* 造出这块的当场就把它交给播放器。原来绑在 DisposableEffect 里，
                            那要等下一帧才跑，而表面本身还要再等一两帧才可用 —— 白让出画晚一帧。 */
                         TextureView(c).also { v ->
+                            Log.i("PicBox", "新表面 成员#" + System.identityHashCode(player))
                             (player as? androidx.media3.exoplayer.ExoPlayer)?.setVideoTextureView(v)
                         }
                     },
@@ -446,7 +507,10 @@ private fun OnlinePage(
             }
         }
 
-        if (current && !ready && !waitingSide) {
+        /* 中央那三个点 = 这一格现在**没东西可看**：要么这一条还没到手，要么既没有封面、
+           表面又没摆出来（比例不可信那一窗，见上面那颗闸门 —— 撤掉表面之后这一格可能黑得连指示都没有）。 */
+        val bare = bmp == null && own <= 0f && shown[0] <= 0f && FeedCovers.aspect(cover) == null
+        if (current && !waitingSide && (!ready || bare)) {
             // 这一条还没拉下来：只给三个循环点，不给任何画面 —— 这时候摆出来的一定是上一条的残留。
             // 底部那颗亮着的时候这里必须让位：两个加载样子不同时出现（他点名的第二条）。
             // 让位不等于停手 —— 这一条照旧在自己那台上继续缓冲，滑回来不用重取。
