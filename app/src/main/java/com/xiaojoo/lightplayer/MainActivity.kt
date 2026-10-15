@@ -22,6 +22,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -36,11 +37,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import com.xiaojoo.lightplayer.data.MediaLibrary
+import com.xiaojoo.lightplayer.data.Appearance
 import com.xiaojoo.lightplayer.data.FavoritePlaylistRepository
 import com.xiaojoo.lightplayer.data.FavoriteRepository
 import com.xiaojoo.lightplayer.data.Playlist
@@ -71,6 +75,8 @@ import com.xiaojoo.lightplayer.data.Pinned
 import com.xiaojoo.lightplayer.data.PinnedRepository
 import com.xiaojoo.lightplayer.ui.AddToPlaylistDialog
 import com.xiaojoo.lightplayer.ui.ApiSearchPage
+import com.xiaojoo.lightplayer.ui.AppearancePage
+import com.xiaojoo.lightplayer.ui.Skin
 import com.xiaojoo.lightplayer.ui.LyricStore
 import com.xiaojoo.lightplayer.ui.LyricWriter
 import androidx.media3.common.Player
@@ -489,7 +495,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     val bar = rememberBarState(controller, remember { lastRepo.uri()?.let { Uri.parse(it) } })
     var history by remember { mutableStateOf(PlayHistory.list(context)) }
     // null | history | songs | videos | favorites | playlists | filter | search | online |
-    // artists | artist-search | artist:<歌手名> | pl:<歌单id> | local-search
+    // artists | artist-search | artist:<歌手名> | pl:<歌单id> | local-search | appearance | music-source
     var page by remember { mutableStateOf<String?>(null) }
     // 搜索词存在壳层：搜索是一个整屏页，开着它的时候列表页不挂着，词存在列表页里会跟着一起没
     var searchQuery by remember { mutableStateOf("") }
@@ -506,6 +512,14 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     // 从歌单列表页点进某一首歌单时，返回要回到它，而不是直接回「我的」
     var pageFrom by remember { mutableStateOf<String?>(null) }
     var sortMode by remember { mutableStateOf(ListSort.load(context)) }
+    // 装扮：存档先同步读回来（三个整数，和排序那一档同一个走法），图另起一趟在 IO 上解
+    remember { Skin.load(context) }
+    LaunchedEffect(Unit) { Skin.restore(context) }
+    /* 背景图走系统选图，只读那一张、不整库授权，所以拿不到 READ_MEDIA_IMAGES。
+       选完立刻把字节拷进 filesDir（见 Skin.applyImage）：内容 uri 出了这一次就读不到了 */
+    val bgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch { Skin.applyImage(context, uri) }
+    }
 
     fun playlistOf(p: String?): Playlist? =
         p?.takeIf { it.startsWith("pl:") }?.removePrefix("pl:")?.toLongOrNull()
@@ -1766,8 +1780,10 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
 
     /* 迷你条要不要占底部那一格；子页的导航条余量由谁留，全看这一个判断。
        只有音乐/视频两个 tab 本身不收 —— 那两屏整页就是播放器/视频，条子在那儿反而挡画面。
-       筛选页也收：这一屏底部要留给"重置/确定"那两颗（2026-10-12 他点名，红框圈的就是条子那一条）。 */
-    val showBar = bar.shown != null && page != "filter" &&
+       筛选页也收：这一屏底部要留给"重置/确定"那两颗（2026-10-12 他点名，红框圈的就是条子那一条）。
+       装扮页也收（2026-10-15 他点名）：换的正是这一屏往下透出去的那层底，条子横在底下挡掉一条，
+       换一颗色板看不出换没换。 */
+    val showBar = bar.shown != null && page != "filter" && page != "appearance" &&
         !(page == null && (tab == AppTab.Music || tab == AppTab.Video))
     // 迷你条这一条是视频还是歌：先认曲库里查到的那条，查不到（SAF 选进来的文件）再按 uri 形状判
     val barIsVideo = barTrack?.isVideo ?: bar.shown?.let { QueueEntry.isVideoUri(it.toString()) } ?: false
@@ -1776,9 +1792,19 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
        这一路的实现从头到尾没变过（他点名"一直保留之前的视频实现"）。
        音频那一路什么时候接管会话，只看他有没有真的去点音乐：见 play() 和播放页那几颗键。 */
 
-    // 壳层底色：迷你条左右两侧的空隙不能让窗口深色底透出来
-    Column(modifier = Modifier.fillMaxSize().background(Tokens.ListBg)) {
+    // 壳层底色：迷你条左右两侧的空隙不能让窗口深色底透出来。装扮换的就是这一层
+    Column(modifier = Modifier.fillMaxSize().background(Tokens.SkinBase)) {
         Box(modifier = Modifier.weight(1f)) {
+            /* 本地背景图只有这一层：各页的根底读 Tokens.Backdrop，铺了图就变透明，
+               于是图只在"图压在底色上"这一次混合，不会页一页底各叠一层把图洗白 */
+            Skin.image.value?.let {
+                Image(
+                    bitmap = it,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().alpha(Appearance.IMAGE_ALPHA),
+                )
+            }
             if (page == "playlists") {
                 PlaylistListPage(
                     playlists = playlists,
@@ -1920,6 +1946,13 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                         favorites = favRepo.all()
                     },
                     onQueueAdd = { t -> queueAppend(t) },
+                    onBack = { leavePage() },
+                    bottomInset = !showBar,
+                )
+            } else if (page == "appearance") {
+                AppearancePage(
+                    onPickImage = { bgPicker.launch("image/*") },
+                    onClearImage = { Skin.clearImage(context) },
                     onBack = { leavePage() },
                     bottomInset = !showBar,
                 )
@@ -2147,7 +2180,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                         favoritedPlaylists = favPlRepo.all()
                     },
                     onOpenFavorites = { page = "favorites" },
-                    onOpenSearch = { openPage("local-search") }
+                    onOpenSearch = { openPage("local-search") },
+                    onOpenAppearance = { openPage("appearance") }
                 )
             }
             }

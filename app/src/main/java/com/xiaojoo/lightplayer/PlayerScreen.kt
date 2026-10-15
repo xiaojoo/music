@@ -271,7 +271,7 @@ fun PlayerScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Tokens.playerBackground)
+            .background(Tokens.playerBackground())
             .statusBarsPadding()
     ) {
         Column(
