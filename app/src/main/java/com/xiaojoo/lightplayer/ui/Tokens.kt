@@ -92,6 +92,7 @@ object Tokens {
         val FilterHeadH = 34.dp
         val FilterGapTop = 1.dp               // 上一组芯片 → 本组标题：1dp + 标题行里那 32px 空 = 35
         val FilterGapBot = 1.5.dp             // 本组标题 → 本组芯片：基准就是这条
+        val FilterGapTail = 12.73.dp          // 末排芯片 → 屏底（真机 35px ÷ 2.75），和"标题 → 芯片"同宽
         val FilterGapFirstTop = 0.dp          // 第一组：负 padding 会被 Compose 直接拒（"Padding must be
                                               // non-negative"，一进筛选页就闪退）。顶栏要和外面那几页的标题栏
                                               // 一模一样（48dp 命中盒决定条高），所以这条缝只能 0，不再往上顶
