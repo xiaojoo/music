@@ -1,0 +1,204 @@
+package com.xiaojoo.lightplayer.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.xiaojoo.lightplayer.data.Track
+
+/**
+ * 「我的」顶上那颗搜索框点进来的那一屏：**只问本机曲库**，音乐和视频一起筛。
+ * （首页那颗框进的是问接口那一屏 [ApiSearchPage]，两屏不是一回事，别混。）
+ *
+ * 顶栏那一条（← + 词 + ✕）抄 [ApiSearchPage] 同一份几何，包括 ✕ 那颗命中盒压在墨中心上的补法。
+ * 下面一行两颗芯片是**范围**：默认两颗都开，开着的各成一段（先音乐后视频），
+ * 芯片上那个数是这一词命中的条数 —— 和筛选页那行芯片同一只 [FilterChip]，段标题同一只 [FilterHead]。
+ *
+ * 和接口那一屏的差别只在"问谁"：本机这一串是现成的，所以**边打字边出结果**，
+ * 不等键盘那颗搜索。点一行照列表页那一套：就地起播、这一页不跳，
+ * 队列 = 点的那一段（音乐、视频各走各那一路播放器，见 MainActivity.play）。
+ */
+@Composable
+fun LocalSearchPage(
+    keyword: String,
+    onKeyword: (String) -> Unit,
+    songs: List<Track>,
+    videos: List<Track>,
+    onPlayList: (List<Track>, Int) -> Unit,
+    favorites: Set<String>,
+    onToggleFavorite: (Track) -> Unit,
+    onQueueAdd: (Track) -> Unit,
+    onBack: () -> Unit,
+    /** 迷你条没露出来的时候，导航条那一段由这一屏自己留（和别的子页同一个开关） */
+    bottomInset: Boolean,
+) {
+    val fr = remember { FocusRequester() }
+    val kbd = LocalSoftwareKeyboardController.current
+    var songOn by remember { mutableStateOf(true) }
+    var videoOn by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) { fr.requestFocus() }
+
+    val q = keyword.trim()
+    // 和列表页的搜索态同一个匹配：歌名或歌手含这个词就算，不分大小写
+    fun matched(list: List<Track>): List<Track> = if (q.isEmpty()) emptyList() else list.filter {
+        it.name.contains(q, ignoreCase = true) || it.artist?.contains(q, ignoreCase = true) == true
+    }
+    val hitSongs = matched(songs)
+    val hitVideos = matched(videos)
+    val sList = if (songOn) hitSongs else emptyList()
+    val vList = if (videoOn) hitVideos else emptyList()
+    // 芯片上那个数：有词是"这一词命中几条"，还没打词就是"这一路一共有几条可搜" ——
+    // 空屏摆个 0 是假数（接口那一屏的同一条道理，见 ApiSearchPage）
+    val cSong = if (q.isEmpty()) songs.size else hitSongs.size
+    val cVideo = if (q.isEmpty()) videos.size else hitVideos.size
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Tokens.ListBg)
+            .statusBarsPadding()
+            .then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .padding(horizontal = Tokens.Dimen.ScreenPad)
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .size(Tokens.Dimen.IconHit)
+                    .tap(onClick = onBack),
+                contentAlignment = Alignment.CenterStart
+            ) { LineIcon(IconKind.ArrowLeft, size = 22.dp, color = Tokens.InkStrong) }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = Tokens.Dimen.IconHit),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    if (keyword.isEmpty()) {
+                        Text("搜歌名或歌手", color = Tokens.InkFaint, fontSize = 16.sp)
+                    }
+                    BasicTextField(
+                        value = keyword,
+                        onValueChange = onKeyword,
+                        singleLine = true,
+                        cursorBrush = SolidColor(Tokens.InkStrong),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = Tokens.InkStrong, fontSize = 16.sp
+                        ),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { kbd?.hide() }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(fr),
+                    )
+                }
+                // ✕ 那颗的命中盒补法和接口搜索那一屏同一条道理，见 ApiSearchPage 那段注释
+                val hitSkew = (Tokens.Dimen.IconHit - 19.dp) / 2f
+                Box(
+                    modifier = Modifier
+                        .size(Tokens.Dimen.IconHit)
+                        .offset(x = Tokens.Dimen.CloseInkShift + hitSkew)
+                        .tap { if (keyword.isEmpty()) onBack() else onKeyword("") },
+                    contentAlignment = Alignment.CenterEnd
+                ) {
+                    LineIcon(
+                        IconKind.Close, size = 19.dp, color = Tokens.Ink,
+                        modifier = Modifier.offset(x = -hitSkew),
+                    )
+                }
+            }
+        }
+        Hairline()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Tokens.Dimen.ScreenPad, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip("音乐", cSong, songOn) { songOn = !songOn }
+            FilterChip("视频", cVideo, videoOn) { videoOn = !videoOn }
+        }
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            when {
+                q.isEmpty() -> Text(
+                    "输入歌名或歌手", color = Tokens.InkFaint, fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                !songOn && !videoOn -> Text(
+                    "先选「音乐」或「视频」", color = Tokens.InkFaint, fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                sList.isEmpty() && vList.isEmpty() -> Text(
+                    "没有匹配「$q」的条目", color = Tokens.InkFaint, fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 12.dp)
+                ) {
+                    if (sList.isNotEmpty()) {
+                        item(key = "s:head") { FilterHead("音乐") }
+                        itemsIndexed(sList, key = { _, t -> "s-" + t.uri }) { i, t ->
+                            TrackLine(
+                                track = t, index = i, q = q, thumbs = false,
+                                favorite = t.uri.toString() in favorites,
+                                onPlay = { onPlayList(sList, i) },
+                                onToggleFavorite = { onToggleFavorite(t) },
+                                onQueueAdd = { onQueueAdd(t) },
+                            )
+                        }
+                    }
+                    if (vList.isNotEmpty()) {
+                        item(key = "v:head") { FilterHead("视频") }
+                        itemsIndexed(vList, key = { _, t -> "v-" + t.uri }) { i, t ->
+                            TrackLine(
+                                track = t, index = i, q = q, thumbs = true,
+                                favorite = t.uri.toString() in favorites,
+                                onPlay = { onPlayList(vList, i) },
+                                onToggleFavorite = { onToggleFavorite(t) },
+                                onQueueAdd = { onQueueAdd(t) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -93,6 +93,7 @@ import com.xiaojoo.lightplayer.ui.ArtistSearchPage
 import com.xiaojoo.lightplayer.ui.ArtistSongsPage
 import com.xiaojoo.lightplayer.ui.HomeFeed
 import com.xiaojoo.lightplayer.ui.HotMusicPage
+import com.xiaojoo.lightplayer.ui.LocalSearchPage
 import com.xiaojoo.lightplayer.ui.MineScreen
 import com.xiaojoo.lightplayer.ui.PlaylistListPage
 import com.xiaojoo.lightplayer.ui.VideoFeed
@@ -488,11 +489,13 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     val bar = rememberBarState(controller, remember { lastRepo.uri()?.let { Uri.parse(it) } })
     var history by remember { mutableStateOf(PlayHistory.list(context)) }
     // null | history | songs | videos | favorites | playlists | filter | search | online |
-    // artists | artist-search | artist:<歌手名> | pl:<歌单id>
+    // artists | artist-search | artist:<歌手名> | pl:<歌单id> | local-search
     var page by remember { mutableStateOf<String?>(null) }
     // 搜索词存在壳层：搜索是一个整屏页，开着它的时候列表页不挂着，词存在列表页里会跟着一起没
     var searchQuery by remember { mutableStateOf("") }
     var searchFrom by remember { mutableStateOf<String?>(null) }
+    // 「我的」那颗框的词，和上面那个不共用：那一屏搜两路，这一屏只搜当前那一页
+    var localSearchQuery by remember { mutableStateOf("") }
     // 筛选的两组选择存在这里，不存列表页：列表页在打开筛选页的那一帧是不挂着的
     var filterArtist by remember { mutableStateOf(setOf<String>()) }
     var filterLength by remember { mutableStateOf(setOf<String>()) }
@@ -1893,6 +1896,22 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     },
                     isFavorite = { v -> v.pageUrl in favorites },
                 )
+            } else if (page == "local-search") {
+                LocalSearchPage(
+                    keyword = localSearchQuery,
+                    onKeyword = { localSearchQuery = it },
+                    songs = audioTracks,
+                    videos = videoTracks,
+                    onPlayList = { tracks, index -> startPlaylist(tracks, index) },
+                    favorites = favorites,
+                    onToggleFavorite = { t ->
+                        favRepo.toggle(t.uri.toString())
+                        favorites = favRepo.all()
+                    },
+                    onQueueAdd = { t -> queueAppend(t) },
+                    onBack = { leavePage() },
+                    bottomInset = !showBar,
+                )
             } else if (page != null) {
                 TrackListPage(
                     title = pageTitle,
@@ -2116,7 +2135,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                         favPlRepo.toggle(p.id)
                         favoritedPlaylists = favPlRepo.all()
                     },
-                    onOpenFavorites = { page = "favorites" }
+                    onOpenFavorites = { page = "favorites" },
+                    onOpenSearch = { openPage("local-search") }
                 )
             }
             }
