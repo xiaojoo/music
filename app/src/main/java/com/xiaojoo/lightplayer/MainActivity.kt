@@ -9,6 +9,8 @@ import android.provider.MediaStore
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -50,11 +52,15 @@ import com.xiaojoo.lightplayer.data.SortMode
 import com.xiaojoo.lightplayer.data.PlaylistRepository
 import com.xiaojoo.lightplayer.data.Track
 import com.xiaojoo.lightplayer.data.Online
+import com.xiaojoo.lightplayer.data.ViewHost
 import com.xiaojoo.lightplayer.data.OnlineSettings
 import com.xiaojoo.lightplayer.data.OnlineLibrary
 import com.xiaojoo.lightplayer.data.DownloadDest
 import com.xiaojoo.lightplayer.data.OnlineDownload
+import com.xiaojoo.lightplayer.videosource.ApiSong
+import com.xiaojoo.lightplayer.videosource.ApiSource
 import com.xiaojoo.lightplayer.videosource.MusicVideo
+import com.xiaojoo.lightplayer.videosource.Playable
 import com.xiaojoo.lightplayer.videosource.OnlineSort
 import com.xiaojoo.lightplayer.videosource.groupArtists
 import com.xiaojoo.lightplayer.videosource.Rendition
@@ -64,6 +70,7 @@ import com.xiaojoo.lightplayer.videosource.SourceFailureException
 import com.xiaojoo.lightplayer.data.Pinned
 import com.xiaojoo.lightplayer.data.PinnedRepository
 import com.xiaojoo.lightplayer.ui.AddToPlaylistDialog
+import com.xiaojoo.lightplayer.ui.ApiSearchPage
 import com.xiaojoo.lightplayer.ui.LyricStore
 import com.xiaojoo.lightplayer.ui.LyricWriter
 import androidx.media3.common.Player
@@ -117,6 +124,22 @@ class MainActivity : ComponentActivity() {
         mediaGranted = hasMediaPermission()
         // 在线那一路的源表要 Context（抖音那颗得开 WebView 借真内核取文件 id），冷启动就递一次
         Online.init(applicationContext)
+        /* 抖音那颗内核挂到 decorView 的**最底一层**：应用自己的内容铺在它上面，所以它既看不见也不抢点击，
+           但那一页在内核里算"可见"。量下来这一条**不是**取不到文件 id 的原因（挂上照样 20 秒全空，
+           见 `ViewHost` 的注释），眼下留着只是让下一方案（截页面自己的 detail 响应）少一个变量。 */
+        Online.douyinHost = object : ViewHost {
+            override fun attach(view: View) {
+                val root = window.decorView as ViewGroup
+                root.addView(
+                    view, 0,
+                    ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+                )
+            }
+
+            override fun detach(view: View) {
+                (view.parent as? ViewGroup)?.removeView(view)
+            }
+        }
 
         // 没有通知权限时后台播放不可见，用户会以为音频被系统杀了
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -283,10 +306,10 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     // 按页号落位会落到另一条上去（实测：记页号时落在「A2O LITE 'NEON'」，实际在放的是「2027国考公告解读」）。
     // 页号只在下面按当前这份列表现算一次。
     var onlinePageUri by remember { mutableStateOf<String?>(null) }
-    // 从迷你条点进视频这一屏时，顶栏落在哪一栏：条上挂的是在线那一条就落在线，是本地片就落在本地。
-    // 平时它是 true —— 离开这一屏就复位，所以从底栏点进来仍然"每次进这一屏都从在线开始"
+    // 视频那一屏顶栏落在哪一栏：从迷你条点进来时按条上那一条属于哪一栏来落（下面那颗写它），
+    // 平时**留着上一次的值** —— 从底部那行 tab 切回来要落回离开时那一栏，不是每次都回「在线」
+    // （他 10-15 点的。原来这里有一句「离开这一屏就复位」，就是把这件事顶掉的元凶）。
     var videoOnline by remember { mutableStateOf(true) }
-    LaunchedEffect(tab) { if (tab != AppTab.Video) videoOnline = true }
     // 站点默认列表（B 站=热门），和"粘过并解析成功的"分开存
     var onlineVideos by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
 
@@ -294,6 +317,9 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     var onlineSort by remember { mutableStateOf(onlineSettings.onlineSort()) }
     var onlineBusy by remember { mutableStateOf(false) }
     var onlineError by remember { mutableStateOf<String?>(null) }
+
+    /** 粘进来那条地址正在解析：「视频地址源」那一屏那颗「+」按着不松，直到结果回来 */
+    var urlBusy by remember { mutableStateOf(false) }
 
     /** 第几趟取在线那一栏：抖音那一屏慢十几秒（要跑内核），回来时已经重开过一轮就别再插旧的 */
     var onlineGen by remember { mutableStateOf(0) }
@@ -319,33 +345,77 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
      */
     var onlineFailed by remember { mutableStateOf(setOf<String>()) }
 
+    /**
+     * 从首页那两列、音乐界面那两栏点进来的那几条（MV / 精选视频）：**临时**挂在视频那一栏最前面。
+     *
+     * 不写进 [onlineLib]（那是「视频地址源」那一屏粘进来的那些，要跨开机活着）。这一批跟着这一次看：
+     * 在他**按了刷新**（`loadOnlineFeed(manual = true)`；切进那一栏的自动重取不算）或**筛完按「确定」**
+     * 之后整批作废、列表回到站点那一串 —— 他 10-15 点名的就是这一条："加入的视频，将不再出现，重置播放列表"。
+     */
+    var onlineInserted by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
+
+    /** 点进来一条：新的排最前面，同一条页地址重复点不占两格 */
+    fun insertOnline(video: MusicVideo) {
+        onlineInserted = listOf(video) + onlineInserted.filterNot { it.pageUrl == video.pageUrl }
+    }
+
+    /**
+     * 按页地址找条目：站点那一串 → 这一次点进来挂在最前面那几条 → 库里存的那些。
+     * 三处原来各写一遍前两级，加一级就三份要同步，收在这一颗。
+     */
+    fun onlineVideoOf(url: String): MusicVideo? =
+        onlineAll.firstOrNull { it.pageUrl == url }
+            ?: onlineInserted.firstOrNull { it.pageUrl == url }
+            ?: onlineLib.videoOf(url)
+
     /** 在线那一栏摆的东西：先是自己加过的，再接站点给的那一串 */
     /** 每条的封面（B 站给的 pic）：滑到哪一条，背景就是哪一条自己放大模糊后的封面。
      *  粘进来的那些存在 online_items 里，列表里那些现拿 —— 两份并成一张表 */
-    val onlineCovers = remember(onlineAll, onlineItems) {
-        onlineLib.covers() + onlineAll.mapNotNull { v ->
+    val onlineCovers = remember(onlineAll, onlineInserted, onlineItems) {
+        onlineLib.covers() + (onlineAll + onlineInserted).mapNotNull { v ->
             v.artworkUrl?.takeIf { it.isNotBlank() }?.let { v.pageUrl to it }
         }.toMap()
     }
 
-    /* 排的是站点给的那一串；你自己粘进来的那几条（onlineItems）不参与 —— 那是挑好带回来的，
-       跟着"最热/最新"被冲散反而是退步。 */
-    val onlineFeed = remember(onlineItems, onlineVideos, onlineMore, onlineSort, videoFilter) {
-        val now = System.currentTimeMillis()
-        onlineItems + (
-            onlineSort.sorted(filterVideos(onlineVideos, videoFilter, now)) +
-                onlineSort.sorted(filterVideos(onlineMore, videoFilter, now))
-            ).map {
-            Track(
-                id = it.pageUrl.hashCode().toLong() and 0x7fffffffL,
-                uri = Uri.parse(it.pageUrl),
-                name = it.title,
-                artist = it.artist.takeIf { a -> a.isNotBlank() },
-                durationMs = it.durationMs,
-                sizeBytes = -1L,
-                isVideo = true,
+    /* 粘进来的那几条重建回 MusicVideo 的形状：库里存了 sourceId/remoteId 的就直接重建（能对上站点那些
+       同一组字段），裸直链没得重建就现造一条只有标题/歌手/时长的 —— 它没有风格、没有发布时间，
+       一按风格或时间筛就出局，和那些站点自己没给字段的条目同一条规则。 */
+    val pastedVideos = remember(onlineItems) {
+        onlineItems.map { t ->
+            val url = t.uri.toString()
+            onlineLib.videoOf(url) ?: MusicVideo(
+                sourceId = "url", remoteId = url, title = t.name,
+                artist = t.artist.orEmpty(), durationMs = t.durationMs, pageUrl = url,
             )
         }
+    }
+
+    /* 那一栏摆的：最前面是这一次点进来的那几条（临时，刷新/一筛就作废），
+       然后是你自己粘进来的那些（不参与排序、跨开机活着），再接站点给的那一串。
+       **同一个页地址只摆一遍**（他 10-15 报的"有时候一个视频重复"）：首页那两列「精选视频」本来就是
+       从同一个站点池子摊出来的，点一条挂到最前面之后，池子里那一条还在原位 → 一格变两条。
+       所以挂在最前面那几条、还有粘进来的那几条，都要从站点那一串里摘掉。 */
+    val onlineFeed = remember(
+        onlineItems, pastedVideos, onlineInserted, onlineVideos, onlineMore, onlineSort, videoFilter,
+    ) {
+        val now = System.currentTimeMillis()
+        val head = onlineInserted.map { onlineTrackOf(it) }
+        val headUrls = onlineInserted.map { it.pageUrl }.toSet()
+        val mine = onlineItems.zip(pastedVideos)
+            .filter { (t, v) -> t.uri.toString() !in headUrls && videoFilter.matches(v, now) }
+            .map { (t, _) -> t }
+        val shown = headUrls + onlineItems.map { it.uri.toString() }
+        val site = (
+            onlineSort.sorted(filterVideos(onlineVideos, videoFilter, now)) +
+                onlineSort.sorted(filterVideos(onlineMore, videoFilter, now))
+            ).distinctBy { it.pageUrl }     // 往后接的那几批和第一批之间也会重发同一条
+            .filterNot { it.pageUrl in shown }
+            .map { onlineTrackOf(it) }
+        val feed = head + mine + site
+        val dup = feed.size - feed.map { it.uri }.distinct().size
+        Log.i("OnlineFeed", "摆 ${feed.size} 格 = 挂进来 ${head.size} + 粘的 ${mine.size} + 站点 ${site.size}" +
+            "；重复页地址 $dup")
+        feed
     }
 
     val scope = rememberCoroutineScope()
@@ -372,6 +442,21 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     var backToMusicOnline by remember { mutableStateOf(false) }
     var musicOnlineMusic by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
     var musicOnlineVideo by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
+    /**
+     * 「自定义接口」搜索那一屏（首页那颗搜索框点进来的）。单独一份 prefs 文件、单独一面墙：
+     * 它不接注册表，「视频地址源」/「在线音乐源」那两屏读不到它，它的结果也不进那两屏（他 10-15 点的）。
+     * 地址**没有默认值** —— 仓库是公开的，代码里一个字都不写域名（见 CustomApiSource 的类注释）。
+     */
+    val apiSettings = remember { OnlineSettings(context, "api_search") }
+    /** 一串地址源 + 当前按哪一份问。刚装上是一个都没有（代码里不预置域名），所以第一颗是「添加地址源」 */
+    var apiSources by remember { mutableStateOf(apiSettings.apiSources()) }
+    var apiSelected by remember { mutableStateOf(apiSources.firstOrNull()) }
+    var apiKeyword by remember { mutableStateOf("") }
+    var apiResults by remember { mutableStateOf<List<ApiSong>>(emptyList()) }
+    var apiBusy by remember { mutableStateOf(false) }
+    var apiError by remember { mutableStateOf<String?>(null) }
+    var apiPlaying by remember { mutableStateOf<String?>(null) }
+    var apiDownloading by remember { mutableStateOf<String?>(null) }
     /** 右上角那颗齿轮开的是「在线音乐源」那一整屏（page = "music-source"），不再是抽屉 */
     var musicBaseUrl by remember {
         mutableStateOf(musicOnlineSettings.musicUrl().ifBlank { Online.MUSIC_DEFAULT_BASE })
@@ -537,12 +622,16 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
 
 
     /** 拉站点默认列表；失败只在这一栏里说一句，不把整屏变成错误页 */
-    fun loadOnlineFeed() {
+    fun loadOnlineFeed(manual: Boolean = true) {
         if (onlineBusy) return
         onlineBusy = true
         onlineError = null
         // 重开一轮就是把第 1 页重新拿一遍，往后接的那几批跟着作废（不然旧第 2 页会接在新第 1 页后面）
         onlineMore = emptyList()
+        // 只有**他按的那一下刷新**才作废这一次挂进来的那几条。
+        // 原来这里无条件清 —— 而每次切进「视频 → 在线」都会自动跑一次这一颗，
+        // 于是从首页/音乐点进来的那条在他眼前凭空消失（真机量到：挂进来 1 → 一进那一栏变 0）。
+        if (manual) onlineInserted = emptyList()
         onlineBatch = 1
         onlineFailed = emptySet()
         val gen = ++onlineGen
@@ -607,7 +696,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
      */
     fun onlineMediaId(t: Track): String {
         val u = t.uri.toString()
-        return (onlineAll.firstOrNull { it.pageUrl == u } ?: onlineLib.videoOf(u))
+        return (onlineVideoOf(u))
             ?.let { Online.ID_PREFIX + it.key }
             ?: (Online.ID_PREFIX + "url/" + u)
     }
@@ -628,10 +717,9 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
      */
     suspend fun onlineItemFor(t: Track, announce: Boolean): MediaItem? {
         val u = t.uri.toString()
-        val video = onlineAll.firstOrNull { it.pageUrl == u }
-            // 自己加过的那些：库里存的是页地址 + 源身份，重建出条目现换一次地址。
-            // 原来这里存的是解析后的直链，签名一过期就整栏 403（见 OnlineLibrary 那段）
-            ?: onlineLib.videoOf(u)
+        // 站点那一串 → 这一次点进来挂在前面的那几条 → 库里存的那些（页地址 + 源身份，现换一次地址）。
+        // 原来这里存的是解析后的直链，签名一过期就整栏 403（见 OnlineLibrary 那段）
+        val video = onlineVideoOf(u)
             // 到这儿还没有源身份，就是用户粘的裸直链：这一栏的条目带着名字/歌手/时长，
             // 别拿直链去 URL 尾巴上再猜一遍（真机上迷你条写出过 "42626581441-1-16.mp4?e=ig8eux…"）
             ?: return Online.mediaItemOf(t)
@@ -736,8 +824,12 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
      * 「在线」那一栏有，就该只在那一栏播。
      * 存起来而不是临时插进 `onlineVideos`：那一栏每次进来都会重新拉一次站点列表，临时插的会被冲掉，
      * 冲掉之后这一屏落在别的条目上，等于点错了。
+     *
+     * `open = false` 只做起播那一段、**不换页签**：首页的横幅和「精选视频」点下去要留在原地、
+     * 让迷你条把人带过去（他 10-15 点的）；条上那条判的是"哪台在线实例手里拿着这条 uri"，
+     * 所以点条仍然落在 视频 → 在线 那一栏、落在这一条上。搜索那一屏和「在线」整屏要的是立刻跳过去，走默认的 true。
      */
-    fun playOnline(video: MusicVideo) {
+    fun playOnline(video: MusicVideo, open: Boolean = true) {
         scope.launch {
             when (val out = withContext(Dispatchers.IO) { Online.resolve(video) }) {
                 is ResolveOutcome.Ready -> {
@@ -746,13 +838,15 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     if (t == null) {
                         android.widget.Toast.makeText(context, "这条在线条目没造出可播条目", android.widget.Toast.LENGTH_SHORT).show()
                     } else {
-                        onlineLib.add(t, video.artworkUrl, video)
-                        onlineItems = onlineLib.all()
+                        // 挂在视频那一栏最前面（临时的：那一屏一刷新或一筛就作废），不进跨开机的那份库
+                        insertOnline(video)
                         // 这一条在那一栏里的身份是页地址，不是这一次的播放地址（地址每次都换）
                         onlinePageUri = video.pageUrl
                         videoOnline = true
-                        page = null
-                        tab = AppTab.Video
+                        if (open) {
+                            page = null
+                            tab = AppTab.Video
+                        }
                         playOnlineItem(t, 0)
                     }
                 }
@@ -777,7 +871,10 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     }
 
     fun removeOnlineItem(t: Track) {
+        val u = t.uri.toString()
         onlineLib.remove(t)
+        // 这一次点进来挂在最前面那几条也在这栏里，删的那颗对的就是它们 —— 库里没有，得从这一串摘
+        onlineInserted = onlineInserted.filterNot { it.pageUrl == u }
         onlineItems = onlineLib.all()
         if (onlinePlaying == t.uri.toString()) {
             PlayerPool.onlinePlayers().forEach { it.stop() }
@@ -834,7 +931,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     fun downloadOnline(t: Track) {
         if (onlineDownloading != null || qualityAsk != null) return
         val key = t.uri.toString()
-        val page = onlineAll.firstOrNull { it.pageUrl == key } ?: onlineLib.videoOf(key)
+        val page = onlineVideoOf(key)
         if (page == null) {
             saveOnline(t, key)
             return
@@ -861,12 +958,16 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
      * 没有源认得就当成视频直链收下。源自己报的失败（风控、只给 DASH）不静默降级。
      */
     fun addUrl(raw: String) {
+        if (urlBusy) return
         val url = raw.trim()
         if (!(url.startsWith("http://") || url.startsWith("https://"))) {
             android.widget.Toast.makeText(context, "地址要以 http:// 或 https:// 开头", android.widget.Toast.LENGTH_SHORT).show()
             return
         }
         onlineSettings.saveUrl(url)
+        // 按下去到结果回来不是瞬间：B 站要两趟接口，抖音那一趟自己等 8 秒。
+        // 中间这一屏原来一动不动，看着就像没按下去（真机量的：按下到 Toast 8.6 秒）
+        urlBusy = true
         scope.launch {
             var pic: String? = null
             // 认得的源才有条目；当成直链收下的那一种没有，也就没有档可问
@@ -898,7 +999,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
             onlineItems = onlineLib.all()
             // 摆出去的那一条要拿库里那份：它的 uri 是身份（页地址），t 的 uri 是这一次的播放地址
             playOnlineItem(onlineItems.firstOrNull { it.id == t.id } ?: t, 0)
-        }
+        }.invokeOnCompletion { urlBusy = false }
     }
 
     /**
@@ -929,6 +1030,113 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     /* 开机把设置里那一栏递进源（地址是「在线音乐源」那一屏改的，改完要立刻生效）。
        以前这里还带一次"把存着的那条歌单摊开"，那一栏撤了之后就没有落点了，这一句只留设地址。 */
     LaunchedEffect(Unit) { Online.setMusicBase(musicBaseUrl) }
+
+    /** 失败那句话：站点报了原因就用它的，没报的兜一句，别只留一个空结果区 */
+    fun apiMessage(e: Throwable): String =
+        (e as? SourceFailureException)?.failure?.message ?: e.message ?: "接口问不通"
+
+    fun apiToast(text: String) {
+        android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * 现换这一条的直链，拿到了再交出去。**每次点都现问**：站点给的是上游平台 CDN 的签名地址，
+     * 会过点，存下第二次再用就是那条"直链过期之后再按回 403"。档位取接口报的第一档（它按高到低排）。
+     *
+     * 换不到就弹一句再返回，不静默 return —— 静默 return 在真机上和"这颗没做"分不开。
+     */
+    fun withApiLink(s: ApiSong, then: (Playable) -> Unit) {
+        scope.launch {
+            val q = s.qualities.firstOrNull()
+            if (q == null) {
+                apiToast("接口没报这一条的档位")
+                return@launch
+            }
+            val src = apiSelected ?: return@launch
+            val out = withContext(Dispatchers.IO) { runCatching { Online.apiUrlOf(src, s, q) } }
+            val p = out.getOrNull()
+            if (p == null) {
+                apiToast("取址失败：" + apiMessage(out.exceptionOrNull() ?: Exception("接口没给地址")))
+                return@launch
+            }
+            then(p)
+        }
+    }
+
+    /**
+     * 问一次接口。**按键盘上那颗「搜索」才问**，不跟着每次击键发：
+     * 那是接口不是本机索引，敲一个字打一次既慢、结果又会在字打一半时跳空。
+     */
+    fun runApiSearch() {
+        val kw = apiKeyword.trim()
+        if (kw.isBlank() || apiBusy) return
+        val src = apiSelected ?: return
+        apiBusy = true
+        apiError = null
+        scope.launch {
+            val s = src
+            val r = withContext(Dispatchers.IO) { runCatching { Online.apiSearch(s, kw) } }
+            apiBusy = false
+            apiResults = r.getOrDefault(emptyList())
+            apiError = r.exceptionOrNull()?.let { apiMessage(it) }
+        }
+    }
+
+    /**
+     * 抽屉里交出来的那一份：同名就回 false（那颗芯片按名字认，撞名两颗分不出）。
+     * 新加的源直接选上 —— 加它就是为了用它，再加一次「点一下芯片」没道理。
+     */
+    fun addApiSource(src: ApiSource): Boolean {
+        if (apiSources.any { it.name == src.name }) return false
+        apiSources = apiSources + src
+        apiSettings.saveApiSources(apiSources)
+        apiSelected = src
+        apiError = null
+        return true
+    }
+
+    fun playApiSong(s: ApiSong) = withApiLink(s) { p ->
+        val item = Online.mediaItem(s.asMusicVideo(), p)
+        val t = Online.trackOf(item, isVideo = false)
+        if (t == null) apiToast("这条接口条目没造出可播条目")
+        else {
+            apiPlaying = s.key
+            playItems(listOf(item), listOf(t), toVideo = false)
+        }
+    }
+
+    /** 挂到音频那一路的队尾；那台一条都没加载时直接起播这一条（和在线音乐那一行同一套处理） */
+    fun queueApiSong(s: ApiSong) = withApiLink(s) { p ->
+        val a = PlayerPool.audioPlayer()
+        if (a == null || a.mediaItemCount == 0) playApiSong(s)
+        else {
+            a.addMediaItem(Online.mediaItem(s.asMusicVideo(), p))
+            apiToast("已加入播放列表")
+        }
+    }
+
+    /** 存的就是刚才现换回来的那一条直链，不重新取址、不换档位、不转码（和在线那两路同一颗下载） */
+    fun downloadApiSong(s: ApiSong) {
+        if (apiDownloading != null) return
+        apiDownloading = s.key
+        withApiLink(s) { p ->
+            scope.launch {
+                val v = s.asMusicVideo()
+                val t = Track(
+                    id = 0L, uri = Uri.parse(p.url), name = v.title,
+                    artist = v.artist, durationMs = v.durationMs, sizeBytes = -1L, isVideo = false
+                )
+                try {
+                    OnlineDownload.save(context, t, DownloadDest.Music) { }
+                    apiToast("已存到 音乐/LightPlayer")
+                } catch (e: Exception) {
+                    apiToast("存盘失败：" + (e.message ?: e.javaClass.simpleName))
+                } finally {
+                    apiDownloading = null
+                }
+            }
+        }
+    }
 
     /**
      * 点一格封面：先现取这一首的直链，再交给音频那一路 —— 不进视频那三台、不另开实例。
@@ -1231,10 +1439,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
         scope.launch {
             when (val out = withContext(Dispatchers.IO) { Online.resolve(v) }) {
                 is ResolveOutcome.Ready -> {
-                    // isVideo 这里要 true（默认那个）：视频那一栏的页表认的是"这是一格画面"
-                    val t = Online.trackOf(Online.mediaItem(v, out.playable)) ?: return@launch
-                    onlineLib.add(t, v.artworkUrl, v)
-                    onlineItems = onlineLib.all()
+                    // 挂在视频那一栏最前面（临时的：那一屏一刷新或一筛就作废），不进跨开机的那份库
+                    insertOnline(v)
                     onlinePageUri = v.pageUrl
                     backToMusicOnline = true
                     tab = AppTab.Video
@@ -1612,6 +1818,30 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     onBack = { leavePage() },
                     bottomInset = !showBar,
                 )
+            } else if (page == "api-search") {
+                ApiSearchPage(
+                    keyword = apiKeyword,
+                    onKeyword = { apiKeyword = it },
+                    sources = apiSources,
+                    selected = apiSelected,
+                    onSelect = {
+                        apiSelected = it
+                        apiError = null
+                        if (apiKeyword.isNotBlank()) runApiSearch()
+                    },
+                    onAddSource = { addApiSource(it) },
+                    onSubmit = { runApiSearch() },
+                    busy = apiBusy,
+                    error = apiError,
+                    results = apiResults,
+                    playingKey = apiPlaying,
+                    downloadingKey = apiDownloading,
+                    onPlay = { s -> playApiSong(s) },
+                    onQueue = { s -> queueApiSong(s) },
+                    onDownload = { s -> downloadApiSong(s) },
+                    onBack = { leavePage() },
+                    bottomInset = !showBar,
+                )
             } else if (page == "music-source") {
                 MusicSourcePage(
                     baseUrl = musicBaseUrl,
@@ -1738,7 +1968,9 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     favorites = favorites,
                     picks = musicOnlinePicks.filterNot { it.music },
                     // 五个入口都指向已有的页面；from 给 null 的那两颗，返回直接回首页
-                    onSearch = { searchQuery = ""; openPage("search", from = null) },
+                    // 首页那颗框进的是「自定义接口」那一屏（问接口，不搜本机曲库）；
+                    // 列表页那颗放大镜不变，还是在本机那一串里筛
+                    onSearch = { openPage("api-search", from = null) },
                     onArtists = { openPage("artists") },
                     onCharts = { openPage("history") },
                     onPlaylists = { openPage("playlists") },
@@ -1753,6 +1985,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     sourceLabel = { id -> Online.sourceLabel(id) },
                     downloadingKey = musicOnlineDownloading,
                     onPlayPick = { v -> playMusicOnline(v) },
+                    // 横幅和「精选视频」那两列走视频那一路，且**留在首页**：起播之后由迷你条带过去
+                    onPlayVideoPick = { v -> playOnline(v, open = false) },
                     onQueuePick = { v -> queueMusicOnline(v) },
                     onDownloadPick = { v -> downloadMusicOnline(v) },
                     onMoreHot = { openPage("home-hot") },
@@ -1799,6 +2033,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     onOpenQueue = { queueRoute = QueueRoute.Video },
                     onOpenOnline = { openPage("online") },
                     onAddUrl = { u -> addUrl(u) },
+                    urlBusy = urlBusy,
                     onRescan = { refreshLibrary() },
                     libraryScan = libraryScan,
                     savedUrl = onlineSettings.url(),
@@ -1808,10 +2043,13 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     videoFilter = videoFilter,
                     onVideoFilter = {
                         videoFilter = it
+                        // 一筛就把这一次点进来挂在前面的那几条撤掉（和「刷新」同一口径）
+                        onlineInserted = emptyList()
                         // 换筛选等于换了一整串条目：页号留在旧列表那一格，脚下那条和列表就对不上了
                         videoFeedReset += 1
                     },
                     onlinePool = onlineVideos + onlineMore,
+                    onlinePasted = pastedVideos,
                     sourceOpen = videoSourceOpen,
                     onSourceOpen = { videoSourceOpen = it },
                     onlineResetTick = videoFeedReset,
@@ -1819,14 +2057,16 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     onlineItems = onlineFeed,                    onlineBusy = onlineBusy,
                     onlineError = onlineError,
                     onlineCovers = onlineCovers,
-                    onBrowse = { loadOnlineFeed() },
+                    onBrowse = { manual -> loadOnlineFeed(manual) },
                     onlinePlaying = onlinePlaying,
                     onlinePage = onlinePage,
                     onlineStart = videoOnline,
+                    onOnlineTab = { videoOnline = it },
                     onOnlinePage = { i -> onlinePageUri = onlineFeed.getOrNull(i)?.uri?.toString() },
                     onOnlinePlay = { t, i -> tapOnline(t, i) },
                     onOnlinePlayAt = { t, i -> playOnlineAt(t, i) },
                     onlineReady = { t, i -> onlineReady(t, i) },
+                    onlineMediaId = { t -> onlineMediaId(t) },
                     onOnlineDelete = { t -> removeOnlineItem(t) },
                     onOnlineDownload = { t -> downloadOnline(t) },
                     onlineSort = onlineSort,
@@ -2021,3 +2261,18 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     }
 }
 
+
+/**
+ * 列表条目 → 视频那一栏的一格。**身份是页地址**，不是这一次的播放地址 —— B 站那条 CDN 地址带
+ * `deadline=` 签名、几小时就死，拿它当页号就会在下次滑回来时 403（见 `OnlineLibrary` 那段）。
+ */
+private fun onlineTrackOf(v: MusicVideo): Track = Track(
+    id = v.pageUrl.hashCode().toLong() and 0x7fffffffL,
+    uri = Uri.parse(v.pageUrl),
+    name = v.title,
+    artist = v.artist.takeIf { it.isNotBlank() },
+    durationMs = v.durationMs,
+    // 在线条目没有"文件大小"这个数，-1 让副标题不摆它
+    sizeBytes = -1L,
+    isVideo = true,
+)

@@ -150,6 +150,8 @@ fun VideoFeed(
     onOpenQueue: () -> Unit,
     onOpenOnline: () -> Unit,
     onAddUrl: (String) -> Unit,
+    /** 粘进来那条地址在解析中：那颗「+」要按住并转圈（结果最快也要几秒，抖音那一趟 8 秒） */
+    urlBusy: Boolean,
     savedUrl: String,
     /** 再点一次「本地」= 重扫一遍媒体库 */
     onRescan: () -> Unit,
@@ -163,8 +165,10 @@ fun VideoFeed(
     /** 那一屏的筛选草稿，和「确定」交回来的那一份 */
     videoFilter: VideoFilter,
     onVideoFilter: (VideoFilter) -> Unit,
-    /** 算芯片候选值、算"这样筛下来剩几条"的那一串：站点给回来的在线池，不含粘进来的那些 */
+    /** 算芯片候选值、算"这样筛下来剩几条"的那一串：站点给回来的那一批 */
     onlinePool: List<MusicVideo>,
+    /** 你粘进来的那几条（和站点那一批一起吃同一组筛选，所以那一屏的数要把它们算进去） */
+    onlinePasted: List<MusicVideo>,
     /** 「视频地址源」那一屏开没开。开关在壳层：底部那行页签要跟着藏，这一屏自己藏不掉它 */
     sourceOpen: Boolean,
     onSourceOpen: (Boolean) -> Unit,
@@ -175,10 +179,12 @@ fun VideoFeed(
     onlineBusy: Boolean,
     onlineError: String?,
     onlineCovers: Map<String, String>,
-    onBrowse: () -> Unit,
+    onBrowse: (Boolean) -> Unit,
     onlinePlaying: String?,
     /** 这一屏第一次挂着时顶栏落在哪一栏（迷你条按条上那一条在哪一栏来指定） */
     onlineStart: Boolean,
+    /** 换那一栏时回写给壳层：底部那行 tab 切走再回来要落回**离开时那一栏**，不是每次都回「在线」 */
+    onOnlineTab: (Boolean) -> Unit,
     /** 在线那一栏上次看到第几页（那一屏一切走就被销毁，位置得存在外面这一层） */
     onlinePage: Int,
     onOnlinePage: (Int) -> Unit,
@@ -186,6 +192,8 @@ fun VideoFeed(
     onOnlinePlayAt: (Track, Int) -> Unit,
     /** 第 i 页那条到手了没有：在线那一栏的翻页门禁读它，没到手的下一页不让进站 */
     onlineReady: (Track, Int) -> Boolean,
+    /** 这一条该挂在哪台成员身上的那个 mediaId（外面那一颗 `onlineMediaId`）：格子和成员手里那条对得上，成员报的尺寸才算这一格的 */
+    onlineMediaId: (Track) -> String,
     onOnlineDelete: (Track) -> Unit,
     onOnlineDownload: (Track) -> Unit,
     /** 在线那一栏现在按什么排 / 选完存回去（长按那一栏开的那一层） */
@@ -273,6 +281,10 @@ fun VideoFeed(
         // 顶栏落在哪一栏由外面定（迷你条点进来要按条上那一条属于哪一栏来落）；
         // 默认仍是每次进这一屏从在线开始，那条默认写在 MainActivity 的 videoOnline 上
         var online by remember { mutableStateOf(onlineStart) }
+        /* 换栏之后回写给壳层：底部那行 tab 切走再回来，这一屏是重新组合的，
+           不回写就每次都掉回「在线」（他 10-15 点的：按上次离开那一栏进）。
+           第一次组合写回的是同一个值，等于不动。 */
+        LaunchedEffect(online) { onOnlineTab(online) }
         /* 在线那一栏的 pager 在它自己里面，外面改 initialPage 它不动 ——
            所以递一个计数进去，它自己滑回 0 */
         /* 本地这一栏在不在重扫，只有外面知道（扫完会 bump libraryScan），这里跟着那个计数收 */
@@ -863,7 +875,11 @@ fun VideoFeed(
             if (online) PlayerPool.useOnline(onlinePage) else PlayerPool.useVideoFeed()
         }
         if (online) {
-            LaunchedEffect(Unit) { onBrowse() }
+            /* 只在**这一栏还没有任何东西**的时候自动拉一次。
+               原来是无条件拉 —— 而每次从底部那行 tab 切回"视频"这一屏都是重新组合，
+               于是"看一眼音乐再回来"就把整栏重问一遍：脚下那条被换掉、进度也没了（他 10-15 点的）。
+               要重取有明确入口：再点一次头顶那支「在线」。 */
+            LaunchedEffect(Unit) { if (onlinePool.isEmpty()) onBrowse(false) }
             OnlineFeed(
                 items = onlineItems,
                 initialPage = onlinePage,
@@ -875,6 +891,7 @@ fun VideoFeed(
                 onPlay = { x, i -> onOnlinePlay(x, i) },
                 onPlayAt = { x, i -> onOnlinePlayAt(x, i) },
                 isReady = onlineReady,
+                mediaIdOf = onlineMediaId,
                 onAdd = { onSourceOpen(true) },
                 onDelete = { onOnlineDelete(it) },
                 onDownload = { onOnlineDownload(it) },
@@ -900,7 +917,7 @@ fun VideoFeed(
                    换栏那一下照旧只换栏，不动页号 —— 那是另一件事。 */
                 onRepick = {
                     if (online) {
-                        onBrowse()
+                        onBrowse(true)
                         onOnlineReset()
                     } else {
                         localBusy = true
@@ -917,11 +934,13 @@ fun VideoFeed(
             VideoSourcePage(
                 sources = videoSources,
                 pool = onlinePool,
+                mine = onlinePasted,
                 start = videoFilter,
                 initialUrl = savedUrl,
                 onToggleSource = onToggleSource,
                 onDeleteSource = onDeleteSource,
                 onAddUrl = { onAddUrl(it) },
+                urlBusy = urlBusy,
                 onApply = { onVideoFilter(it); onSourceOpen(false) },
                 onCancel = { onSourceOpen(false) },
             )

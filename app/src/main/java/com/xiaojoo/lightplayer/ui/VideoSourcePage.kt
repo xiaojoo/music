@@ -59,11 +59,15 @@ import com.xiaojoo.lightplayer.videosource.MusicVideo
 fun VideoSourcePage(
     sources: List<SourceRow>,
     pool: List<MusicVideo>,
+    /** 你粘进来的那几条：现在和站点那些一起吃同一组筛选，所以芯片的候选值和「确定（N 条）」都要算上它们 */
+    mine: List<MusicVideo>,
     start: VideoFilter,
     initialUrl: String,
     onToggleSource: (String) -> Unit,
     onDeleteSource: (String) -> Unit,
     onAddUrl: (String) -> Unit,
+    /** 那条地址在解析中：那颗「+」按住不松、换成一枚转圈的弧（结果最快也要几秒，抖音那一趟 8 秒） */
+    urlBusy: Boolean,
     onApply: (VideoFilter) -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -75,11 +79,15 @@ fun VideoSourcePage(
     /** 哪一颗正在等"确认删除"：只允许一颗，点别处就换过去 */
     var pendingDelete by remember { mutableStateOf<String?>(null) }
 
-    val styles = counted(pool.mapNotNull { it.category?.takeIf { c -> c.isNotBlank() } })
-    val authors = counted(pool.map { it.artist }.filter { it.isNotBlank() })
-    val ages = counted(pool.map { VideoAge.of(it.publishedAtMs, now) })
-    val lengths = counted(pool.mapNotNull { VideoLen.of(it.durationMs) })
-    val hit = filterVideos(pool, draft, now).size
+    /* 芯片的候选值和「确定（N 条）」数的是**这一屏筛完真会摆出来的那些**，所以把你粘进来的
+       那几条也算进来（地址源那三颗不是筛选，仍只数站点拉回来的）。
+       粘进来的那些没有发布时间，落到「站点没给」那一档 —— 那一档本来就是给"站点没报日期"留的。 */
+    val all = pool + mine
+    val styles = counted(all.mapNotNull { it.category?.takeIf { c -> c.isNotBlank() } })
+    val authors = counted(all.map { it.artist }.filter { it.isNotBlank() })
+    val ages = counted(all.map { VideoAge.of(it.publishedAtMs, now) })
+    val lengths = counted(all.mapNotNull { VideoLen.of(it.durationMs) })
+    val hit = filterVideos(all, draft, now).size
 
     Column(
         modifier = Modifier
@@ -140,25 +148,30 @@ fun VideoSourcePage(
                     textStyle = TextStyle(color = Tokens.InkStrong, fontSize = 14.sp),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(onGo = {
-                        if (text.isNotBlank()) { onAddUrl(text.trim()); text = "" }
+                        if (text.isNotBlank() && !urlBusy) { onAddUrl(text.trim()); text = "" }
                     }),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
             Spacer(Modifier.width(8.dp))
             // 加号从"一枚裸图标"改成一颗按钮：和左边那条输入框同一套（38dp 高、12dp 圆角、
-            // CardBg + 一道 Divider 描边）。没填东西时按不动、但不消失也不淡（置灰不消失那条规矩）
+            // CardBg + 一道 Divider 描边）。没填东西时按不动、但不消失也不淡（置灰不消失那条规矩）。
+            // 解析中把加号换成一枚转圈的弧（同一颗、同一格，盒子不涨一寸）：按下到结果回来最快几秒，
+            // 中间原样不动会被当成"没按下去"（真机量的：按下到 Toast 8.6 秒）
             Box(
                 modifier = Modifier
                     .size(width = 52.dp, height = Tokens.Dimen.FilterBtnH)
                     .clip(RoundedCornerShape(12.dp))
                     .background(Tokens.CardBg)
                     .border(1.dp, Tokens.Divider, RoundedCornerShape(12.dp))
-                    .tap(enabled = text.isNotBlank()) {
+                    .tap(enabled = text.isNotBlank() && !urlBusy) {
                         onAddUrl(text.trim()); text = ""
                     },
                 contentAlignment = Alignment.Center,
-            ) { LineIcon(IconKind.Add, size = 19.dp, color = if (text.isNotBlank()) Tokens.InkStrong else Tokens.InkFaint) }
+            ) {
+                if (urlBusy) SpinArc()
+                else LineIcon(IconKind.Add, size = 19.dp, color = if (text.isNotBlank()) Tokens.InkStrong else Tokens.InkFaint)
+            }
         }
 
         Column(
@@ -366,6 +379,16 @@ data class VideoFilter(
     val lengths: Set<String> = emptySet(),
 ) {
     val any: Boolean get() = styles.isNotEmpty() || authors.isNotEmpty() || ages.isNotEmpty() || lengths.isNotEmpty()
+
+    /**
+     * 这一条过不过这一组筛选。单独抽出来是因为**粘进来的那几条也要问同一句**：
+     * 它们以前不参与筛选、又永远排在最前，于是"筛到 0 条"屏上照样是原来那条（他 10-15 报的"没更新"）。
+     */
+    fun matches(v: MusicVideo, now: Long): Boolean = !any ||
+        (styles.isEmpty() || v.category.orEmpty() in styles) &&
+        (authors.isEmpty() || v.artist in authors) &&
+        (ages.isEmpty() || VideoAge.of(v.publishedAtMs, now) in ages) &&
+        (lengths.isEmpty() || VideoLen.of(v.durationMs) in lengths)
 }
 
 /**
@@ -373,9 +396,4 @@ data class VideoFilter(
  * 和「筛选歌曲」那一屏同一口径。认不出时长的条目在选了时长那一组时会被筛掉，这是筛选本来的意思。
  */
 fun filterVideos(items: List<MusicVideo>, f: VideoFilter, now: Long): List<MusicVideo> =
-    if (!f.any) items else items.filter { v ->
-        (f.styles.isEmpty() || v.category.orEmpty() in f.styles) &&
-            (f.authors.isEmpty() || v.artist in f.authors) &&
-            (f.ages.isEmpty() || VideoAge.of(v.publishedAtMs, now) in f.ages) &&
-            (f.lengths.isEmpty() || VideoLen.of(v.durationMs) in f.lengths)
-    }
+    if (!f.any) items else items.filter { f.matches(it, now) }

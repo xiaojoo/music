@@ -217,6 +217,170 @@ class DouyinSource(
             "if(!b){b=document.scrollingElement||document.documentElement;}" +
             "b.scrollTop=b.scrollHeight;return '1';}catch(e){return '0';}})()"
 
+        /**
+         * 在页面任何脚本跑起来之前注入：把 `fetch` 和 `XMLHttpRequest` 各包一层。
+         *
+         * 两颗作用：
+         * - `window.__dyCap` 存**响应原文**（最多 4 条），只存带播放线索的那几条：
+         *   `play_addr`/`aweme_detail`/`bit_rate`/`video_models`/`"uri"` —— 真机量过，只认前两种会漏
+         *   （那一页的 `ttplayer` 明明起来了、日志里在跑音频 DSP，我们却一条都没截到，说明它走的是别的接口、别的字段名）；
+         * - `window.__dyLog` 存**每一次请求的问法**（地址/状态/响应字节），给 [ALL_JS] 读 —— 它回答
+         *   "这一页到底问过哪些接口"，是判"根本没发"还是"发得比我们抢得晚"的那把尺子。
+         *
+         * 为什么不等 `window.player`：真机量过，那一页在这颗内核里正文停在「加载中」、
+         * `player.config` 始终不出现（20 秒 40~50 次探测全空，挂到窗口上也一样）。
+         */
+        const val HOOK_JS = "(function(){try{if(window.__dyOn)return;window.__dyOn=1;window.__dyCap=[];window.__dyLog=[];" +
+            "var MK=['play_addr','aweme_detail','bit_rate','video_models','\"uri\"'];" +
+            "var push=function(u,b,st,fu){try{" +
+            "window.__dyLog.push(String(u).slice(0,110)+'|'+(st<0?'?':st)+'|'+(b?b.length:0)+(fu&&fu!=u?'|>'+String(fu).slice(0,60):''));" +
+            "if(window.__dyLog.length>60)window.__dyLog.shift();" +
+            "if(!b||b.length<40)return;var m=false;for(var i=0;i<MK.length;i++){if(b.indexOf(MK[i])>=0){m=true;break;}}" +
+            "if(!m)return;" +
+            "window.__dyCap.push({u:String(u).slice(0,160),b:b.slice(0,300000)});if(window.__dyCap.length>4)window.__dyCap.shift();" +
+            "}catch(e){}};" +
+            "var of=window.fetch;if(of){window.fetch=function(){var a=arguments;" +
+            "var u=(a[0]&&a[0].url)?a[0].url:a[0];" +
+            "return of.apply(this,a).then(function(r){try{r.clone().text().then(function(x){push(u,x,r.status,r.url);}).catch(function(){});}" +
+            "catch(e){}return r;});};}" +
+            "var oo=XMLHttpRequest.prototype.open,os=XMLHttpRequest.prototype.send;" +
+            "XMLHttpRequest.prototype.open=function(m,u){this.__u=u;return oo.apply(this,arguments);};" +
+            "XMLHttpRequest.prototype.send=function(){var x=this;" +
+            "x.addEventListener('load',function(){try{if(x.responseType===''||x.responseType==='text')push(x.__u,x.responseText,x.status,x.responseURL);}" +
+            "catch(e){}});return os.apply(this,arguments);};}catch(e){}})()"
+
+        /** 读截到的那几条（不清空：轮询里每一次都要能看见前面截到的） */
+        const val CAP_JS = "(function(){try{return JSON.stringify(window.__dyCap||[]);}catch(e){return '[]';}})()"
+
+        /** 读"这一页问过哪些接口"（地址 + 响应字节数），给量的人看，不参与取值 */
+        const val ALL_JS = "(function(){try{return JSON.stringify(window.__dyLog||[]);}catch(e){return '[]';}})()"
+
+        /**
+         * 读首屏那段 SSR JSON：`<script id="RENDER_DATA" type="application/json">` 里那份是
+         * **URI 编码过**的，所以要 `decodeURIComponent` 再交回来（里面就是 aweme 详情那一整坨）。
+         * 没有这个标签（或还没挂上）回 null，调用方接着轮询。
+         */
+        const val RENDER_JS = "(function(){try{var r=document.getElementById('RENDER_DATA');" +
+            "return r?decodeURIComponent(r.textContent):null;}catch(e){return null;}})()"
+
+        /**
+         * 截到的一串 → 条目。递归找第一个 `play_addr.uri` 是以 `v` 开头的那个对象（站点给的内部文件 id），
+         * 标题/时长在同一份报文里，找不到就留空/0，不猜。
+         */
+        fun parseCaptured(raw: String?): DouyinDetail? {
+            if (raw.isNullOrBlank() || raw == "null") return null
+            val arr = try {
+                JSONArray(unquote(raw))
+            } catch (e: JSONException) {
+                return null
+            }
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val doc = jsonObjectOf(o.optString("b")) ?: continue
+                detailOf(doc)?.let { return it }
+            }
+            return null
+        }
+
+        /**
+         * 页面首屏那段 SSR JSON（`<script id="RENDER_DATA">`，URI 编码过的）→ 条目。
+         *
+         * 为什么问这一处：真机量过，那一页在这颗内核里**根本没发** detail 那条接口 —— 26 条资源请求
+         * 没有一条名字带 detail/aweme，所以截 `fetch` 一条也截不到。数据要么在首屏 HTML 里，要么就没有。
+         */
+        fun parseRendered(raw: String?): DouyinDetail? {
+            if (raw.isNullOrBlank() || raw == "null") return null
+            return jsonObjectOf(unquote(raw))?.let { detailOf(it) }
+        }
+
+        /** 一份带 aweme 详情的 JSON → 条目；没有可用的文件 id 就回 null */
+        private fun detailOf(doc: JSONObject): DouyinDetail? {
+            val uri = findUri(doc, 0) ?: return null
+            return DouyinDetail(
+                videoId = uri,
+                title = cleanTitle(findText(doc, "desc", 0).orEmpty()),
+                durationMs = findNum(doc, "duration", 0),
+            )
+        }
+
+        /**
+         * 这一页都问过哪些接口：`[["地址|状态|响应字节"],…]`（[HOOK_JS] 里那条 `__dyLog`）。
+         * 它回答"那条详情接口到底发没发、服务器怎么答的"，只给量的人看，不参与取值。
+         */
+        fun capturedLog(raw: String?): List<String> {
+            if (raw.isNullOrBlank()) return emptyList()
+            val arr = try {
+                JSONArray(unquote(raw))
+            } catch (e: JSONException) {
+                return emptyList()
+            }
+            return (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotBlank() } }
+        }
+
+        private fun findUri(o: JSONObject, depth: Int): String? {
+            // 12 层是给首屏那段 SSR JSON 留的：它把详情埋在 `路由键/loaderData/页键/videoInfoRes/item_list[0]/video`
+            if (depth > 12) return null
+            val keys = o.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                when (val v = o.opt(k)) {
+                    is JSONObject -> {
+                        if (k == "play_addr" && v.optString("uri").startsWith("v")) return v.optString("uri")
+                        findUri(v, depth + 1)?.let { return it }
+                    }
+                    is JSONArray -> for (i in 0 until v.length()) {
+                        val e = v.optJSONObject(i) ?: continue
+                        findUri(e, depth + 1)?.let { return it }
+                    }
+                    else -> Unit
+                }
+            }
+            return null
+        }
+
+        private fun findText(o: JSONObject, key: String, depth: Int): String? {
+            // 12 层是给首屏那段 SSR JSON 留的：它把详情埋在 `路由键/loaderData/页键/videoInfoRes/item_list[0]/video`
+            if (depth > 12) return null
+            val keys = o.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                when (val v = o.opt(k)) {
+                    is JSONObject -> {
+                        if (k == key) v.optString(key).let { if (it.isNotBlank()) return it }
+                        if (k == key && v.optString("mention_text").isNotBlank()) return v.optString("mention_text")
+                        findText(v, key, depth + 1)?.let { return it }
+                    }
+                    is JSONArray -> for (i in 0 until v.length()) {
+                        val e = v.optJSONObject(i) ?: continue
+                        findText(e, key, depth + 1)?.let { return it }
+                    }
+                    else -> if (k == key && v is String && v.isNotBlank()) return v
+                }
+            }
+            return null
+        }
+
+        /** 站点报的 duration 是毫秒（实测 67036）；万一给的是秒，6 位以下就当秒折算 */
+        private fun findNum(o: JSONObject, key: String, depth: Int): Long {
+            if (depth > 12) return 0L
+            val keys = o.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                when (val v = o.opt(k)) {
+                    is JSONObject -> { findNum(v, key, depth + 1).let { if (it > 0) return it } }
+                    is JSONArray -> for (i in 0 until v.length()) {
+                        val e = v.optJSONObject(i) ?: continue
+                        findNum(e, key, depth + 1).let { if (it > 0) return it }
+                    }
+                    else -> if (k == key && v is Number) {
+                        val n = v.toLong()
+                        if (n > 0) return if (n < 100_000L && n > 1_000L) n else n * 1_000L
+                    }
+                }
+            }
+            return 0L
+        }
+
         /** 内部文件 id 的形状（实测 `v0200fg10000daae2u7og65t0qoa2sk0`，28 位） */
         private val FILE_ID = Regex("""^v[0-9a-z]{10,40}$""")
 

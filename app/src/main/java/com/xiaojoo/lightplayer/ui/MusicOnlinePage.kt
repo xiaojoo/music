@@ -435,7 +435,7 @@ private fun one(v: Float): String {
 }
 
 /** 问不通那一句的红，和播放页底下 errorMessage、源设置那一屏的失败话同一支 */
-private val FailRed = Color(0xFFC0392B)
+internal val FailRed = Color(0xFFC0392B)
 
 /**
  * 数据还没回来时屏幕正中那枚转圈的弧。
@@ -443,7 +443,7 @@ private val FailRed = Color(0xFFC0392B)
  * 一圈 900ms、线性匀速，和视频那一栏「刷新」那颗转的是同一个节奏。
  */
 @Composable
-private fun SpinArc() {
+internal fun SpinArc(modifier: Modifier = Modifier) {
     val spin = rememberInfiniteTransition(label = "online-spin")
     val rot by spin.animateFloat(
         0f, 360f,
@@ -452,7 +452,7 @@ private fun SpinArc() {
     )
     val side = 26.dp
     val stroke = 2.dp
-    Canvas(modifier = Modifier.size(side).graphicsLayer { rotationZ = rot }) {
+    Canvas(modifier = modifier.size(side).graphicsLayer { rotationZ = rot }) {
         val w = stroke.toPx()
         drawArc(
             color = Tokens.InkFaint,

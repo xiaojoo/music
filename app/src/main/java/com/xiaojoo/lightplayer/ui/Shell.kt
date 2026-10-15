@@ -1173,15 +1173,22 @@ fun TrackListPage(
                         )
                     }
                     // ✕ 一直占位：有词先清词，词空了再退这一页（打字时文字不左右跳）
-                    // 画框贴右 + CloseInkShift：墨右沿要和放大镜、和下面那行排序落在同一条线上
+                    // 画框贴右 + CloseInkShift：墨右沿要和放大镜、和下面那行排序落在同一条线上。
+                    // 命中盒另补一笔：贴右画的时候 48dp 盒的中心比墨的中心偏左 (48−19)/2 = 14.5dp，
+                    // 所以点在 ✕ 上不算、要往左一点才关得掉（和 ApiSearchPage 那一颗同一个病、同一个补法）。
+                    // 整盒往右挪、字形往左挪同样多：墨一格没动，只有命中带跟着墨走了。
+                    val hitSkew = (Tokens.Dimen.IconHit - 19.dp) / 2f
                     Box(
                         modifier = Modifier
                             .size(Tokens.Dimen.IconHit)
-                            .offset(x = Tokens.Dimen.CloseInkShift)
+                            .offset(x = Tokens.Dimen.CloseInkShift + hitSkew)
                             .tap { if (q.isEmpty()) onBack() else search.second("") },
                         contentAlignment = Alignment.CenterEnd
                     ) {
-                        LineIcon(IconKind.Close, size = 19.dp, color = Tokens.Ink)
+                        LineIcon(
+                            IconKind.Close, size = 19.dp, color = Tokens.Ink,
+                            modifier = Modifier.offset(x = -hitSkew),
+                        )
                     }
                 }
             } else if (tabs == null) {
@@ -1855,10 +1862,19 @@ private fun PlaylistRow(
                 modifier = Modifier.padding(top = 3.dp)
             )
         }
-        // 心常驻在这一行右端：点它是收藏/取消这个歌单，不是进这一行
+        /* 心常驻在这一行右端：点它是收藏/取消这个歌单，不是进这一行。
+           inkShift 10.21dp 两笔叠出来的：
+           ① 7.3dp —— 这颗原来走 RowIcon 默认的"墨居中在 39.5dp 盒里"，墨右沿落在 x=988，
+              而上面「自建歌单」标题行那颗 `>`（36dp + CenterEnd）在 x=1008，错开 20px=7.3dp；
+           ② 2.91dp = **8px** —— 右边那道缝还要再小：先按"图标宽度的一半"给了 19px，他说太大，
+              改 16px，再改 8px。**只加在心身上**，`>` 不跟着走，所以两颗不同一条线
+              （心越过 `>` 8px），这是点过名的取舍，不是又漂了。
+           命中盒不跟着挪（RowIcon 那只 39.5dp 的盒必须等宽，否则这颗和列表行右端那几颗的白缝会跟着盒走）。
+           心的墨右沿 = 1008 + 8 = **1016**，离屏幕右 64px = 23.3dp。 */
         RowIcon(
             if (favorite) IconKind.Favorite else IconKind.FavoriteLine,
-            if (favorite) Tokens.Accent else Tokens.InkFaint
+            if (favorite) Tokens.Accent else Tokens.InkFaint,
+            inkShift = 10.21.dp,
         ) { onToggleFavorite() }
     }
 }
