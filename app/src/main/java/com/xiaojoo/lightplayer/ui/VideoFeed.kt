@@ -5,7 +5,6 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.MediaStore
 import android.content.pm.ActivityInfo
@@ -654,7 +653,11 @@ fun VideoFeed(
             val s = slots.firstOrNull { it.page == page }
             val poster by produceState<ImageBitmap?>(initialValue = posters[key], key1 = key) {
                 if (value == null) {
-                    val b = withContext(Dispatchers.IO) { firstFrame(context, t.uri, 720) }
+                    /* 走预览那台全进程共用的解帧机。原来这里每一页新开一台 MediaMetadataRetriever：
+                       这条 4K HEVC 解一帧要 8 秒，快翻页时那些解不完的全排在 finalize 上 ——
+                       预览那一路已经因此被 FinalizerWatchdogDaemon 打死过一次（见 FramePull 注释）。
+                       海报是"就要第 0 格"，所以 latestOnly=false，不许被拖动的请求顶掉。 */
+                    val b = FramePull.frame(context, t.uri, 0L, 720, latestOnly = false)
                     posters[key] = b
                     if (b != null) contentRectOf(b)?.let { borders[key] = it }
                     value = b
@@ -1187,7 +1190,6 @@ fun VideoFeed(
                             if (wantPlay) "播放中" else "已暂停",
                         ).joinToString(" · ")
                     } ?: "",
-                    chapter = "第 ${pagerState.currentPage + 1} 条 / 共 ${videos.size} 条",
                     posMs = slot?.posMs ?: 0L,
                     durMs = ownDur,
                     playing = wantPlay,
@@ -1908,32 +1910,6 @@ internal fun rotBox(
         dx = if (swapped) fb.dy else fb.dx,
         dy = if (swapped) fb.dx else fb.dy
     )
-}
-
-/** 解一帧：默认取头一帧当海报；给 timeUs 就是全屏控制条那颗预览卡要的"拖到哪一帧" */
-internal fun firstFrame(
-    context: Context, uri: Uri, widthPx: Int, timeUs: Long = 0L
-): ImageBitmap? {
-    val mmr = MediaMetadataRetriever()
-    return try {
-        val raw = runCatching {
-            mmr.setDataSource(context, uri)
-            // 头一帧要的是"最快拿到"，按同步帧取；中间某一秒要的是"就是那一秒"，取最近的帧
-            if (timeUs == 0L) mmr.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            else mmr.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-        }.getOrNull()
-        // 带 BitmapParams 的缩放版要 API 31，这台机是 API 29，只能自己等比缩
-        val scaled = when {
-            raw == null -> null
-            raw.width <= widthPx -> raw
-            else -> Bitmap.createScaledBitmap(
-                raw, widthPx, (raw.height.toLong() * widthPx / raw.width).toInt(), true
-            )
-        }
-        scaled?.asImageBitmap()
-    } finally {
-        runCatching { mmr.release() }
-    }
 }
 
 /**
