@@ -285,7 +285,6 @@ fun VideoFeed(
            tick 只用来"每碰一下就把那 3.5 秒重新计时"，值本身不参与画 */
         var controls by remember { mutableStateOf(false) }
         var controlsTick by remember { mutableLongStateOf(0L) }
-        val barUp = fullscreen && controls
         // 顶栏落在哪一栏由外面定（迷你条点进来要按条上那一条属于哪一栏来落）；
         // 默认仍是每次进这一屏从在线开始，那条默认写在 MainActivity 的 videoOnline 上
         var online by remember { mutableStateOf(onlineStart) }
@@ -312,6 +311,13 @@ fun VideoFeed(
         // 出声的那一页，也是"我们上一次 commit 给会话的那一页"：进度条只在这一格能拖，
         // 换成员那一下的回声也靠它认（见 onMediaItemTransition 里那条自激抑制）
         var active by remember { mutableIntStateOf(startPage) }
+        /* 出声那一格的成员本体（画面尺寸、进度、音量都从它取）。
+           横屏的片子进全屏才把屏幕躺过来、才换成底下那条控制条；竖屏的片子进全屏**仍然站着**，
+           只收状态栏和导航条，菜单还是下面那个抽屉（他 10-17 点的）。barMode = 前者那一档。 */
+        val aSlot = slots.firstOrNull { it.page == active }
+        val landscapeClip = aSlot != null && aSlot.vidW > 0 && aSlot.vidH > 0 && aSlot.vidW > aSlot.vidH
+        val barMode = fullscreen && landscapeClip
+        val barUp = barMode && controls
         // 海报按 uri 缓存，来回滑不重新解帧
         val posters = remember { mutableMapOf<String, ImageBitmap?>() }
         // 每条的模糊垫图，按 uri 缓存。用 state map 存：垫图一到位底下那层就要立刻重画
@@ -589,9 +595,7 @@ fun VideoFeed(
 
         /* 全屏 = 横屏的片子把屏幕躺过来；竖屏的片子不转屏。
            尺寸看"出声那一格"的，不再有一整屏共用的画面了。 */
-        val aSlot = slots.firstOrNull { it.page == active }
         LaunchedEffect(fullscreen, aSlot?.vidW, aSlot?.vidH) {
-            val landscapeClip = aSlot != null && aSlot.vidW > 0 && aSlot.vidH > 0 && aSlot.vidW > aSlot.vidH
             (context as? Activity)?.requestedOrientation =
                 if (fullscreen && landscapeClip) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -635,6 +639,12 @@ fun VideoFeed(
         fun putValue(side: Int, v: Float) {
             if (side < 0) win?.let { val lp = it.attributes; lp.screenBrightness = v; it.attributes = lp }
             else aSlot?.member?.setVolume(v)
+        }
+        // 真正开播这一下要记进「已播」（默认不自动播）。三条路都走这里：非全屏的单击、
+        // 全屏的双击、还有暂停时屏幕正中那支三角
+        fun startPlaying() {
+            controller.play()
+            videos.getOrNull(pagerState.currentPage)?.let { PlayHistory.record(context, it) }
         }
 
         VerticalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
@@ -839,23 +849,20 @@ fun VideoFeed(
                             // 键要带上 fullscreen：那颗开关翻的时候这一整屏会重组，但 pointerInput
                             // 不重开就一直拿着旧闭包 —— 里面那个 fullscreen 永远停在按之前的那一档，
                             // 真机撞到过：全屏里点屏幕还是去切播放/暂停，控制条出不来
-                            key = page to fullscreen,
+                            key = page to barMode,
                             onTap = {
-                                if (fullscreen) {
+                                if (barMode) {
                                     controls = !controls
                                     controlsTick = System.currentTimeMillis()
                                 } else if (wantPlay) {
                                     controller.pause()
                                 } else {
-                                    controller.play()
-                                    // 默认不自动播，那"已播歌曲"就得由真正开播这一下来记
-                                    videos.getOrNull(pagerState.currentPage)
-                                        ?.let { PlayHistory.record(context, it) }
+                                    startPlaying()
                                 }
                             },
                             onZone = { z ->
                                 if (z == FeedZone.Middle) {
-                                    if (fullscreen) {
+                                    if (barMode) {
                                         controls = true
                                         controlsTick = System.currentTimeMillis()
                                     } else moreOpen = true
@@ -866,9 +873,9 @@ fun VideoFeed(
                             // 暂停/播放没有别的手指可用（条子正中央那颗要点到才够得着）。
                             // 非全屏不装 —— 一装 detectTapGestures 就要等满系统双击时限才敢报单击，
                             // 而那一档单击本来就是切播放/暂停，等于白慢半拍。
-                            onDoubleTap = if (fullscreen) {
+                            onDoubleTap = if (barMode) {
                                 {
-                                    if (wantPlay) controller.pause() else controller.play()
+                                    if (wantPlay) controller.pause() else startPlaying()
                                     controlsTick = System.currentTimeMillis()
                                 }
                             } else null,
@@ -905,13 +912,18 @@ fun VideoFeed(
                             },
                         )
                 )
-                // 暂停时中央只留一支半透明白三角：原来那层 40% 黑圆底按他点名撤掉了，
-                // 透明度给 0.55（原来是 0.92 靠黑底托着才看得清）。按住那一档占的是同一个位置，
-                // 所以正中同时只有一样东西
+                /* 暂停时中央那支半透明白三角：原来那层 40% 黑圆底按他点名撤掉了，透明度给 0.55
+                   （原来是 0.92 靠黑底托着才看得清）。按住那一档占的是同一个位置，正中同时只有一样东西。
+                   它自己可点 = 开播（他 10-17 点的）：全屏那一档单击归了出/收控制条，暂停时想就地
+                   播起来以前只能去够条子正中央那颗。挂在它自己身上就只吃这一格 72dp（真机 198px 见方），
+                   点到外面照旧是出/收控制条 —— clickable 会把这一下吃掉，底下那整屏的 tap 检测器收不到。 */
                 if (!wantPlay && page == active && hold == null && hud == null && seekToast == null) {
                     LineIcon(
                         kind = IconKind.Play,
-                        modifier = Modifier.align(Alignment.Center),
+                        modifier = Modifier.align(Alignment.Center).tap {
+                            startPlaying()
+                            controlsTick = System.currentTimeMillis()
+                        },
                         size = 72.dp,
                         color = Color.White.copy(alpha = 0.55f)
                     )
@@ -999,15 +1011,15 @@ fun VideoFeed(
                    他接着点的居中）：整列 176dp 落在屏幕正中，离进度线那一带（y 918..967）还有 136px，
                    一格不压。非全屏不在此列：那里没有控制条，这一列是收藏/队列/搜索唯一的入口，
                    且照旧常驻、照旧贴底 22dp（抖音那个位置，他早先量过的）。 */
-                if (!fullscreen || barUp) {
+                if (!barMode || barUp) {
                     FeedRail(
                         favorited = key in favorites,
                         onFavorite = { onToggleFavorite(t) },
                         onQueue = onOpenQueue,
                         onOnline = { onOpenOnline(t) },
-                        bottom = if (fullscreen) 0.dp else 22.dp,
+                        bottom = if (barMode) 0.dp else 22.dp,
                         modifier = Modifier.align(
-                            if (fullscreen) Alignment.CenterEnd else Alignment.BottomEnd
+                            if (barMode) Alignment.CenterEnd else Alignment.BottomEnd
                         )
                     )
                 }
@@ -1121,7 +1133,7 @@ fun VideoFeed(
                 onFullscreen = {
                     // 从抽屉里开全屏要把抽屉一起收掉：全屏那一档改用压在画面下沿的控制条，
                     // 抽屉留着就会在躺过来的屏上从底下拉一大片
-                    if (!fullscreen) {
+                    if (!fullscreen && landscapeClip) {
                         controls = true
                         controlsTick = System.currentTimeMillis()
                     }
