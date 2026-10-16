@@ -63,6 +63,9 @@ fun VideoSourcePage(
     mine: List<MusicVideo>,
     start: VideoFilter,
     initialUrl: String,
+    /** 黑名单那一行的条数，和点进去（0 也摆这一行：入口不能因为还没屏蔽过就没了） */
+    blacklistCount: Int,
+    onOpenBlacklist: () -> Unit,
     onToggleSource: (String) -> Unit,
     onDeleteSource: (String) -> Unit,
     onAddUrl: (String) -> Unit,
@@ -226,6 +229,7 @@ fun VideoSourcePage(
                     }
                 }
             }
+            BlacklistEntry(blacklistCount, onOpenBlacklist)
             // 末排芯片 → 屏底补一条缝，宽度和「组标题 → 芯片」同档（FilterGapTail = 真机 35px），
             // 口径抄筛选音乐那一屏（d347744）。底部那两颗（重置/确定）摆出来时不补：
             // 那时这条缝由动作行自己的 top 内衬给，无条件加就叠成两条。
@@ -337,6 +341,47 @@ private fun SourceChip(
 
 /** 他给的那张参考图上那颗红：取样 (150,35,35) */
 private val DeleteRed = Color(0xFF962323)
+
+/**
+ * 「黑名单 N 条」那一行：这一屏唯一的整行入口，点进去是黑名单那一整屏。
+ *
+ * 几何照 [FilterHead] 那一行抄（行高 / 上下内衬 / 字号 / 右内衬 `ScreenPad - 10.dp`），
+ * 所以这一行的字和上面「风格」「时长」那些组标题左对齐、右端那枚箭头和可折叠箭头那条的
+ * 折叠箭头落在同一条右沿上。计数用芯片上那个 12sp 的灰字，不另发明一档。
+ *
+ * **整行都能按**（含左右内衬那一段），不只那一行字：这一行没有别的控件，命中区给宽一点没代价。
+ */
+@Composable
+private fun BlacklistEntry(count: Int, onOpen: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .tap(onClick = onOpen)
+            .padding(
+                start = Tokens.Dimen.ScreenPad,
+                end = Tokens.Dimen.ScreenPad - 10.dp,
+                top = Tokens.Dimen.FilterGapTop,
+                bottom = Tokens.Dimen.FilterGapBot
+            )
+            .height(Tokens.Dimen.FilterHeadH),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "黑名单",
+            color = Tokens.InkStrong,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f)
+        )
+        Text("$count", color = Tokens.InkFaint, fontSize = 12.sp)
+        Spacer(Modifier.width(3.dp))
+        // 那枚箭头照组标题的折叠箭头同一份：34dp 的盒 + 20dp 的墨 + Tokens.Ink。
+        // 盒子内不另挂 tap —— 整行已经能按，再套一层就变成两个主人。
+        Box(modifier = Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+            LineIcon(IconKind.ChevronRight, size = 20.dp, color = Tokens.Ink)
+        }
+    }
+}
 
 private infix fun Set<String>.toggle(v: String): Set<String> = if (v in this) this - v else this + v
 

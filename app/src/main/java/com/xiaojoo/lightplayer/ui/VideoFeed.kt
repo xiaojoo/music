@@ -148,7 +148,8 @@ fun VideoFeed(
     favorites: Set<String>,
     onToggleFavorite: (Track) -> Unit,
     onOpenQueue: () -> Unit,
-    onOpenOnline: () -> Unit,
+    /** 本地那一栏右侧那颗放大镜：把**眼前这一条**交给外面，外面拿它的片名去搜相关视频（一整屏） */
+    onOpenOnline: (Track) -> Unit,
     onAddUrl: (String) -> Unit,
     /** 粘进来那条地址在解析中：那颗「+」要按住并转圈（结果最快也要几秒，抖音那一趟 8 秒） */
     urlBusy: Boolean,
@@ -160,6 +161,9 @@ fun VideoFeed(
     /** 「视频地址源」那一串行：这份名单只管视频那三路，音乐那一路另存一份（两张屏不混） */
     videoSources: List<SourceRow>,
     onDeleteSource: (String) -> Unit,
+    /** 「视频地址源」那一屏末尾那一行「黑名单 N 条」：条数和点进去 */
+    blacklistCount: Int,
+    onOpenBlacklist: () -> Unit,
     /** 点地址源那颗芯片：禁用 / 重新启用这一路（删除走 onDeleteSource，是芯片上那颗 X） */
     onToggleSource: (String) -> Unit,
     /** 那一屏的筛选草稿，和「确定」交回来的那一份 */
@@ -278,6 +282,9 @@ fun VideoFeed(
         var autoNext by remember { mutableStateOf(true) }
         var rotation by remember { mutableIntStateOf(0) }
         var moreOpen by remember { mutableStateOf(false) }
+        /* 长按落在屏宽哪四分之一：左=按住期间 2.0 倍速往前、右=按住期间倒带。
+           中间那一档不进这里 —— 它到点开抽屉，没有松手要收回的东西。null = 现在没按着 */
+        var hold by remember { mutableStateOf<FeedZone?>(null) }
         // 顶栏落在哪一栏由外面定（迷你条点进来要按条上那一条属于哪一栏来落）；
         // 默认仍是每次进这一屏从在线开始，那条默认写在 MainActivity 的 videoOnline 上
         var online by remember { mutableStateOf(onlineStart) }
@@ -366,7 +373,8 @@ fun VideoFeed(
             while (isActive) {
                 slots.forEach { s ->
                     // 只在这一格确实停在它那一页时才抄：否则画的是这条片子的别的位置
-                    if (s.page >= 0 && !scrubbing && s.member.currentMediaItemIndex == s.page) {
+                    if (s.page >= 0 && !scrubbing && hold != FeedZone.Right &&
+                        s.member.currentMediaItemIndex == s.page) {
                         s.posMs = s.member.currentPosition
                         s.durMs = s.member.duration.coerceAtLeast(0L)
                     }
@@ -514,7 +522,17 @@ fun VideoFeed(
             onDispose { slots.forEachIndexed { i, s -> s.member.removeListener(ls[i]) } }
         }
 
-        LaunchedEffect(speed) { controller.setPlaybackSpeed(speed) }
+        LaunchedEffect(speed, hold) {
+            // 倍速在这一屏有两个主人：抽屉里选的那一档，和按住左四分之一那一下。
+            // 按住只在按住期间生效，松手回到抽屉那一档（他 10-16 点的）
+            controller.setPlaybackSpeed(if (hold == FeedZone.Left) HOLD_SPEED else speed)
+        }
+        // 右四分之一按住 = 倒带，动的是出声那一格自己的成员（和底下那根进度条同一台）
+        HoldRewindEffect(
+            holding = hold == FeedZone.Right,
+            player = slots.firstOrNull { it.page == active }?.member,
+            onPosition = { ms -> slots.firstOrNull { it.page == active }?.posMs = ms },
+        )
 
         /* 全屏播放 = 像视频软件那样：状态栏、系统导航条、App 自己的底栏全部收掉，
            横屏的片子再把屏幕躺过来、画面铺到没有黑边；竖屏的片子不转屏，只原地放大。 */
@@ -617,20 +635,26 @@ fun VideoFeed(
                 contentAlignment = Alignment.Center
             ) {
                 val pb = poster
-                // 最底下：这一条自己的放大模糊 + 45% 黑，专门填画面框以外的上下两条，不跟着海报淡掉
-                pbBlur?.let {
-                    Image(
-                        bitmap = it,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                /* 最底下：这一条自己的放大模糊 + 45% 黑，专门填画面框以外的上下两条，不跟着海报淡掉。
+                   全屏那一档换成纯黑 —— 铺满整屏时那两条就是影院的黑边，留着模糊底等于在片子外面
+                   再画一层比片子还抢眼的东西（他 10-16 点的）。 */
+                if (fullscreen) {
+                    Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+                } else {
+                    pbBlur?.let {
+                        Image(
+                            bitmap = it,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.45f))
                     )
                 }
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.45f))
-                )
                 /* 这一页自己的画面（转 90°/270° 时把框的宽高对调再转，转完正好铺满竖屏那一格）。
                    原来那套"整屏一个出图 View、跟着翻页偏移每帧位移"整个删了：
                    每帧位移一张 1080x2100 的 TextureView 要重排，而它露出的正是上一条的最后一帧。 */
@@ -757,35 +781,39 @@ fun VideoFeed(
                         }
                     }
                 }
-                // 单击切播放/暂停，长按开底部抽屉（跟抖音同一套手势）
+                // 单击切播放/暂停照旧；长按改成按屏宽四等分：左=按住快进、右=按住倒带、中间=底部抽屉
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(page) {
-                            detectTapGestures(
-                                onLongPress = { moreOpen = true },
-                                onTap = {
-                                    if (wantPlay) {
-                                        controller.pause()
-                                    } else {
-                                        controller.play()
-                                        // 默认不自动播，那"已播歌曲"就得由真正开播这一下来记
-                                        videos.getOrNull(pagerState.currentPage)
-                                            ?.let { PlayHistory.record(context, it) }
-                                    }
+                        .feedZoneGestures(
+                            key = page,
+                            onTap = {
+                                if (wantPlay) {
+                                    controller.pause()
+                                } else {
+                                    controller.play()
+                                    // 默认不自动播，那"已播歌曲"就得由真正开播这一下来记
+                                    videos.getOrNull(pagerState.currentPage)
+                                        ?.let { PlayHistory.record(context, it) }
                                 }
-                            )
-                        }
+                            },
+                            onZone = { z -> if (z == FeedZone.Middle) moreOpen = true else hold = z },
+                            onRelease = { hold = null },
+                        )
                 )
                 // 暂停时中央只留一支半透明白三角：原来那层 40% 黑圆底按他点名撤掉了，
-                // 透明度给 0.55（原来是 0.92 靠黑底托着才看得清）
-                if (!wantPlay && page == active) {
+                // 透明度给 0.55（原来是 0.92 靠黑底托着才看得清）。按住那一档占的是同一个位置，
+                // 所以正中同时只有一样东西
+                if (!wantPlay && page == active && hold == null) {
                     LineIcon(
                         kind = IconKind.Play,
                         modifier = Modifier.align(Alignment.Center),
                         size = 72.dp,
                         color = Color.White.copy(alpha = 0.55f)
                     )
+                }
+                if (page == active) hold?.let {
+                    FeedHoldHint(forward = it == FeedZone.Left, modifier = Modifier.align(Alignment.Center))
                 }
                 Column(
                     modifier = Modifier
@@ -856,7 +884,7 @@ fun VideoFeed(
                     favorited = key in favorites,
                     onFavorite = { onToggleFavorite(t) },
                     onQueue = onOpenQueue,
-                    onOnline = onOpenOnline,
+                    onOnline = { onOpenOnline(t) },
                     modifier = Modifier.align(Alignment.BottomEnd)
                 )
             }
@@ -937,6 +965,8 @@ fun VideoFeed(
                 mine = onlinePasted,
                 start = videoFilter,
                 initialUrl = savedUrl,
+                blacklistCount = blacklistCount,
+                onOpenBlacklist = onOpenBlacklist,
                 onToggleSource = onToggleSource,
                 onDeleteSource = onDeleteSource,
                 onAddUrl = { onAddUrl(it) },
@@ -1190,7 +1220,8 @@ private fun FeedRail(
         )
         Spacer(Modifier.height(16.dp))
         FeedRailButton(IconKind.Queue, active = false, size = 23.6.dp, onClick = onQueue)
-        // 在线那一路的入口。摆在另外两颗下面：这两颗的位置是他量过的，新增的往后加
+        // 放大镜：按**眼前这一条**的片名去搜相关视频（一整屏）。摆在另外两颗下面：
+        // 这两颗的位置是他量过的，新增的往后加
         Spacer(Modifier.height(16.dp))
         // 放大镜的墨天生偏画框中心左 0.0555·画框（圈在 0.42、柄伸到右下），不补的话墨中心
         // 比圆底中心左 2dp；只挪墨，圆底和命中区不动。

@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -404,15 +403,28 @@ private fun OnlinePage(
 
     val here = track.uri.toString() == playingUrl
 
+    /* 长按落在屏宽哪四分之一：左=按住期间 2.0 倍速往前、右=按住期间倒带；中间那一档直接开排序层，
+       不进这里（它没有松手要收回的东西）。null = 现在没按着 */
+    var hold by remember { mutableStateOf<FeedZone?>(null) }
+    /* 在线这一栏没有选倍速的地方，按住左四分之一是唯一动它的人，所以松手回 1.0，不用留"原来那一档" */
+    LaunchedEffect(hold, player) {
+        player?.setPlaybackSpeed(if (hold == FeedZone.Left) HOLD_SPEED else 1f)
+    }
+    HoldRewindEffect(hold == FeedZone.Right, player)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            /* 单击切播放/暂停、长按开排序那一层 —— 和本地那一栏同一套手势（那边写的是
-               「单击切播放/暂停，长按开底部抽屉」）。两栏按法不一样会被当成 bug 报回来。 */
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { onTap() }, onLongPress = { onLongPress() })
-            }
+            /* 单击切播放/暂停照旧、长按四等分 —— 和本地那一栏走同一颗 feedZoneGestures：
+               左=快进、右=倒带、中间=开排序那一层（原来整屏长按都开它）。
+               两栏按法不一样会被当成 bug 报回来。 */
+            .feedZoneGestures(
+                key = Unit,
+                onTap = onTap,
+                onZone = { z -> if (z == FeedZone.Middle) onLongPress() else hold = z },
+                onRelease = { hold = null },
+            )
     ) {
         /* 背景 = 这一条自己的封面，放大模糊后铺满（和抖音/本地那一栏同一套观感）。
            换 key 时必须先进手把 value 换掉：produceState 换 key 不会回到 initialValue，
@@ -523,13 +535,17 @@ private fun OnlinePage(
             OnlineDots(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
         }
 
-        if (here && !playing && ready) {
+        // 按住那一档占的是正中央，和暂停三角同一个位置，所以两个不会同时出现
+        if (here && hold == null && !playing && ready) {
             LineIcon(
                 IconKind.Play,
                 modifier = Modifier.align(Alignment.Center),
                 size = 72.dp,
                 color = Color.White.copy(alpha = 0.55f),
             )
+        }
+        if (here) hold?.let {
+            FeedHoldHint(forward = it == FeedZone.Left, modifier = Modifier.align(Alignment.Center))
         }
 
         Column(
