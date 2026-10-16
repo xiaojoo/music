@@ -1,12 +1,56 @@
-<!-- 整颗图形缩进 66dp 安全区（最外那道弧末端含半个笔画 = 离圆心 33.0 单位）：MIUI 抽屉只取这 108 层
-     中间那 ~74dp 当可见牌（实测 1.45 倍缩放），铺满 108 的话最外那道弧会被切掉。
-     三道波的衰减只给笔画粗细不给透明度——白 .45 压在色带最亮那一角(#5FEDE6)只剩 Δ22/255，等于那道弧自己消失。 -->
+<!-- 整颗图形缩到 scale=0.780：真机 MIUI 只取这 108 层中间 68 单位当可见牌（由真机四条留白反解标定），
+     牌 135px 上留白 左24 右13 上23 下23 —— 上一版 0.878 时右侧只剩 6px，图形顶到牌沿了。
+     三道波的衰减只给笔画粗细不给透明度：透明度衰压在亮色上等于那道弧自己消失，且 32dp 下弧间缝只剩 1.7px 会并成一片。 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:pathData="M31.2,41.27L31.2,66.73L53.25,54Z" android:fillColor="#FFFFFFFF" android:strokeColor="#FFFFFFFF" android:strokeWidth="4.04" android:strokeLineJoin="round"/>
-    <path android:pathData="M59.76,43.28A16.68,16.68 0 0 1 59.76,64.72" android:strokeColor="#FFFFFFFF" android:strokeWidth="5.79" android:strokeLineCap="round"/>
-    <path android:pathData="M67.15,37.07A26.34,26.34 0 0 1 67.15,70.93" android:strokeColor="#FFFFFFFF" android:strokeWidth="4.92" android:strokeLineCap="round"/>
-    <path android:pathData="M74.55,30.86A36,36 0 0 1 74.55,77.14" android:strokeColor="#FFFFFFFF" android:strokeWidth="4.04" android:strokeLineCap="round"/>
+    <path android:pathData="M33.74,42.69L33.74,65.31L53.33,54Z" android:strokeWidth="3.59" android:strokeLineJoin="round">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="18" android:startY="94"
+                android:endX="94" android:endY="18">
+                <item android:offset="0.000" android:color="#FF0A85D9" />
+                <item android:offset="0.500" android:color="#FF0BA3F7" />
+                <item android:offset="1.000" android:color="#FF1FC4E0" />
+            </gradient>
+        </aapt:attr>
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="18" android:startY="94"
+                android:endX="94" android:endY="18">
+                <item android:offset="0.000" android:color="#FF0A85D9" />
+                <item android:offset="0.500" android:color="#FF0BA3F7" />
+                <item android:offset="1.000" android:color="#FF1FC4E0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:pathData="M59.11,44.47A14.82,14.82 0 0 1 59.11,63.53" android:strokeWidth="5.15" android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="18" android:startY="94"
+                android:endX="94" android:endY="18">
+                <item android:offset="0.000" android:color="#FF0A85D9" />
+                <item android:offset="0.500" android:color="#FF0BA3F7" />
+                <item android:offset="1.000" android:color="#FF1FC4E0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:pathData="M65.69,38.96A23.4,23.4 0 0 1 65.69,69.04" android:strokeWidth="4.37" android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="18" android:startY="94"
+                android:endX="94" android:endY="18">
+                <item android:offset="0.000" android:color="#FF0A85D9" />
+                <item android:offset="0.500" android:color="#FF0BA3F7" />
+                <item android:offset="1.000" android:color="#FF1FC4E0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:pathData="M72.26,33.44A31.98,31.98 0 0 1 72.26,74.56" android:strokeWidth="3.59" android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="18" android:startY="94"
+                android:endX="94" android:endY="18">
+                <item android:offset="0.000" android:color="#FF0A85D9" />
+                <item android:offset="0.500" android:color="#FF0BA3F7" />
+                <item android:offset="1.000" android:color="#FF1FC4E0" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>

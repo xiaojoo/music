@@ -2,6 +2,7 @@ package com.xiaojoo.lightplayer.data
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import com.xiaojoo.lightplayer.videosource.AggregateSearcher
@@ -59,7 +60,7 @@ object Online {
 
     /* 光秃秃一个数字串基本都是画质帧率标签：4K60FPS、1080P、60FPS —— 实测「【4K60FPS】迈克尔·杰克逊
        Billie Jean」这种标题里它就挂在最前面，留着会把结果带到一堆剪辑号上。
-       带汉字的数字（"7月""10周年"）不吃这条：汉字不算 word 字符，边界对不上整段。 */
+       但**紧挨着汉字的一串纯数字不许动** —— 那是片子自己的名字（「第119道」），见 [stripQualityToken]。 */
     private val QUALITY_TOKEN = Regex("(?i)\\b[a-z0-9]*[0-9]+[a-z0-9]*\\b")
 
     /** 站点搜索词的上限：真报文里最长的那条标题 100+ 字，整串递过去只会带回一堆歌单 */
@@ -182,6 +183,35 @@ object Online {
     /** 这一路现在还不问它吗 */
     private fun blocked(id: String): Boolean = id in gone
 
+    /**
+     * 删过的那些视频的身份（`sourceId/remoteId` + 页地址，两个都在这串里）。
+     *
+     * 和上面那份源名单同一走法：**闸门挂在这一颗门面上，不挂在界面那一层** —— 在线取回有好几个
+     * 入口（那一栏的默认串、往后接的下一批、相关视频那一屏的搜索、音乐那一屏的 MV），只在界面
+     * 那一段筛的，别处照样会把删过的那条再摆一遍。
+     * 名单本身在 [VideoBlacklistRepository]，由壳层开机推进来、删一条之后立刻再推一次。
+     */
+    @Volatile
+    private var blockedIds: Set<String> = emptySet()
+
+    fun setBlockedIds(ids: Set<String>) {
+        blockedIds = ids
+    }
+
+    /**
+     * 取回的每一批过这一句，并把挡掉的条数报出来：
+     * 「删过的那条下次别再摆」这件事，界面上看是"它没出现"，没有数就只能靠人眼盯着一串卡片找。
+     * 报数也顺便证伪 —— 名单非空却一条没挡掉，说明身份对不上（页地址变了形、cid 换了）。
+     */
+    private fun filterBlocked(tag: String, videos: List<MusicVideo>): List<MusicVideo> {
+        val kept = VideoBlacklist.filter(blockedIds, videos)
+        val dropped = videos.size - kept.size
+        if (dropped > 0) {
+            Log.i("OnlineBlacklist", "$tag 挡掉 $dropped 条（名单 ${blockedIds.size / 2} 条）→ 剩 ${kept.size} 条")
+        }
+        return kept
+    }
+
     /** 条目上那一格写的源名：拿源自己报的那个名字，不在这边另抄一份对照表 */
     fun sourceLabel(id: String): String? = registry.get(id)?.displayName
 
@@ -197,7 +227,19 @@ object Online {
 
     private val policy = SearchPolicy(defaultTimeoutMs = 6_000, firstResultWaitMs = 6_000, graceMs = 1_500)
 
-    suspend fun search(query: String): SearchReport = searcher.search(query, policy)
+    /**
+     * 跨源归并那一路。[onlyVideo] 是给「相关视频」那一屏的：只要给画面的那几路，别把歌放进来
+     * （网易云那一路也声明了 Search，不筛就会往里掺单曲）。
+     * 出口按黑名单筛：删过的那一条不再摆出来，组里被摘空就整组不摆。
+     */
+    suspend fun search(query: String, onlyVideo: Boolean = false): SearchReport {
+        val r = searcher.search(query, policy, onlyVideo = onlyVideo)
+        if (blockedIds.isEmpty()) return r
+        val groups = r.groups.mapNotNull { g ->
+            filterBlocked("相关视频那一屏", g.items).takeIf { it.isNotEmpty() }?.let { g.copy(items = it) }
+        }
+        return r.copy(groups = groups)
+    }
 
     /**
      * 在线那一栏开屏那一串：所有启用了搜索能力的源的默认列表（B 站热门、快手推荐流…）。
@@ -208,10 +250,10 @@ object Online {
      * 界面那一栏还能换排法，见 [OnlineSort]；这里给的只是默认那一种。
      */
     suspend fun browse(limit: Int = 60, page: Int = 1): List<MusicVideo> =
-        OnlineSort.Newest.sorted(
+        filterBlocked("站点默认那一串", OnlineSort.Newest.sorted(
             searcher.search("", policy.copy(perSourceLimit = limit), onlyVideo = true, page = page)
                 .groups.flatMap { it.items }
-        )
+        ))
 
     /**
      * 抖音精选那一屏的列表，**单独一趟**，不并进上面那次。
@@ -238,7 +280,8 @@ object Online {
     private const val douyinInPool = false
 
     suspend fun browseWithKernel(limit: Int = 30, page: Int = 1): List<MusicVideo> =
-        if (!douyinInPool || !registry.isEnabled(douyin.id)) emptyList() else douyin.search("", limit, page)
+        filterBlocked("抖音那一屏",
+            if (!douyinInPool || !registry.isEnabled(douyin.id)) emptyList() else douyin.search("", limit, page))
 
     suspend fun resolve(video: MusicVideo): ResolveOutcome = resolver.resolve(video, timeoutMs = 6_000)
 
@@ -331,7 +374,8 @@ object Online {
      * 被删掉这一路时回空（那一栏就空着，不去别的站捞一批画面顶上）。
      */
     suspend fun searchMvs(query: String, limit: Int): List<MusicVideo> =
-        if (blocked("netease")) emptyList() else musicSource().searchMv(query, limit)
+        filterBlocked("站内 MV 那一路",
+            if (blocked("netease")) emptyList() else musicSource().searchMv(query, limit))
 
     /**
      * 「最火的视频 / 相关视频」那两栏（旧的那一路）：问**所有还没被删掉、而且给的是画面**的那几路。
@@ -342,8 +386,9 @@ object Online {
      * 音乐那一屏现在不走这一句了（改走 [searchMvs]），视频那一屏的两栏还在用。
      */
     suspend fun searchVideos(query: String, limit: Int): List<MusicVideo> =
-        searcher.search(query, policy.copy(perSourceLimit = limit), onlyVideo = true)
-            .groups.flatMap { it.items }.take(limit)
+        filterBlocked("视频那两栏",
+            searcher.search(query, policy.copy(perSourceLimit = limit), onlyVideo = true)
+                .groups.flatMap { it.items }.take(limit))
 
     /**
      * 首页「热门音乐」那一栏、它那颗「更多」点开的那一整屏、还有「在线音乐源」那一屏底下
@@ -372,6 +417,24 @@ object Online {
         if (blocked("netease")) null else musicSource().lyricFor(query)
 
     /**
+     * 从标题里剔掉画质帧率标签，但**紧挨着汉字的纯数字留下**。
+     *
+     * 原来那句注释断言"带汉字的数字（7月、10周年）不吃这条，因为汉字不算 word 字符、
+     * 边界对不上整段" —— 2026-10-16 拿这台机上的真实片名量，正好相反：Java 的 `\b` 只认 ASCII，
+     * 「第」和「1」之间就是边界，于是 `云南酸扒菜 第119道` 被削成 `云南酸扒菜 第 道`。
+     * 那一档数字是片子自己的名字，不是标签；而带字母的（4K60FPS、1080P）照旧整颗剔掉。
+     */
+    private fun stripQualityToken(s: String): String = QUALITY_TOKEN.replace(s) { m ->
+        val before = s.getOrNull(m.range.first - 1)
+        val after = s.getOrNull(m.range.last + 1)
+        val pureDigits = !m.value.any { it.isLetter() }
+        val hugsHan = (before != null && before.isHan()) || (after != null && after.isHan())
+        if (pureDigits && hugsHan) m.value else " "
+    }
+
+    private fun Char.isHan(): Boolean = code in 0x4E00..0x9FFF
+
+    /**
      * 从"眼前这一首"派生一个搜索词。
      *
      * 标题是给看的人写的（`循环歌单|【冬眠】|“冬天到了…"`、`【4K60FPS】迈克尔·杰克逊 Billie Jean`），
@@ -379,10 +442,7 @@ object Online {
      * 歌手名只在本地曲库那一侧加：在线那些条目的 artist 是 UP 主，加进去会把结果带到他的其他稿子上。
      */
     fun searchKeywordOf(name: String, artist: String?, fromLibrary: Boolean): String {
-        val cleaned = name
-            .replace(BRACKETS, " ")
-            .replace(SEPARATORS, " ")
-            .replace(QUALITY_TOKEN, " ")
+        val cleaned = stripQualityToken(name.replace(BRACKETS, " ").replace(SEPARATORS, " "))
             .replace(NOISE_ASCII, " ")
             .replace(NOISE_CJK, " ")
             .replace(BLANKS, " ")

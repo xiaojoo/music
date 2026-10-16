@@ -43,12 +43,27 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 在线 MV 的整屏搜索页：顶栏就是输入框（照本地搜索页那一条：← + 词 + ✕，不套胶囊、不摆放大镜），
- * 结果落在下面整页。这一页是"页面"不是"抽屉"，所以底栏整条让位 —— 和筛选页、搜索页同一套规矩。
+ * 「相关视频」那一整屏：本地那一栏右侧那颗放大镜开进来的，**进去就带着眼前这一条的片名搜过一次**，
+ * 结果直接摆在下面（原来这一屏进来是个空输入框，等于让他自己再报一遍刚才在看什么）。
+ *
+ * 词是外面从当前那条派生好再递进来的（`Online.searchKeywordOf`：括号和分隔符摊成空格、
+ * 音质词和栏目名剔掉），这一屏只负责把它显示在输入框里、让他能改、改完再问一次 ——
+ * 词不写死：文件名那种「VID_20261016_011203」提出不来好词，能改词是唯一出路。
+ *
+ * 问的是**给画面那几路**（`onlyVideo = true`）：网易云那一路也声明了 Search，不筛就会往里掺单曲。
+ * 删过的（黑名单）不在结果里 —— 那道闸门在 [Online.search] 出口，不在这一屏。
+ *
+ * 这一页是"页面"不是"抽屉"，所以底栏整条让位 —— 和筛选页、搜索页同一套规矩。
+ * 顶栏就是输入框（照本地搜索页那一条：← + 词 + ✕，不套胶囊、不摆放大镜）。
  */
 @Composable
-fun OnlinePage(onBack: () -> Unit, onPlay: (MusicVideo) -> Unit) {
-    var query by remember { mutableStateOf("") }
+fun VideoRelatedPage(
+    /** 外面按当前那一条派生好的搜索词。空串 = 那一条提不出词，进来就是个空框（状态行会说） */
+    initialQuery: String,
+    onBack: () -> Unit,
+    onPlay: (MusicVideo) -> Unit,
+) {
+    var query by remember { mutableStateOf(initialQuery) }
     var report by remember { mutableStateOf<SearchReport?>(null) }
     var searching by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -57,11 +72,21 @@ fun OnlinePage(onBack: () -> Unit, onPlay: (MusicVideo) -> Unit) {
 
     LaunchedEffect(Unit) { fr.requestFocus() }
 
-    // 空查询也问一次：这一页进来就该有默认列表，摆一个"请输入关键词"的空页等于没做
+    /* 提不出词就不问。
+       原来这一句是"空查询也问一次，这一屏进来就该有东西摆"（那是旧的在线搜索整屏）。
+       这一屏的意思变了：它是**眼前这一条**的相关视频。真机上量到：一条文件名叫
+       `5d8d8012b0ed20c089624956350a9730` 的片子提出空词，空词下去站点给回 39 条默认列表
+       （快手 + B 站各摊一半）—— 一屏和这条片子毫无关系的画面，顶着「相关视频」的名字摆在那儿。
+       没有词就直说没有词，让他自己打一个。 */
     fun run(q: String) {
+        if (q.isBlank()) {
+            report = null
+            searching = false
+            return
+        }
         searching = true
         scope.launch {
-            report = Online.search(q.trim())
+            report = Online.search(q.trim(), onlyVideo = true)
             searching = false
         }
     }
@@ -101,7 +126,7 @@ fun OnlinePage(onBack: () -> Unit, onPlay: (MusicVideo) -> Unit) {
             ) {
                 Box(modifier = Modifier.weight(1f)) {
                     if (query.isEmpty()) {
-                        Text("搜索在线 MV", color = Tokens.InkFaint, fontSize = 16.sp)
+                        Text("搜索在线视频", color = Tokens.InkFaint, fontSize = 16.sp)
                     }
                     BasicTextField(
                         value = query,
@@ -132,6 +157,7 @@ fun OnlinePage(onBack: () -> Unit, onPlay: (MusicVideo) -> Unit) {
         Text(
             text = when {
                 searching -> "搜索中…"
+                query.isBlank() -> "这一条提不出搜索词，打一个字再问"
                 r == null -> "加载中…"
                 else -> statusLine(r)
             },
@@ -155,10 +181,11 @@ fun OnlinePage(onBack: () -> Unit, onPlay: (MusicVideo) -> Unit) {
                             Text(first.title, color = Tokens.InkStrong, fontSize = 15.sp)
                             Text(
                                 text = listOfNotNull(
-                                    first.artist?.takeIf { it.isNotBlank() },
+                                    first.artist.takeIf { it.isNotBlank() },
                                     MediaLibrary.fmtDuration(first.durationMs).takeIf { first.durationMs > 0 },
-                                    // 一条歌在几个源里都有就报几路，合并这件事得看得见
-                                    if (g.items.size > 1) "${g.items.size} 路源" else "本机占位源"
+                                    // 一条片子在几个源里都有就报几路；只有一路就写那一路自己报的名字
+                                    if (g.items.size > 1) "${g.items.size} 路源"
+                                    else Online.sourceLabel(first.sourceId) ?: first.sourceId
                                 ).joinToString(" · "),
                                 color = Tokens.InkFaint,
                                 fontSize = 12.sp,

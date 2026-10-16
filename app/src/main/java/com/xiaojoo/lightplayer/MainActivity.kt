@@ -59,6 +59,9 @@ import com.xiaojoo.lightplayer.data.Online
 import com.xiaojoo.lightplayer.data.ViewHost
 import com.xiaojoo.lightplayer.data.OnlineSettings
 import com.xiaojoo.lightplayer.data.OnlineLibrary
+import com.xiaojoo.lightplayer.data.Blacklisted
+import com.xiaojoo.lightplayer.data.VideoBlacklist
+import com.xiaojoo.lightplayer.data.VideoBlacklistRepository
 import com.xiaojoo.lightplayer.data.DownloadDest
 import com.xiaojoo.lightplayer.data.OnlineDownload
 import com.xiaojoo.lightplayer.videosource.ApiSong
@@ -86,7 +89,8 @@ import com.xiaojoo.lightplayer.ui.MusicSourcePage
 import com.xiaojoo.lightplayer.ui.SourceRow
 import com.xiaojoo.lightplayer.ui.VideoFilter
 import com.xiaojoo.lightplayer.ui.filterVideos
-import com.xiaojoo.lightplayer.ui.OnlinePage
+import com.xiaojoo.lightplayer.ui.VideoRelatedPage
+import com.xiaojoo.lightplayer.ui.VideoBlacklistPage
 import com.xiaojoo.lightplayer.ui.QualitySheet
 import com.xiaojoo.lightplayer.ui.QueueEntry
 import com.xiaojoo.lightplayer.ui.QueueSheet
@@ -300,6 +304,17 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     val onlineSettings = remember { OnlineSettings(context) }
     val onlineLib = remember { OnlineLibrary(context) }
     var onlineItems by remember { mutableStateOf(onlineLib.all()) }
+    /**
+     * 在线那一栏删掉的那些：删一条 = 以后在线取回不再摆它。
+     *
+     * 闸门 [Online.setBlockedIds] 在组合这一层直接喂，不挂在 effect 上 —— 在线那一栏的自动重取
+     * 挂在那个屏自己的 `LaunchedEffect(Unit)` 上，而**子节点的 effect 先跑**，等壳层那一段就是
+     * 开机第一批没筛（真机上删过的那条会闪回来一次）。
+     */
+    val blacklistRepo = remember { VideoBlacklistRepository(context) }
+    var blacklist by remember { mutableStateOf(blacklistRepo.all()) }
+    val blockedIds = remember(blacklist) { VideoBlacklist.idsOf(blacklist) }
+    Online.setBlockedIds(blockedIds)
     // 在线那一栏播哪一条：那一栏的"播放中/已暂停"按它标，不问播放器（那是跨进程）
     var onlinePlaying by remember { mutableStateOf<String?>(null) }
     // 在线那一栏正在存盘的那一条（它的 uri）和到几成：那一列的下载键按它变绿、圆底边上画进度环
@@ -342,6 +357,9 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
 
     /** 「视频地址源」那一屏「确定」交回来的筛选草稿。不存设置：下次开机这一栏重新问一遍站点 */
     var videoFilter by remember { mutableStateOf(VideoFilter()) }
+
+    /** 「相关视频」那一屏按哪一句搜：存在壳层，因为那一屏是整屏页，开着它的时候视频页不挂着 */
+    var videoRelatedQuery by remember { mutableStateOf("") }
 
     /** 列表里拿得到的都算"在线的那一串"：查条目、查封面、定位当前页都走这一句 */
     val onlineAll = onlineVideos + onlineMore
@@ -402,9 +420,13 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
        然后是你自己粘进来的那些（不参与排序、跨开机活着），再接站点给的那一串。
        **同一个页地址只摆一遍**（他 10-15 报的"有时候一个视频重复"）：首页那两列「精选视频」本来就是
        从同一个站点池子摊出来的，点一条挂到最前面之后，池子里那一条还在原位 → 一格变两条。
-       所以挂在最前面那几条、还有粘进来的那几条，都要从站点那一串里摘掉。 */
+       所以挂在最前面那几条、还有粘进来的那几条，都要从站点那一串里摘掉。
+
+       黑名单只筛**站点那一串**。挂在最前面那几条和他自己粘进来的那两条不过这一道：那是他
+       当场点进来 / 挑好带回来的，属于明确要求 —— 删过的那条再粘一遍还得给他摆出来，
+       不然「粘贴地址」那颗入口对他说过的片子就成了死控件。 */
     val onlineFeed = remember(
-        onlineItems, pastedVideos, onlineInserted, onlineVideos, onlineMore, onlineSort, videoFilter,
+        onlineItems, pastedVideos, onlineInserted, onlineVideos, onlineMore, onlineSort, videoFilter, blockedIds,
     ) {
         val now = System.currentTimeMillis()
         val head = onlineInserted.map { onlineTrackOf(it) }
@@ -414,15 +436,16 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
             .map { (t, _) -> t }
         val shown = headUrls + onlineItems.map { it.uri.toString() }
         val site = (
-            onlineSort.sorted(filterVideos(onlineVideos, videoFilter, now)) +
-                onlineSort.sorted(filterVideos(onlineMore, videoFilter, now))
+            onlineSort.sorted(filterVideos(VideoBlacklist.filter(blockedIds, onlineVideos), videoFilter, now)) +
+                onlineSort.sorted(filterVideos(VideoBlacklist.filter(blockedIds, onlineMore), videoFilter, now))
             ).distinctBy { it.pageUrl }     // 往后接的那几批和第一批之间也会重发同一条
             .filterNot { it.pageUrl in shown }
             .map { onlineTrackOf(it) }
         val feed = head + mine + site
         val dup = feed.size - feed.map { it.uri }.distinct().size
+        val hidden = (onlineVideos + onlineMore).count { VideoBlacklist.blocked(blockedIds, it) }
         Log.i("OnlineFeed", "摆 ${feed.size} 格 = 挂进来 ${head.size} + 粘的 ${mine.size} + 站点 ${site.size}" +
-            "；重复页地址 $dup")
+            "；重复页地址 $dup；黑名单挡掉 $hidden 条（名单 ${blockedIds.size / 2} 条）")
         feed
     }
 
@@ -495,8 +518,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     // 冷启动时播放器里什么都没有，先从存档拿一条把迷你条撑起来（暂停态）
     val bar = rememberBarState(controller, remember { lastRepo.uri()?.let { Uri.parse(it) } })
     var history by remember { mutableStateOf(PlayHistory.list(context)) }
-    // null | history | songs | videos | favorites | playlists | filter | search | online |
-    // artists | artist-search | artist:<歌手名> | pl:<歌单id> | local-search | appearance |
+    // null | history | songs | videos | favorites | playlists | filter | search | video-related |
+    // video-blacklist | artists | artist-search | artist:<歌手名> | pl:<歌单id> | local-search | appearance |
     // player-art | music-source
     var page by remember { mutableStateOf<String?>(null) }
     // 搜索词存在壳层：搜索是一个整屏页，开着它的时候列表页不挂着，词存在列表页里会跟着一起没
@@ -890,6 +913,19 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
         }
     }
 
+    /**
+     * 本地那一栏右侧那颗放大镜：拿**眼前这一条**派生一个词，开「相关视频」那一整屏并按它自动搜一次。
+     *
+     * 词在这颗函数里现派生、不另存一份副本：存了就会和屏幕上正看着的那一条对不上
+     * （滑两条再按，那一屏还挂着上一条的词）。派生规则在 [Online.searchKeywordOf] 里 ——
+     * 括号和分隔符摊成空格、音质词/栏目名剔掉，`<unknown>` 那种占位歌手不拼进去
+     * （拼进去站内那一型一条都搜不到，2026-10-14 量过）。
+     */
+    fun openRelatedVideos(t: Track) {
+        videoRelatedQuery = Online.searchKeywordOf(t.name, t.artist, fromLibrary = !Online.isOnline(t))
+        openPage("video-related")
+    }
+
     /** 在线那一栏点画面：眼前这条在放就切暂停/继续，点别的条目才换着播（和抖音同一只手势） */
     fun tapOnline(t: Track, index: Int) {
         val p = PlayerPool.onlineAt(index)
@@ -900,16 +936,41 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
         }
     }
 
+    /**
+     * 在线那一栏那颗垃圾桶：删掉的那一条**一律进黑名单**。
+     *
+     * 为什么一律：这一栏里同一条片子可以有两个来路 —— 站点这一次取回来的那一串，和他自己
+     * 加过（粘地址 / 从别处点进库）的那一份。原来这里按来路分开处理（自己加过的只出库、不屏蔽），
+     * 真机上立刻漏掉一条：他删的那条 B 站片子既在库里也在站点那 80 条里，出库之后下一次刷新
+     * 它从站点那一段又摆回原来的那一格 —— 正是他 10-16 点名要治的那一句。
+     *
+     * 一律屏蔽不会把「自己带回来的那些」这条入口做成死控件：黑名单只筛站点取回的那一段（见
+     * [onlineFeed]），他再粘同一条地址，那一条还是照样摆出来、照样能播。
+     */
     fun removeOnlineItem(t: Track) {
         val u = t.uri.toString()
+        val video = onlineVideoOf(u)
         onlineLib.remove(t)
         // 这一次点进来挂在最前面那几条也在这栏里，删的那颗对的就是它们 —— 库里没有，得从这一串摘
         onlineInserted = onlineInserted.filterNot { it.pageUrl == u }
         onlineItems = onlineLib.all()
+        if (video != null) {
+            blacklistRepo.add(video)
+            blacklist = blacklistRepo.all()
+        }
         if (onlinePlaying == t.uri.toString()) {
             PlayerPool.onlinePlayers().forEach { it.stop() }
             onlinePlaying = null
         }
+        Log.i("OnlineBlacklist", "删「${t.name}」→ ${if (video != null) "进黑名单" else "库里查不到这条身份"}；" +
+            "名单 ${blacklist.size} 条")
+    }
+
+    /** 黑名单那一屏的 ✕：移出一条。当场回到在线栏（那一次取回的那一串里还留着它，不用重问站点） */
+    fun removeBlacklisted(row: Blacklisted) {
+        blacklistRepo.remove(row)
+        blacklist = blacklistRepo.all()
+        Log.i("OnlineBlacklist", "移出「${row.title}」；名单 ${blacklist.size} 条")
     }
 
     fun saveOnline(t: Track, url: String) {
@@ -1783,7 +1844,14 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     var videoSourceOpen by remember { mutableStateOf(false) }
     /** 把在线那一栏送回第一条的计数：按「确定」换筛选时要踩（页号留在旧列表那一格 = 脚下是另一条片子） */
     var videoFeedReset by remember { mutableStateOf(0) }
-    BackHandler(enabled = videoSourceOpen) { videoSourceOpen = false }
+    /* 全屏播放开着的时候，系统后退第一下只把全屏收掉，不离开这一屏（他 10-16 点的）。
+       注册在「视频地址源」那颗后退**前面** = 优先级比它低，真有两层时先关盖着的那一整屏；
+       `page == null` 同下面那条的道理：子页还开着时这一颗让开，第一下先退子页。 */
+    BackHandler(enabled = videoFullscreen && page == null) { videoFullscreen = false }
+    /* 「视频地址源」那一屏的后退。加 `page == null` 是因为它上面还能再开一整屏（黑名单）：
+       两个 BackHandler 同时 enabled 时后注册的那个先接，不加这一句就是黑名单还盖在上面、
+       第一下后退却把身后那一屏的地址源关掉了 —— 按下去屏幕上什么都没发生。 */
+    BackHandler(enabled = videoSourceOpen && page == null) { videoSourceOpen = false }
 
     /* 迷你条要不要占底部那一格；子页的导航条余量由谁留，全看这一个判断。
        只有音乐/视频两个 tab 本身不收 —— 那两屏整页就是播放器/视频，条子在那儿反而挡画面。
@@ -1866,8 +1934,19 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     onApply = { a, l -> filterArtist = a; filterLength = l; page = pageFrom },
                     onCancel = { page = pageFrom }
                 )
-            } else if (page == "online") {
-                OnlinePage(onBack = { leavePage() }, onPlay = { v -> playOnline(v) })
+            } else if (page == "video-related") {
+                VideoRelatedPage(
+                    initialQuery = videoRelatedQuery,
+                    onBack = { leavePage() },
+                    onPlay = { v -> playOnline(v) }
+                )
+            } else if (page == "video-blacklist") {
+                VideoBlacklistPage(
+                    rows = blacklist,
+                    sourceLabel = { id -> Online.sourceLabel(id) },
+                    onRemove = { removeBlacklisted(it) },
+                    onBack = { leavePage() }
+                )
             } else if (page == "home-hot") {
                 HotMusicPage(
                     hot = musicHot,
@@ -2124,7 +2203,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                         favorites = favRepo.all()
                     },
                     onOpenQueue = { queueRoute = QueueRoute.Video },
-                    onOpenOnline = { openPage("online") },
+                    onOpenOnline = { t -> openRelatedVideos(t) },
                     onAddUrl = { u -> addUrl(u) },
                     urlBusy = urlBusy,
                     onRescan = { refreshLibrary() },
@@ -2132,6 +2211,8 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     savedUrl = onlineSettings.url(),
                     videoSources = videoSourceRows(),
                     onDeleteSource = { id -> deleteSource(id) },
+                    blacklistCount = blacklist.size,
+                    onOpenBlacklist = { openPage("video-blacklist") },
                     onToggleSource = { id -> toggleSource(id) },
                     videoFilter = videoFilter,
                     onVideoFilter = {

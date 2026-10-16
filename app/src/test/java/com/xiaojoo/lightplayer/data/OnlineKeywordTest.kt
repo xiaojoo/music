@@ -62,4 +62,25 @@ class OnlineKeywordTest {
         assertEquals("", Online.searchKeywordOf("【4K】", "", fromLibrary = false))
         assertEquals("", Online.searchKeywordOf("   ", null, fromLibrary = true))
     }
+
+    @Test
+    fun `汉字挨着的数字是片子自己的名字 不当画质标签剔掉`() {
+        // 2026-10-16 拿这台机的真实片名量到的：这一句以前被削成「云南酸扒菜 第 道」，
+        // 因为 Java 的 \b 只认 ASCII，「第」和「1」之间算边界
+        assertEquals("云南酸扒菜 第119道", Online.searchKeywordOf("云南酸扒菜 第119道", "", fromLibrary = true))
+        assertEquals("7月 10周年", Online.searchKeywordOf("7月 10周年", "", fromLibrary = true))
+        // 反证：光挂着的数字（没有汉字挨着）仍然当标签剔掉
+        assertEquals("Billie Jean", Online.searchKeywordOf("Billie Jean 60", "", fromLibrary = true))
+    }
+
+    @Test
+    fun `本机那两种真实文件名：哈希提不出词 相机名原样交出去`() {
+        // 这台机上 12 条本地视频里 11 条是 32 位哈希名（content query 读回来的）。
+        // 提不出词就回空串 —— 「相关视频」那一屏据此写"这一条提不出搜索词"，
+        // 而不是空着词去问站点、端回一屏和这条片子无关的画面（真机量到过：39 条）
+        assertEquals("", Online.searchKeywordOf("5d8d8012b0ed20c089624956350a9730", null, fromLibrary = true))
+        // 相机名整段是一个 ASCII 词（下划线也算 word 字符），边界对不上、原样交出去：
+        // 框里看得见搜的是哪一个串，他能改
+        assertEquals("VID_20190715_170549", Online.searchKeywordOf("VID_20190715_170549", null, fromLibrary = true))
+    }
 }
