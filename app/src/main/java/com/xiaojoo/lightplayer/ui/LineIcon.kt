@@ -15,6 +15,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.acos
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.tan
 
 // 参考图里的图标是细线描边风格，用 Canvas 画比引一套 icon 字体更可控（宽度、圆头都能定）
@@ -92,26 +94,32 @@ fun LineIcon(
                 roundedTri(Offset(s * 0.89771f, yt), Offset(s * 0.89771f, yb), Offset(s * 0.47937f, my), r, color)
             }
 
-            // 播放顺序：一圈顺时针弧线，缺口留在正上方；箭头压在弧线的终点上（240°），
-            // 两枝倒钩沿切线方向往后张开 60°，所以看着是弧"长"出来的箭头而不是贴上去的小钩
-            // 顺序播放：一支往右的箭头顶到一条竖线——播到末尾就停，不带圈
-            // x 整体右移 0.04：原来 0.16..0.76 的墨中心落在 0.46 画布宽上，画框越大偏得越多
-            // （34.2dp 框里偏 4px），摆在一排居中的图标里就是它一颗歪着。笔画半宽在两端对消，
-            // 所以这个中心和笔画粗细无关，挪坐标才对。
+            /* 播放模式那三颗（顺序播放 / 列表循环 / 单曲循环）10-16 按主流播放器那一家重画：
+               原来列表循环画的是一圈 300° 弧加一记箭头，和「刷新」同形，摆在一排里认不出是循环。
+               墨框自己居中：两档画框（18dp 默认笔画 / 21.7dp 固定 1.5dp 笔画）上量到中心偏移 0.0px。 */
+            // 顺序播放：一支往右的箭头顶到一条竖线 —— 播到末尾就停，不带圈
             IconKind.OrderSeq -> {
-                drawLine(color, Offset(s * 0.20f, s * 0.50f), Offset(s * 0.66f, s * 0.50f), st, StrokeCap.Round)
-                drawLine(color, Offset(s * 0.50f, s * 0.36f), Offset(s * 0.66f, s * 0.50f), st, StrokeCap.Round)
-                drawLine(color, Offset(s * 0.50f, s * 0.64f), Offset(s * 0.66f, s * 0.50f), st, StrokeCap.Round)
-                drawLine(color, Offset(s * 0.80f, s * 0.25f), Offset(s * 0.80f, s * 0.75f), st, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.18f, s * 0.50f), Offset(s * 0.56f, s * 0.50f), st, StrokeCap.Round)
+                drawPath(
+                    Path().apply {
+                        moveTo(s * 0.56f, s * 0.28f)
+                        lineTo(s * 0.74f, s * 0.50f)
+                        lineTo(s * 0.56f, s * 0.72f)
+                        close()
+                    },
+                    color,
+                )
+                drawLine(color, Offset(s * 0.80f, s * 0.20f), Offset(s * 0.80f, s * 0.80f), st, StrokeCap.Round)
             }
 
-            IconKind.Repeat -> loopArrow(color, st)
+            IconKind.Repeat -> repeatLoop(color, st)
 
-            // 单曲循环：同一圈箭头，中间立一个「1」
+            // 单曲循环：同一对钩，中间立一个「1」—— 笔画收到 0.72 成，免得和上下两条横边糊在一起
             IconKind.LoopOne -> {
-                loopArrow(color, st)
-                drawLine(color, Offset(s * 0.50f, s * 0.40f), Offset(s * 0.50f, s * 0.62f), st, StrokeCap.Round)
-                drawLine(color, Offset(s * 0.43f, s * 0.46f), Offset(s * 0.50f, s * 0.40f), st, StrokeCap.Round)
+                repeatLoop(color, st)
+                val ds = st * 0.72f
+                drawLine(color, Offset(s * 0.50f, s * 0.38f), Offset(s * 0.50f, s * 0.62f), ds, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.435f, s * 0.445f), Offset(s * 0.50f, s * 0.38f), ds, StrokeCap.Round)
             }
 
             /* 播放队列：一枚小 ▶ 顶着一行，下面再两行（原来是三条横线加一个音符，按参考图换掉）。
@@ -388,6 +396,82 @@ fun LineIcon(
                 }
             }
 
+            /* 退 10 秒 / 进 10 秒：一圈开口的弧带箭头（rotateRing）+ 中间「10」。
+               退那一颗只把箭头换到弧的另一端、改朝左，**数字不跟着镜像** —— 镜像过去读出来是「01」。
+               两位数字占 0.30 高、笔画取弧的 0.72 成：旧版数字只有 0.14 高、笔画和弧一样粗，
+               26dp 画框（真机 48.7px）上「1」和「0」各糊成一个点，读不出是十。 */
+            IconKind.SeekBack10, IconKind.SeekForward10 -> {
+                rotateRing(color, st, back = kind == IconKind.SeekBack10)
+                val ds = st * 0.72f
+                drawLine(color, Offset(0.38f * s, 0.35f * s), Offset(0.38f * s, 0.65f * s), ds, StrokeCap.Round)
+                drawLine(color, Offset(0.32f * s, 0.41f * s), Offset(0.38f * s, 0.35f * s), ds, StrokeCap.Round)
+                drawOval(
+                    color = color,
+                    topLeft = Offset(0.48f * s, 0.35f * s),
+                    size = androidx.compose.ui.geometry.Size(0.20f * s, 0.30f * s),
+                    style = Stroke(width = ds),
+                )
+            }
+
+            // 退出全屏：四颗从角上往里的箭头（Expand 那四只外扩的直角反过来）
+            IconKind.Shrink -> {
+                val m = s * 0.24f
+                val far = s - m
+                val len = s * 0.19f
+                val barb = s * 0.10f
+                listOf(m to 1f, far to -1f).forEach { (x, dx) ->
+                    listOf(m to 1f, far to -1f).forEach { (y, dy) ->
+                        val ex = x + len * dx
+                        val ey = y + len * dy
+                        drawLine(color, Offset(x, y), Offset(ex, ey), st, StrokeCap.Round)
+                        drawLine(color, Offset(ex, ey), Offset(ex - barb * dx, ey), st, StrokeCap.Round)
+                        drawLine(color, Offset(ex, ey), Offset(ex, ey - barb * dy), st, StrokeCap.Round)
+                    }
+                }
+            }
+
+            /* 亮度：一颗日头 + 八道光线（参考图那块浮标左边那只）。
+               日头半径 0.19、光线从 0.29 走到 0.42 → 墨外沿正好 0.42 + 半个笔画，和旁边那几颗同框。 */
+            IconKind.Sun -> {
+                drawCircle(
+                    color = color, radius = s * 0.19f, center = Offset(s / 2f, s / 2f),
+                    style = Stroke(width = st)
+                )
+                for (i in 0 until 8) {
+                    val a = i * 45.0
+                    val cx = kotlin.math.cos(Math.toRadians(a)).toFloat()
+                    val cy = kotlin.math.sin(Math.toRadians(a)).toFloat()
+                    drawLine(
+                        color,
+                        Offset(s / 2f + cx * s * 0.29f, s / 2f + cy * s * 0.29f),
+                        Offset(s / 2f + cx * s * 0.42f, s / 2f + cy * s * 0.42f),
+                        st, StrokeCap.Round
+                    )
+                }
+            }
+
+            /* 声音：一只喇叭 + 两道波。整颗按墨居中：喇叭 0.23..0.51、两道波的圆心在 0.49、
+               半径 0.16 / 0.28 → 外沿正好到 0.77，左右各留 0.23，和旁边那几颗同一根中轴。 */
+            IconKind.Volume -> {
+                val p = Path()
+                p.moveTo(s * 0.23f, s * 0.42f)
+                p.lineTo(s * 0.35f, s * 0.42f)
+                p.lineTo(s * 0.51f, s * 0.26f)
+                p.lineTo(s * 0.51f, s * 0.74f)
+                p.lineTo(s * 0.35f, s * 0.58f)
+                p.lineTo(s * 0.23f, s * 0.58f)
+                p.close()
+                drawPath(p, color, style = Stroke(width = st, join = StrokeJoin.Round))
+                listOf(0.16f, 0.28f).forEach { rr ->
+                    drawArc(
+                        color = color, startAngle = -55f, sweepAngle = 110f, useCenter = false,
+                        topLeft = Offset(s * (0.49f - rr), s * (0.5f - rr)),
+                        size = androidx.compose.ui.geometry.Size(rr * 2 * s, rr * 2 * s),
+                        style = Stroke(width = st, cap = StrokeCap.Round)
+                    )
+                }
+            }
+
             /* 画幅：一张方相框，里面一颗太阳加一座山 —— 播放页右上角那颗「换中间那一格」。
                外沿按齿轮那颗收：中心线正好落在 x/y 0.28986..0.71014（跨 0.42028 画框），
                和 Settings 那条路径同一只方框，所以两颗的墨外沿逐位相同 ——
@@ -421,19 +505,36 @@ fun LineIcon(
                 }
             }
 
-            // 视频方向旋转：一圈弧线带箭头，中间一个直角标记
+            /* 视频方向旋转：一只竖着的画面 + 右边一道顺时针弧带箭头（三个候选里他点的这一支）。
+               不再用「一圈弧 + 中间直角」那一版 —— 这一排里 ⟳ 自动连播和退/进 10 秒三颗都是整圈箭头，
+               再来第四颗整圈箭头就分不出谁是谁了；换成画面框之后一眼读得出「转的是画面」。
+               框 0.16..0.46 × 0.26..0.74（26dp 画框上空心 12.2×19.7px，读得出是一只框）、
+               弧心在画面正中、半径 0.36、只走右侧 116°，箭头骑在弧的下端顺着切线往左下。 */
             IconKind.Rotate -> {
-                val r = s * 0.30f
-                drawArc(
-                    color = color, startAngle = -50f, sweepAngle = 260f, useCenter = false,
-                    topLeft = Offset(s / 2f - r, s / 2f - r),
-                    size = androidx.compose.ui.geometry.Size(r * 2, r * 2),
-                    style = Stroke(width = st, cap = StrokeCap.Round)
+                drawRoundRect(
+                    color = color, topLeft = Offset(0.16f * s, 0.26f * s),
+                    size = androidx.compose.ui.geometry.Size(0.30f * s, 0.48f * s),
+                    cornerRadius = CornerRadius(0.03f * s),
+                    style = Stroke(width = st),
                 )
-                drawLine(color, Offset(s * 0.66f, s * 0.20f), Offset(s * 0.76f, s * 0.32f), st, StrokeCap.Round)
-                drawLine(color, Offset(s * 0.76f, s * 0.32f), Offset(s * 0.62f, s * 0.36f), st, StrokeCap.Round)
-                drawLine(color, Offset(s * 0.42f, s * 0.58f), Offset(s * 0.42f, s * 0.42f), st, StrokeCap.Round)
-                drawLine(color, Offset(s * 0.42f, s * 0.42f), Offset(s * 0.58f, s * 0.42f), st, StrokeCap.Round)
+                val r = s * 0.36f
+                drawArc(
+                    color = color, startAngle = -58f, sweepAngle = 116f, useCenter = false,
+                    topLeft = Offset(s / 2f - r, s / 2f - r),
+                    size = androidx.compose.ui.geometry.Size(r * 2f, r * 2f),
+                    style = Stroke(width = st, cap = StrokeCap.Round),
+                )
+                val a = Math.toRadians(58.0)
+                val px = s / 2f + r * cos(a).toFloat()
+                val py = s / 2f + r * sin(a).toFloat()
+                val tx = -sin(a).toFloat()
+                val ty = cos(a).toFloat()
+                val p = Path()
+                p.moveTo(px + tx * s * 0.15f, py + ty * s * 0.15f)
+                p.lineTo(px - ty * s * 0.085f, py + tx * s * 0.085f)
+                p.lineTo(px + ty * s * 0.085f, py - tx * s * 0.085f)
+                p.close()
+                drawPath(p, color)
             }
 
             // 复制：后面那张只露上边和右边，前面那张画整框
@@ -591,7 +692,44 @@ enum class IconKind {
     Play, Pause, Next, Prev, Repeat, Queue, ChevronDown, ChevronRight,
     Home, MusicNote, Video, Person, Shirt, Add, Favorite, FavoriteLine, PlayAdd, PlayQueue, SquareAdd, Share, PinTop, Trash,
     Download, ArrowLeft, Search, PlaylistAdd, Sort,
-    Close, Drag, Speed, Check, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh, Photo
+    Close, Drag, Speed, Check, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh, Photo,
+    SeekBack10, SeekForward10, Shrink, Volume, Sun
+}
+
+/**
+ * 一圈开口的弧 + 弧末端那颗实心三角箭头。退 10 秒 / 进 10 秒两颗共用（旋转那颗 10-16 换成画面框，不再走这里）。
+ *
+ * 弧半径 0.34、缺口以正上方为中心张 100°（320° 走到 220°）—— 这样弧自己就把墨框撑成
+ * 0.16..0.84 见方，箭头再大也不会把框拉歪。两颗的弧一模一样，只有箭头换端点：
+ * 正着那颗骑在顺时针末端（220°，左上）朝前 = 顺时针；镜像那颗骑在 320°（右上）朝反 = 逆时针。
+ * 箭头底边垂直切线、正好骑在弧端上（半宽 0.085 比笔画 0.075 宽一档，才读得出是一记箭头），
+ * 尖沿切线走 0.15 —— 全部落在 0.16..0.84 之内。
+ * 旧版那记箭头是两撇线：一撇落在半径 0.34、一撇落在 0.18，不对称，所以怎么看都是歪的。
+ */
+private fun DrawScope.rotateRing(color: Color, st: Float, back: Boolean) {
+    val s = size.minDimension
+    val r = s * 0.34f
+    val cx = s / 2f
+    val cy = s / 2f
+    drawArc(
+        color = color, startAngle = 320f, sweepAngle = 260f, useCenter = false,
+        topLeft = Offset(cx - r, cy - r), size = androidx.compose.ui.geometry.Size(r * 2f, r * 2f),
+        style = Stroke(width = st, cap = StrokeCap.Round),
+    )
+    val a = Math.toRadians(if (back) 320.0 else 220.0)
+    val ca = cos(a).toFloat()
+    val sa = sin(a).toFloat()
+    val px = cx + r * ca
+    val py = cy + r * sa
+    // 顺时针走的切线 = (-sin, cos)；逆时针那颗取反向
+    val tx = if (back) sa else -sa
+    val ty = if (back) -ca else ca
+    val p = Path()
+    p.moveTo(px + tx * s * 0.15f, py + ty * s * 0.15f)
+    p.lineTo(px - ty * s * 0.085f, py + tx * s * 0.085f)
+    p.lineTo(px + ty * s * 0.085f, py - tx * s * 0.085f)
+    p.close()
+    drawPath(p, color)
 }
 
 /** 三尖倒圆角的实心三角：每个尖沿两条邻边各让进 t = r / tan(θ/2)（θ 是该尖的内角），
@@ -631,36 +769,39 @@ private fun heartPath(s: Float, k: Float, t: Float, u: Float = 1f): Path = Path(
     close()
 }
 
-/** 一圈顺时针弧线：缺口留在正上方，弧线终点 240° 上接一个实心三角箭头。
-    不用两条倒钩 —— 倒钩里朝内那一枝的端点会落到半径 0.234，正好压在圈这条笔画
-    （0.075 宽、占 0.2325..0.3075）的内沿上，看着就是箭头和圈重叠了一小块。
-    三角整支放在缺口里（240°..300° 这段没有弧），所以不会再压到圈。 */
-private fun DrawScope.loopArrow(color: Color, st: Float) {
-    val s = this.size.minDimension
-    val r = s * 0.27f
-    val c = s / 2f
-    drawArc(
-        color = color, startAngle = 300f, sweepAngle = 300f, useCenter = false,
-        topLeft = Offset(c - r, c - r),
-        size = androidx.compose.ui.geometry.Size(r * 2, r * 2),
-        style = Stroke(width = st, cap = StrokeCap.Round)
-    )
-    // 240° 那点的坐标、以及顺时针方向的切线和法线
-    val px = c - 0.135f * s
-    val py = c - 0.234f * s
-    val tx = 0.866f
-    val ty = -0.5f
-    val nx = 0.5f
-    val ny = 0.866f
-    val apex = Offset(px + tx * 0.10f * s, py + ty * 0.10f * s)
-    val bx = px - tx * 0.03f * s
-    val by = py - ty * 0.03f * s
-    val half = 0.078f * s
-    val p = Path().apply {
-        moveTo(apex.x, apex.y)
-        lineTo(bx + nx * half, by + ny * half)
-        lineTo(bx - nx * half, by - ny * half)
-        close()
+/** 列表循环那一圈：两只互扣的钩（上钩往右、下钩往左），两端各一记实心三角箭头。
+    照主流播放器通用的 repeat 那一支 —— 原来这里画的是一圈 300° 弧加一记箭头，和「刷新」同形。
+    下钩就是上钩绕画布中心转 180°（腿 0.22↔0.78、横边 0.28↔0.72、箭头 0.17/0.39↔0.83/0.61），
+    所以墨框自己居中，和笔画粗细无关。两枝腿各停在 0.50（画面正中）就收：
+    主流那支也不把两头接死，中间留的这段空正好给单曲循环那颗「1」站。 */
+private fun DrawScope.repeatLoop(color: Color, st: Float) {
+    val s = size.minDimension
+    val style = Stroke(width = st, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    listOf(
+        listOf(0.22f to 0.50f, 0.22f to 0.28f, 0.66f to 0.28f),
+        listOf(0.78f to 0.50f, 0.78f to 0.72f, 0.34f to 0.72f),
+    ).forEach { pts ->
+        drawPath(
+            Path().apply {
+                moveTo(s * pts[0].first, s * pts[0].second)
+                lineTo(s * pts[1].first, s * pts[1].second)
+                lineTo(s * pts[2].first, s * pts[2].second)
+            },
+            color, style = style,
+        )
     }
-    drawPath(p, color)
+    listOf(
+        listOf(0.66f to 0.17f, 0.84f to 0.28f, 0.66f to 0.39f),
+        listOf(0.34f to 0.61f, 0.16f to 0.72f, 0.34f to 0.83f),
+    ).forEach { t ->
+        drawPath(
+            Path().apply {
+                moveTo(s * t[0].first, s * t[0].second)
+                lineTo(s * t[1].first, s * t[1].second)
+                lineTo(s * t[2].first, s * t[2].second)
+                close()
+            },
+            color,
+        )
+    }
 }

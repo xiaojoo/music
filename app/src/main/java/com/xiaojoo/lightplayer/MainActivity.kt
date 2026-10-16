@@ -92,6 +92,7 @@ import com.xiaojoo.lightplayer.ui.filterVideos
 import com.xiaojoo.lightplayer.ui.VideoRelatedPage
 import com.xiaojoo.lightplayer.ui.VideoBlacklistPage
 import com.xiaojoo.lightplayer.ui.QualitySheet
+import com.xiaojoo.lightplayer.ui.QueueDrawer
 import com.xiaojoo.lightplayer.ui.QueueEntry
 import com.xiaojoo.lightplayer.ui.QueueSheet
 import com.xiaojoo.lightplayer.ui.AppTab
@@ -2373,7 +2374,24 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
 
 
 
+    /* 全屏那一档：底下那按页签是收着的，队列改从右边拉一列（同一份内容，换个形态）。
+       这一路只可能是视频 —— 全屏里唯一的入口就是控制条那颗「播放列表」，它开的是 QueueRoute.Video。 */
+    if (videoFullscreen && queueRoute != null) {
+        QueueDrawer(
+            queue = queueEntries,
+            historyAudio = histMusic,
+            historyVideo = histVideos,
+            videoRoute = true,
+            onPlayQueueAt = { i -> controller?.seekToDefaultPosition(i); controller?.play() },
+            onRemoveAt = { i -> controller?.removeMediaItem(i) },
+            onMove = { from, to -> controller?.moveMediaItem(from, to) },
+            onPlayHistory = { t -> startPlaylist(listOf(t), 0) },
+            onDismiss = { queueRoute = null },
+        )
+    }
+    // 同上一句二选一：全屏开着的时候这份内容走右边那一列，不再从下面拉
     queueRoute?.let { route ->
+        if (videoFullscreen) return@let
         val routeVideo = when (route) {
             QueueRoute.Video -> true
             QueueRoute.Music -> false
