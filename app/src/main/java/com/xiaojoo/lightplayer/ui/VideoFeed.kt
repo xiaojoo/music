@@ -12,7 +12,6 @@ import android.content.pm.ActivityInfo
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import android.content.res.Configuration
 import android.view.Gravity
 import android.view.TextureView
 import android.widget.FrameLayout
@@ -27,7 +26,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -43,8 +41,6 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -60,6 +56,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -93,7 +90,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
@@ -285,6 +281,11 @@ fun VideoFeed(
         /* 长按落在屏宽哪四分之一：左=按住期间 2.0 倍速往前、右=按住期间倒带。
            中间那一档不进这里 —— 它到点开抽屉，没有松手要收回的东西。null = 现在没按着 */
         var hold by remember { mutableStateOf<FeedZone?>(null) }
+        /* 全屏那一档的控制条：点屏幕出、3.5s 不碰自动收（他 10-16 点的）。
+           tick 只用来"每碰一下就把那 3.5 秒重新计时"，值本身不参与画 */
+        var controls by remember { mutableStateOf(false) }
+        var controlsTick by remember { mutableLongStateOf(0L) }
+        val barUp = fullscreen && controls
         // 顶栏落在哪一栏由外面定（迷你条点进来要按条上那一条属于哪一栏来落）；
         // 默认仍是每次进这一屏从在线开始，那条默认写在 MainActivity 的 videoOnline 上
         var online by remember { mutableStateOf(onlineStart) }
@@ -534,6 +535,16 @@ fun VideoFeed(
             onPosition = { ms -> slots.firstOrNull { it.page == active }?.posMs = ms },
         )
 
+        /* 控制条出之后 3.5s 没人碰就收；碰一下（出条、拖进度、按屏）都把 tick 换个数，
+           这一段 effect 就跟着重起计时。**暂停的时候不收**（他 10-16 点的：暂停就是要看这些按钮，
+           条子和右边浮标一起留着），恢复播放那一下 wantPlay 翻了数、这一段重起又开始数 3.5 秒。
+           抽屉那一路（非全屏）不受这里管。 */
+        LaunchedEffect(barUp, controls, controlsTick, wantPlay) {
+            if (!barUp || !wantPlay) return@LaunchedEffect
+            delay(3500L)
+            controls = false
+        }
+
         /* 全屏播放 = 像视频软件那样：状态栏、系统导航条、App 自己的底栏全部收掉，
            横屏的片子再把屏幕躺过来、画面铺到没有黑边；竖屏的片子不转屏，只原地放大。 */
         val w = (context as? Activity)?.window
@@ -589,7 +600,42 @@ fun VideoFeed(
             onDispose { (context as? Activity)?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
         }
 
-        val inLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+        /* 两头竖滑调的两个数：右边 = 播放器自己的音量，左边 = 这个窗口的亮度。
+           音量走成员本体不走会话：MediaController.volume 读的是这台机的媒体音量比例
+           （上一版真机一开弹窗就写着 68%，那是系统那条），经会话 setVolume 也会去动硬件音量。
+           他要的是"只改播放器自己"，所以直接打在 ExoPlayer 上 —— 三台之间由 QueueMirror 同步。
+           亮度那个 screenBrightness = -1 是"跟系统"，起点就从系统那条读回来。滑多少算多少：整屏高 = 100%。 */
+        val win = (context as? Activity)?.window
+        var dragSide by remember { mutableIntStateOf(0) }
+        var dragValue by remember { mutableFloatStateOf(0f) }
+        var hud by remember { mutableStateOf<Pair<IconKind, Float>?>(null) }
+        LaunchedEffect(hud) {
+            if (hud != null) {
+                delay(700L)
+                hud = null
+            }
+        }
+        // 横滑跳那一档的回显：他 10-16 点的，和按住那一档用同一支双三角（往右=快进、往左=快退），
+        // 不再用条子上那圈「10 秒」。抬手之后再留 0.7 秒走，和上面那块浮标同一个计时。
+        var seekToast by remember { mutableStateOf<Boolean?>(null) }
+        LaunchedEffect(seekToast) {
+            if (seekToast != null) {
+                delay(700L)
+                seekToast = null
+            }
+        }
+        fun valueOf(side: Int): Float = if (side < 0) {
+            val b = win?.attributes?.screenBrightness ?: -1f
+            if (b >= 0f) b else runCatching {
+                android.provider.Settings.System.getInt(
+                    context.contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS, 128
+                ) / 255f
+            }.getOrDefault(0.5f)
+        } else aSlot?.member?.volume ?: 1f
+        fun putValue(side: Int, v: Float) {
+            if (side < 0) win?.let { val lp = it.attributes; lp.screenBrightness = v; it.attributes = lp }
+            else aSlot?.member?.setVolume(v)
+        }
 
         VerticalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
             val t = videos[page]
@@ -781,14 +827,24 @@ fun VideoFeed(
                         }
                     }
                 }
-                // 单击切播放/暂停照旧；长按改成按屏宽四等分：左=按住快进、右=按住倒带、中间=底部抽屉
+                /* 单击：非全屏仍是切播放/暂停（抖音那套）；全屏那一档改成出/收控制条，
+                   播放暂停交给控制条正中央那颗，或者**双击屏幕**（他 10-16 点的）。
+                   长按按屏宽四等分：左=按住快进、右=按住倒带、中间=抽屉（全屏时就是那条控制条）。
+                   全屏那一档再加两笔：中间那一半往右横滑=跳进
+                   10 秒、往左=跳退 10 秒（滑够屏宽 8% 才算，一次滑动只跳一档），两头各 1/4 竖滑=亮度/声音。 */
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .feedZoneGestures(
-                            key = page,
+                            // 键要带上 fullscreen：那颗开关翻的时候这一整屏会重组，但 pointerInput
+                            // 不重开就一直拿着旧闭包 —— 里面那个 fullscreen 永远停在按之前的那一档，
+                            // 真机撞到过：全屏里点屏幕还是去切播放/暂停，控制条出不来
+                            key = page to fullscreen,
                             onTap = {
-                                if (wantPlay) {
+                                if (fullscreen) {
+                                    controls = !controls
+                                    controlsTick = System.currentTimeMillis()
+                                } else if (wantPlay) {
                                     controller.pause()
                                 } else {
                                     controller.play()
@@ -797,14 +853,62 @@ fun VideoFeed(
                                         ?.let { PlayHistory.record(context, it) }
                                 }
                             },
-                            onZone = { z -> if (z == FeedZone.Middle) moreOpen = true else hold = z },
+                            onZone = { z ->
+                                if (z == FeedZone.Middle) {
+                                    if (fullscreen) {
+                                        controls = true
+                                        controlsTick = System.currentTimeMillis()
+                                    } else moreOpen = true
+                                } else hold = z
+                            },
                             onRelease = { hold = null },
+                            // 双击 = 播放/暂停，只在全屏那一档装：那里单击已经归了出条子，
+                            // 暂停/播放没有别的手指可用（条子正中央那颗要点到才够得着）。
+                            // 非全屏不装 —— 一装 detectTapGestures 就要等满系统双击时限才敢报单击，
+                            // 而那一档单击本来就是切播放/暂停，等于白慢半拍。
+                            onDoubleTap = if (fullscreen) {
+                                {
+                                    if (wantPlay) controller.pause() else controller.play()
+                                    controlsTick = System.currentTimeMillis()
+                                }
+                            } else null,
+                        )
+                        .edgeValueDrag(
+                            key = page to fullscreen,
+                            enabled = fullscreen,
+                            onStart = { side ->
+                                dragSide = side
+                                dragValue = valueOf(side)
+                            },
+                            onStep = { d ->
+                                if (dragSide != 0) {
+                                    dragValue = (dragValue + d).coerceIn(0f, 1f)
+                                    putValue(dragSide, dragValue)
+                                    hud = (if (dragSide < 0) IconKind.Sun else IconKind.Volume) to dragValue
+                                }
+                            },
+                            onEnd = { dragSide = 0 },
+                        )
+                        .feedSeekSwipe(
+                            key = page to fullscreen,
+                            enabled = fullscreen,
+                            onSeekBy = { delta ->
+                                aSlot?.let {
+                                    val dur = it.durMs.coerceAtLeast(it.member.duration.coerceAtLeast(0L))
+                                    if (dur > 0L) {
+                                        val to = (it.member.currentPosition + delta).coerceIn(0L, dur)
+                                        it.member.seekTo(to)
+                                        it.posMs = to
+                                        seekToast = delta > 0L
+                                    }
+                                }
+                            },
                         )
                 )
                 // 暂停时中央只留一支半透明白三角：原来那层 40% 黑圆底按他点名撤掉了，
                 // 透明度给 0.55（原来是 0.92 靠黑底托着才看得清）。按住那一档占的是同一个位置，
                 // 所以正中同时只有一样东西
-                if (!wantPlay && page == active && hold == null) {
+                if (!wantPlay && page == active && hold == null && hud == null && seekToast == null) {
                     LineIcon(
                         kind = IconKind.Play,
                         modifier = Modifier.align(Alignment.Center),
@@ -814,6 +918,14 @@ fun VideoFeed(
                 }
                 if (page == active) hold?.let {
                     FeedHoldHint(forward = it == FeedZone.Left, modifier = Modifier.align(Alignment.Center))
+                }
+                // 横滑跳档的回显：同一支双三角 + 一个秒数摆在三角指的那一侧，占的还是正中那一格
+                if (page == active) seekToast?.let {
+                    FeedSeekToast(
+                        forward = it,
+                        seconds = (SWIPE_SEEK_MS / 1000L).toInt(),
+                        modifier = Modifier.align(Alignment.Center),
+                    )
                 }
                 Column(
                     modifier = Modifier
@@ -856,8 +968,10 @@ fun VideoFeed(
                                 .padding(bottom = 2.dp)
                         )
                     }
-                    // 左右到边、下沿贴导航栏；高 16dp=44px 刚好容得下半径 19px 的滑块
-                    FeedScrub(
+                    /* 左右到边、下沿贴导航栏；高 16dp=44px 刚好容得下半径 19px 的滑块。
+                       全屏那一档这一条不要了：控制条自己带一条全宽的进度线（贴在画面下沿），
+                       屏幕最下沿再留一条就是同一件事两个主人（他 10-16 点的）。 */
+                    if (!fullscreen) FeedScrub(
                         fraction = if (own.second > 0) own.first.toFloat() / own.second.toFloat() else 0f,
                         // 只有出声那一格能拖：拖邻条那一格会把没在放的那条按走
                         enabled = s != null && page == active && own.second > 0,
@@ -879,14 +993,24 @@ fun VideoFeed(
                 }
                 /* 右侧悬浮那一列（跟抖音同一位置、同一手势层级）：心=收藏眼前这一条，
                    队列=打开这一路的播放列表。它落在这一页里而不是整屏一份，所以每滑一页，
-                   心形跟着那一页的收藏状态换，不会把上一页的收藏态显示在下一条上。 */
-                FeedRail(
-                    favorited = key in favorites,
-                    onFavorite = { onToggleFavorite(t) },
-                    onQueue = onOpenQueue,
-                    onOnline = { onOpenOnline(t) },
-                    modifier = Modifier.align(Alignment.BottomEnd)
-                )
+                   心形跟着那一页的收藏状态换，不会把上一页的收藏态显示在下一条上。
+                   全屏那一档改成和控制条同一个命：点屏幕出、3.5 秒没操作收、暂停时一直留着
+                   （他 10-16 点的）。两样现在同时在场，所以这一档把它改成**纵向居中**（先抬到 60dp，
+                   他接着点的居中）：整列 176dp 落在屏幕正中，离进度线那一带（y 918..967）还有 136px，
+                   一格不压。非全屏不在此列：那里没有控制条，这一列是收藏/队列/搜索唯一的入口，
+                   且照旧常驻、照旧贴底 22dp（抖音那个位置，他早先量过的）。 */
+                if (!fullscreen || barUp) {
+                    FeedRail(
+                        favorited = key in favorites,
+                        onFavorite = { onToggleFavorite(t) },
+                        onQueue = onOpenQueue,
+                        onOnline = { onOpenOnline(t) },
+                        bottom = if (fullscreen) 0.dp else 22.dp,
+                        modifier = Modifier.align(
+                            if (fullscreen) Alignment.CenterEnd else Alignment.BottomEnd
+                        )
+                    )
+                }
             }
         }
 
@@ -957,6 +1081,11 @@ fun VideoFeed(
             }
         }
 
+        // 两头竖滑的回显：浮在画面正中，抬手 0.7 秒后自己走
+        hud?.let { (kind, v) ->
+            FeedHud(kind = kind, fraction = v, modifier = Modifier.align(Alignment.Center))
+        }
+
         if (sourceOpen) {
             // 整屏，不是抽屉：这一屏既管地址源（禁用/删除）又管筛选，抽屉那一格装不下四组芯片
             VideoSourcePage(
@@ -976,8 +1105,8 @@ fun VideoFeed(
             )
         }
 
-        if (moreOpen) {
-            // 抽屉是对着"眼前这一页"操作的，不是播放器正在放的那一条
+        if (moreOpen || barUp) {
+            // 抽屉和控制条都是对着"眼前这一页"操作的，不是播放器正在放的那一条
             val cur = videos.getOrNull(pagerState.currentPage)
             val clip = LocalClipboard.current
             val actions = VideoMoreActions(
@@ -989,7 +1118,16 @@ fun VideoFeed(
                 // 和 API 29 上"系统没这个入口"是同一种处理
                 canDelete = android.os.Build.VERSION.SDK_INT >= 30 && !(cur?.let { Online.isOnline(it) } ?: false),
                 onSpeed = { speed = it },
-                onFullscreen = { onFullscreenChange(!fullscreen) },
+                onFullscreen = {
+                    // 从抽屉里开全屏要把抽屉一起收掉：全屏那一档改用压在画面下沿的控制条，
+                    // 抽屉留着就会在躺过来的屏上从底下拉一大片
+                    if (!fullscreen) {
+                        controls = true
+                        controlsTick = System.currentTimeMillis()
+                    }
+                    moreOpen = false
+                    onFullscreenChange(!fullscreen)
+                },
                 onRotate = { rotation = (rotation + 90) % 360 },
                 onAutoNext = { autoNext = !autoNext },
                 onCopyName = {
@@ -1020,9 +1158,41 @@ fun VideoFeed(
                     moreOpen = false
                 }
             )
-            // 屏幕躺过来时从下面拉一大片会挡住整幅画面，所以改从左边拉
-            if (inLandscape) VideoLeftDrawer(onDismiss = { moreOpen = false }, actions = actions)
-            else VideoBottomSheet(onDismiss = { moreOpen = false }, actions = actions)
+            /* 全屏那一档不再用横屏那套从左边拉的抽屉，换成压在画面下沿的那一条控制条
+               （照参考图等比摆）；竖屏那一路的底部抽屉原样留着。 */
+            if (barUp) {
+                val slot = slots.firstOrNull { it.page == active }
+                val ownDur = (slot?.durMs ?: 0L).coerceAtLeast(cur?.durationMs ?: 0L)
+                VideoFullscreenBar(
+                    a = actions,
+                    title = cur?.name ?: "",
+                    sub = cur?.let {
+                        listOfNotNull(
+                            MediaLibrary.fmtDuration(it.durationMs).takeIf { _ -> it.durationMs > 0 },
+                            MediaLibrary.fmtSize(it.sizeBytes).takeIf { _ -> it.sizeBytes > 0 },
+                            if (wantPlay) "播放中" else "已暂停",
+                        ).joinToString(" · ")
+                    } ?: "",
+                    chapter = "第 ${pagerState.currentPage + 1} 条 / 共 ${videos.size} 条",
+                    posMs = slot?.posMs ?: 0L,
+                    durMs = ownDur,
+                    playing = wantPlay,
+                    uri = cur?.uri,
+                    onPlayPause = {
+                        if (wantPlay) {
+                            controller.pause()
+                        } else {
+                            controller.play()
+                            videos.getOrNull(pagerState.currentPage)?.let { PlayHistory.record(context, it) }
+                        }
+                    },
+                    onSeek = { ms -> slot?.let { it.member.seekTo(ms); it.posMs = ms } },
+                    onPrev = { controller.seekToPreviousMediaItem() },
+                    onNext = { controller.seekToNextMediaItem() },
+                    onPoke = { controlsTick = System.currentTimeMillis() },
+                )
+            }
+            if (moreOpen) VideoBottomSheet(onDismiss = { moreOpen = false }, actions = actions)
         }
     }
 }
@@ -1113,8 +1283,8 @@ private fun queuePages(c: MediaController, library: List<Track>): List<Track>? {
     return out
 }
 
-/** 抽屉里那几行的数据与回调，底部壳和左侧壳共用 */
-private class VideoMoreActions(
+/** 抽屉里那几行的数据与回调，底部壳和全屏控制条共用 */
+internal class VideoMoreActions(
     val speed: Float,
     val fullscreen: Boolean,
     val rotation: Int,
@@ -1205,9 +1375,11 @@ private fun FeedRail(
     onFavorite: () -> Unit,
     onQueue: () -> Unit,
     onOnline: () -> Unit,
+    /** 下沿离屏幕底多远：非全屏 22dp（照旧贴底）；全屏那一档改成纵向居中，这里就给 0 */
+    bottom: Dp = 22.dp,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier.padding(end = 12.dp, bottom = 22.dp)) {
+    Column(modifier = modifier.padding(end = 12.dp, bottom = bottom)) {
         // 三颗的画框各给各的：同一个 26dp 框出来是三颗不一样大的 —— 墨最长边占画框
         // 心 0.5495、队列 0.9245（笔画跟着画框缩）、放大镜 0.604。
         // 下面三个数是按真机读数收出来的（26dp 那版量到 39/66/43，第一版配平量到 59/60/61），
@@ -1508,31 +1680,6 @@ private fun VideoBottomSheet(onDismiss: () -> Unit, actions: VideoMoreActions) {
     }
 }
 
-/** 横屏：屏幕躺过来了，再从下面拉一大片会挡住整幅画面，所以改成从左边拉 */
-@Composable
-private fun VideoLeftDrawer(onDismiss: () -> Unit, actions: VideoMoreActions) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0x66000000))
-            .pointerInput(Unit) { detectTapGestures { onDismiss() } }
-    ) {
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .padding(SheetPad)
-                .width(340.dp)
-                .clip(RoundedCornerShape(Tokens.Dimen.SheetCorner))
-                .background(Tokens.ListBg)
-                // 横屏可用高只有 362dp，七行 52dp 装不下，最后一行会被卡片下沿切掉一半
-                .verticalScroll(rememberScrollState())
-                .padding(SheetPad)
-        ) {
-            VideoMoreRows(actions)
-        }
-    }
-}
-
 @Composable
 private fun SheetLine(
     icon: IconKind,
@@ -1749,12 +1896,17 @@ internal fun rotBox(
     )
 }
 
-private fun firstFrame(context: Context, uri: Uri, widthPx: Int): ImageBitmap? {
+/** 解一帧：默认取头一帧当海报；给 timeUs 就是全屏控制条那颗预览卡要的"拖到哪一帧" */
+internal fun firstFrame(
+    context: Context, uri: Uri, widthPx: Int, timeUs: Long = 0L
+): ImageBitmap? {
     val mmr = MediaMetadataRetriever()
     return try {
         val raw = runCatching {
             mmr.setDataSource(context, uri)
-            mmr.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            // 头一帧要的是"最快拿到"，按同步帧取；中间某一秒要的是"就是那一秒"，取最近的帧
+            if (timeUs == 0L) mmr.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            else mmr.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
         }.getOrNull()
         // 带 BitmapParams 的缩放版要 API 31，这台机是 API 29，只能自己等比缩
         val scaled = when {

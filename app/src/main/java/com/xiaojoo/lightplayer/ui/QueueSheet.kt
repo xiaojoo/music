@@ -33,6 +33,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -112,35 +114,95 @@ fun QueueSheet(
         dragHandle = null
     ) {
         Column(modifier = Modifier.fillMaxWidth().height(540.dp).padding(top = Tokens.Dimen.ScreenPad)) {
-            Row(modifier = Modifier.fillMaxWidth().height(46.dp)) {
-                QueueTab(
-                    if (videoRoute) "视频列表" else "音乐列表", rows.size, picked == 0, Modifier.weight(1f)
-                ) { picked = 0 }
-                QueueTab(
-                    if (videoRoute) "已播视频" else "已播音乐", history.size, picked == 1, Modifier.weight(1f)
-                ) { picked = 1 }
-            }
-            if (picked == 1) {
-                if (history.isEmpty()) {
-                    EmptyLine(
-                        if (videoRoute) "播过的视频会留在这里（重启也在）"
-                        else "播过的歌会留在这里（重启也在）",
-                        Modifier.weight(1f)
-                    )
-                } else {
-                    HistoryList(history, thumbs = videoRoute, onPlayHistory)
-                }
-            } else {
-                if (rows.isEmpty()) {
-                    EmptyLine(
-                        if (videoRoute) "队列里没有视频，去「视频」页点「全部播放」"
-                        else "队列里没有音乐，去「音乐」页签点「全部播放」",
-                        Modifier.weight(1f)
-                    )
-                } else {
-                    QueueList(rows, thumbs = videoRoute, onPlayQueueAt, onRemoveAt, onMove)
-                }
-            }
+            QueueBody(videoRoute, rows, history, picked, { picked = it }, onPlayQueueAt, onRemoveAt, onMove, onPlayHistory)
+        }
+    }
+}
+
+/**
+ * 全屏那一档的队列：**同一份内容换形态** —— 从右边拉一列，不再从下面拉一大片。
+ * 全屏里底下那按页签是收着的，从下面拉会把整幅画面盖掉一半；右边这一条正好让画面还在动。
+ * 点面板外面那层遮罩收回（和原来横屏那套左侧抽屉同一句规矩）。
+ */
+@Composable
+fun QueueDrawer(
+    queue: List<QueueEntry>,
+    historyAudio: List<Track>,
+    historyVideo: List<Track>,
+    videoRoute: Boolean,
+    onPlayQueueAt: (Int) -> Unit,
+    onRemoveAt: (Int) -> Unit,
+    onMove: (Int, Int) -> Unit,
+    onPlayHistory: (Track) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var picked by remember(videoRoute) { mutableIntStateOf(0) }
+    val withIndex = queue.mapIndexed { i, e -> i to e }
+    val rows = withIndex.filter { it.second.isVideo == videoRoute }
+    val history = if (videoRoute) historyVideo else historyAudio
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0x66000000))
+                .pointerInput(Unit) { detectTapGestures { onDismiss() } }
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .width(340.dp)
+                .background(Tokens.ListBg)
+                .padding(top = Tokens.Dimen.ScreenPad, bottom = Tokens.Dimen.ScreenPad)
+        ) {
+            QueueBody(
+                videoRoute, rows, history, picked, { picked = it },
+                onPlayQueueAt, onRemoveAt, onMove, onPlayHistory
+            )
+        }
+    }
+}
+
+/** 面板那一列：两支页签 + 队列/已播，底部抽屉和右侧抽屉共用这一份 */
+@Composable
+private fun ColumnScope.QueueBody(
+    videoRoute: Boolean,
+    rows: List<Pair<Int, QueueEntry>>,
+    history: List<Track>,
+    picked: Int,
+    onPick: (Int) -> Unit,
+    onPlayQueueAt: (Int) -> Unit,
+    onRemoveAt: (Int) -> Unit,
+    onMove: (Int, Int) -> Unit,
+    onPlayHistory: (Track) -> Unit,
+) {
+    Row(modifier = Modifier.fillMaxWidth().height(46.dp)) {
+        QueueTab(
+            if (videoRoute) "视频列表" else "音乐列表", rows.size, picked == 0, Modifier.weight(1f)
+        ) { onPick(0) }
+        QueueTab(
+            if (videoRoute) "已播视频" else "已播音乐", history.size, picked == 1, Modifier.weight(1f)
+        ) { onPick(1) }
+    }
+    if (picked == 1) {
+        if (history.isEmpty()) {
+            EmptyLine(
+                if (videoRoute) "播过的视频会留在这里（重启也在）"
+                else "播过的歌会留在这里（重启也在）",
+                Modifier.weight(1f)
+            )
+        } else {
+            HistoryList(history, thumbs = videoRoute, onPlayHistory)
+        }
+    } else {
+        if (rows.isEmpty()) {
+            EmptyLine(
+                if (videoRoute) "队列里没有视频，去「视频」页点「全部播放」"
+                else "队列里没有音乐，去「音乐」页签点「全部播放」",
+                Modifier.weight(1f)
+            )
+        } else {
+            QueueList(rows, thumbs = videoRoute, onPlayQueueAt, onRemoveAt, onMove)
         }
     }
 }
