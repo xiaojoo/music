@@ -1,6 +1,10 @@
 package com.xiaojoo.lightplayer.ui
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -36,6 +40,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Shadow
@@ -46,7 +53,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /*
@@ -81,8 +93,6 @@ internal fun VideoFullscreenBar(
     a: VideoMoreActions,
     title: String,
     sub: String,
-    /** 预览卡上面那行标签：参考图写的是章节名，我们这边对应的是"这一栏里第几条" */
-    chapter: String,
     posMs: Long,
     durMs: Long,
     playing: Boolean,
@@ -128,11 +138,23 @@ internal fun VideoFullscreenBar(
             )
         }
 
-        var drag by remember { mutableStateOf<Float?>(null) }
+        /* 预览那一格（他 10-17 点的：长按不许动进度，只许看；只有点击才跳转）。
+           null = 没在预览。这条线画的和进度行读的都只认真实进度，所以按住不会把已播那段拉走。 */
+        var preview by remember { mutableStateOf<Float?>(null) }
         // 倍数那一颗的弹窗开没开。声音那颗已经拿掉了，这里只剩一个开关
         var speedMenu by remember { mutableStateOf(false) }
-        val frac = (drag ?: if (durMs > 0) posMs.toFloat() / durMs.toFloat() else 0f).coerceIn(0f, 1f)
+        val posFrac = if (durMs > 0) posMs.toFloat() / durMs.toFloat() else 0f
+        val frac = (preview ?: posFrac).coerceIn(0f, 1f)
         val targetMs = (frac * durMs).toLong()
+        /* 预览这一档自己给"3.5 秒自动收"续命：手指按住不动时系统不再送事件，没人 onPoke，
+           真机量到播放中按住到 4.4 秒整条连预览卡一起被收掉（暂停时不走这个计时所以看不出来）。
+           一秒续一次，抬手 preview 回 null，计时交回原来那颗。 */
+        LaunchedEffect(preview) {
+            while (preview != null) {
+                onPoke()
+                delay(1000L)
+            }
+        }
 
         // 进度线：厚 4、心在距底 73.5；命中给到 26 高（图上那条线只有 4px，按不动）。
         // 左右内衬 = 下面那一排首末两颗的**墨沿**离屏幕沿的距离，再加半个滑块（滑块在 0% 那档正好
@@ -152,14 +174,14 @@ internal fun VideoFullscreenBar(
                 .height(r(26f))
         ) {
             BarScrub(
-                fraction = frac,
+                fraction = posFrac,
                 line = r(4f),
                 thumb = scrubThumb,
                 enabled = durMs > 0,
-                onDrag = { drag = it; onPoke() },
-                onDragEnd = { f ->
+                onPreview = { f -> preview = f; onPoke() },
+                onTapSeek = { f ->
                     onSeek((f * durMs).toLong())
-                    drag = null
+                    onPoke()
                 },
                 modifier = Modifier
                     .fillMaxSize()
@@ -170,14 +192,13 @@ internal fun VideoFullscreenBar(
             )
         }
 
-        // 拖动预览卡：卡片 207x120、下沿距底 101，上面一行标签、下面一行时间（照图）。
+        // 预览卡：卡片 207x120、下沿距底 101，下面一行时间（照图）。上面那行标签他 10-17 点着不要了。
         // 横向跟着手指走，两头夹住不让它出屏
-        if (drag != null && durMs > 0) {
+        if (preview != null && durMs > 0) {
             val cardW = r(207f)
             PreviewCard(
                 uri = uri,
                 ms = targetMs,
-                chapter = chapter,
                 cardW = cardW,
                 cardH = r(120f),
                 labelSize = fsp(12.5f),
@@ -207,7 +228,7 @@ internal fun VideoFullscreenBar(
                 BarIcon(IconKind.Rotate, a.rotation != 0, r(BAR_ICON), r(45f), onPoke) { a.onRotate() }
                 BarIcon(IconKind.Repeat, a.autoNext, r(BAR_ICON), r(45f), onPoke) { a.onAutoNext() }
                 Text(
-                    text = MediaLibrary.fmtDuration(if (drag != null) targetMs else posMs) +
+                    text = MediaLibrary.fmtDuration(if (preview != null) targetMs else posMs) +
                         " / " + MediaLibrary.fmtDuration(durMs),
                     color = Color.White, style = barText,
                     fontSize = fsp(12.5f),
@@ -350,11 +371,15 @@ private fun BarIcon(
     }
 }
 
+/**
+ * 预览那一格只画**那一格解出来的真帧**（他 10-17 点的：预览界面要的是当前帧画面，滑动得跟着变）。
+ * 这一格还没到位时就沿用这台机器最新解出来的那一帧 —— 不解不到不清空，不然一路拖过去
+ * 看到的是一块反复变白的框；也**不垫系统封面**：那张跟手指位置无关，看着就像"预览卡住不动"。
+ */
 @Composable
 private fun PreviewCard(
     uri: Uri?,
     ms: Long,
-    chapter: String,
     cardW: Dp,
     cardH: Dp,
     labelSize: androidx.compose.ui.unit.TextUnit,
@@ -362,18 +387,21 @@ private fun PreviewCard(
     modifier: Modifier = Modifier,
 ) {
     val ctx = LocalContext.current
-    // 5 秒一档才重解一帧：一路拖过去每像素都解一次会把主线程淹掉
-    val slot = ms / 5000
-    var bmp by remember(uri) { mutableStateOf<ImageBitmap?>(null) }
+    // 5 秒一档重解一帧：一路拖过去每像素都解一次会把解帧机淹掉（粒度在 FramePull.SLOT_MS）
+    val slot = ms / FramePull.SLOT_MS
+    var bmp by remember(uri) { mutableStateOf(uri?.let { FramePull.peek(it, slot, 320) }) }
     LaunchedEffect(uri, slot) {
-        bmp = uri?.let { withContext(Dispatchers.IO) { firstFrame(ctx, it, 320, slot * 5_000_000L) } }
+        val u = uri ?: return@LaunchedEffect
+        // 不做去抖：手指一动就要求那一格，解帧机自己把落在后面的请求合掉（只解最新那一格）。
+        // 原来这里等满 150 毫秒才发请求 —— 慢拖时每一格都不停手，请求一次都没发出去，
+        // 预览就成了"固定在一张上"。
+        if (FramePull.peek(u, slot, 320) == null) bmp = FramePull.lastFor(u) ?: bmp
+        FramePull.frame(ctx, u, slot, 320)?.let { bmp = it }
     }
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(chapter, color = Color.White, style = text, fontSize = labelSize, maxLines = 1)
         // 图里那圈浅灰边是白压 ~78%（边框取样 (207,202,197)），里面就是解出来的那一帧
         Box(
             modifier = Modifier
-                .padding(top = cardH * 0.02f)
                 .width(cardW)
                 .height(cardH)
                 .background(Color.White.copy(alpha = 0.78f)),
@@ -396,34 +424,155 @@ private fun PreviewCard(
     }
 }
 
-/** 全宽那条线：未播灰、已播橙、末端一颗圆滑块，按上去左右拖着走 */
+/**
+ * 预览取帧机：整个进程只留一台 MediaMetadataRetriever、一次只解一帧，
+ * 新的请求只改"要看哪一格"，正在解的这一帧交完就去看最新那格 —— 中间那些合掉，不排队。
+ *
+ * 为什么要改成这样：原来每一格新开一台、把上一台丢给 GC。这条 4K HEVC 解一帧实测 8 秒，
+ * 一路拖下去几十台全排在 finalize 上，真机 01:33 被 FinalizerWatchdogDaemon 打死：
+ * `MediaMetadataRetriever.finalize() timed out after 60 seconds`。一台都不多开，这条死路就没了；
+ * 同一部片子里换格子也不用重开容器，第二格起只是 seek + 解一个关键帧。
+ */
+internal object FramePull {
+    /** 预览的粒度：5 秒一档 */
+    const val SLOT_MS = 5_000L
+
+    private val mutex = Mutex()
+    private var mmr: MediaMetadataRetriever? = null
+    private var opened: Uri? = null
+    private var lastUri: Uri? = null
+    private var lastFrame: ImageBitmap? = null
+
+    /** 每种宽度各记一条"现在最想看哪一格"。解的人进锁后再读它，
+        所以排在前面那些旧请求会被最新那格顶掉，不会排队解一堆过期的画面。
+        按宽度分开记：海报那一路（720）只在一部片子里要一次，不能被预览（320）一路拖过去时顶掉。 */
+    private val want = HashMap<Int, Long>()
+
+    /** 解过的帧只留最近 16 张：回看上一格应该是瞬时的，不该再排一次几秒 */
+    private val cache = LinkedHashMap<String, ImageBitmap>()
+
+    private fun key(uri: Uri, slot: Long, widthPx: Int) = uri.toString() + '#' + slot + '#' + widthPx
+
+    /** 已经解过就直接给，不占解帧机 */
+    fun peek(uri: Uri, slot: Long, widthPx: Int): ImageBitmap? =
+        synchronized(cache) { cache[key(uri, slot, widthPx)] }
+
+    /** 这一部片子最新解出来的那一帧（不看格数）：拖动途中要的是"画面在跟着走"，
+        晚一两格的真帧也比一块白框读得出位置 */
+    fun lastFor(uri: Uri): ImageBitmap? = if (lastUri == uri) lastFrame else null
+
+    /**
+     * 解 slot 那一格（5 秒一档）。只能在 IO 上跑，调用方等它回主线程。
+     * [latestOnly]=false 用来要"就必须这一格"（海报那一格 0），不被后面的请求顶掉。
+     */
+    suspend fun frame(
+        ctx: Context, uri: Uri, slot: Long, widthPx: Int, latestOnly: Boolean = true,
+    ): ImageBitmap? = withContext(Dispatchers.IO) {
+        if (latestOnly) synchronized(want) { want[widthPx] = slot }
+        mutex.withLock {
+            val m = openFor(ctx, uri) ?: return@withLock null
+            val s = if (latestOnly) synchronized(want) { want[widthPx] ?: slot } else slot
+            peek(uri, s, widthPx)?.let { return@withLock it }
+            val raw = runCatching {
+                // 只取关键帧：这一档不等任何前后帧，等一整段 GOP 解出来就是那几秒
+                m.getFrameAtTime(s * SLOT_MS * 1_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            }.getOrNull() ?: return@withLock null
+            // 带 BitmapParams 的缩放版要 API 31，这台机是 API 29，只能自己等比缩；
+            // 原图（4K 那张约 33MB）当场 recycle，不然几张一起就把堆吃掉了
+            val bmp = if (raw.width <= widthPx) raw else Bitmap.createScaledBitmap(
+                raw, widthPx, (raw.height.toLong() * widthPx / raw.width).toInt(), true
+            ).also { raw.recycle() }
+            val out = bmp.asImageBitmap()
+            synchronized(cache) {
+                cache[key(uri, s, widthPx)] = out
+                while (cache.size > 16) cache.remove(cache.keys.first())
+            }
+            lastUri = uri
+            lastFrame = out
+            out
+        }
+    }
+
+    /** 同一部片子复用那一台；换片子才放掉旧的再开。一次手上最多一台 */
+    private fun openFor(ctx: Context, uri: Uri): MediaMetadataRetriever? {
+        mmr?.let { if (opened == uri) return it }
+        runCatching { mmr?.release() }
+        mmr = null
+        opened = null
+        val m = MediaMetadataRetriever()
+        return if (runCatching { m.setDataSource(ctx, uri) }.isSuccess) {
+            mmr = m
+            opened = uri
+            m
+        } else {
+            runCatching { m.release() }
+            null
+        }
+    }
+}
+
+/** 全宽那条线：未播灰、已播橙、末端一颗圆滑块。点击才跳转，长按只出预览（不动这条线） */
 @Composable
 private fun BarScrub(
     fraction: Float,
     line: Dp,
     thumb: Dp,
     enabled: Boolean,
-    onDrag: (Float) -> Unit,
-    onDragEnd: (Float) -> Unit,
+    /** 长按那一档：给要看的那一格，松手回 null。进度不跟着它动 */
+    onPreview: (Float?) -> Unit,
+    /** 点击：按下到松手没挪动、也没到长按时限 */
+    onTapSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Canvas(
         modifier = modifier.pointerInput(enabled) {
             if (!enabled) return@pointerInput
             val w = size.width.toFloat().coerceAtLeast(1f)
+            val slop = viewConfiguration.touchSlop
             awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false)
-                var f = (down.position.x / w).coerceIn(0f, 1f)
-                onDrag(f)
+                /* 整段都读 Initial：这一层在最前面先拿到事件，从按下起就把每一帧吃掉。
+                   读 Main 的话脚下那台 VerticalPager 先拿到位移、把这一横滑接走 —— 真机量到
+                   拖 1000px 时这一层只收到 down 和 up 两帧（moved 一直是 false），于是把拖动
+                   当成点击去 seek；吃掉之后它一格都动不了。 */
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                down.consume()
+                val f0 = (down.position.x / w).coerceIn(0f, 1f)
+                var f = f0
+                var moved = false
+                var previewing = false
+                val longMs = viewConfiguration.longPressTimeoutMillis
+                val deadline = down.uptimeMillis + longMs
                 while (true) {
-                    val e = awaitPointerEvent()
+                    /* 手指按着不动时系统不再发 MOVE（真机量过：原地按住 6.5 秒一次 MOVE 都没有，
+                       原来那种"等下一个事件再看时间到没到"的写法在这条线上永远翻不到预览那一档）。
+                       所以时限得自己等：到点没有新事件就当长按成立。
+                       这一版 compose 的 awaitPointerEvent 被超时打断时抛的是它自己那只
+                       PointerEventTimeoutCancellationException（真机量到：catch kotlinx 那只接不住，
+                       整段手势直接死掉 —— 于是长按一路都翻不出来）。 */
+                    val e = if (previewing) awaitPointerEvent(PointerEventPass.Initial) else try {
+                        val left = deadline - SystemClock.uptimeMillis()
+                        if (left <= 0L) null
+                        else withTimeout(left) { awaitPointerEvent(PointerEventPass.Initial) }
+                    } catch (t: PointerEventTimeoutCancellationException) {
+                        null
+                    }
+                    if (e == null) {
+                        previewing = true
+                        onPreview(f)
+                        continue
+                    }
                     val c = e.changes.firstOrNull() ?: break
                     if (!c.pressed) break
-                    f = (c.position.x / w).coerceIn(0f, 1f)
-                    onDrag(f)
                     c.consume()
+                    if (!moved && (abs(c.position.x - down.position.x) > slop ||
+                                abs(c.position.y - down.position.y) > slop)) moved = true
+                    f = (c.position.x / w).coerceIn(0f, 1f)
+                    if (previewing) onPreview(f)
                 }
-                onDragEnd(f)
+                if (previewing) onPreview(null)
+                else if (!moved) {
+                    onTapSeek(f0)
+                }
             }
         }
     ) {
