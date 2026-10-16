@@ -840,8 +840,10 @@ fun VideoFeed(
                 /* 单击：非全屏仍是切播放/暂停（抖音那套）；全屏那一档改成出/收控制条，
                    播放暂停交给控制条正中央那颗，或者**双击屏幕**（他 10-16 点的）。
                    长按按屏宽四等分：左=按住快进、右=按住倒带、中间=抽屉（全屏时就是那条控制条）。
-                   全屏那一档再加两笔：中间那一半往右横滑=跳进
-                   10 秒、往左=跳退 10 秒（滑够屏宽 8% 才算，一次滑动只跳一档），两头各 1/4 竖滑=亮度/声音。 */
+                   横屏那一档再加两笔：中间那一半往右横滑=跳进
+                   10 秒、往左=跳退 10 秒（滑够屏宽 8% 才算，一次滑动只跳一档），两头各 1/4 竖滑=亮度/声音。
+                   这两笔只挂在 barMode 上（他 10-17 点的：竖屏那一档全屏不要手势）—— 挂 fullscreen 时
+                   竖屏全屏里也能用，现在那里只剩单击切播停 + 长按开抽屉，和没进全屏一样。 */
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -881,8 +883,8 @@ fun VideoFeed(
                             } else null,
                         )
                         .edgeValueDrag(
-                            key = page to fullscreen,
-                            enabled = fullscreen,
+                            key = page to barMode,
+                            enabled = barMode,
                             onStart = { side ->
                                 dragSide = side
                                 dragValue = valueOf(side)
@@ -897,8 +899,8 @@ fun VideoFeed(
                             onEnd = { dragSide = 0 },
                         )
                         .feedSeekSwipe(
-                            key = page to fullscreen,
-                            enabled = fullscreen,
+                            key = page to barMode,
+                            enabled = barMode,
                             onSeekBy = { delta ->
                                 aSlot?.let {
                                     val dur = it.durMs.coerceAtLeast(it.member.duration.coerceAtLeast(0L))
