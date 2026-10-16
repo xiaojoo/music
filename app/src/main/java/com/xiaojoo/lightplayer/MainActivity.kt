@@ -1526,6 +1526,16 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
      *
      * **`onlinePageUri` 必须先写**：那一栏开屏落在"上次看到的那一页"（`initialPage = onlinePage`，
      * 按这个 uri 反查下标）。新条目是插到列表最前面的，不写这一句 pager 就停在旧那条上。
+     *
+     * **`videoOnline` 也必须一起写**（他 10-17 点的这条）：那一栏顶上的芯片读的是这一颗当起手值，
+     * 而它记的是"上一次离开视频页时停在哪一栏"。他停在「本地」时点 MV，切过去落在本地那一栏，
+     * 而这条 MV 只挂在「在线」那一栏（临时挂最前面那几条）—— 真机量到：tab 确实切过去了，
+     * 屏幕上摆的还是原来那条本地片子（state=2、位置冻在 6772ms），那条 MV 既不露脸也不播。
+     * 这一颗 `playOnline`（搜索页/在线整屏那条路）早就写了，只有 MV 这一路漏了。
+     *
+     * VIP 那些不跳转是靠这一句的**次序**：先 resolve，拿到 Ready 才动 tab/芯片/页号；
+     * 站点不给可播地址（网易云 VIP 支就是 `data.brs` 四档全空，源里抛 Auth）走下面那两支，
+     * 只当面说一句，人留在音乐那一屏。
      */
     fun openInVideoOnline(v: MusicVideo) {
         scope.launch {
@@ -1534,6 +1544,7 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
                     // 挂在视频那一栏最前面（临时的：那一屏一刷新或一筛就作废），不进跨开机的那份库
                     insertOnline(v)
                     onlinePageUri = v.pageUrl
+                    videoOnline = true
                     backToMusicOnline = true
                     tab = AppTab.Video
                 }
