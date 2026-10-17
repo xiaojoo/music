@@ -6,8 +6,10 @@ import android.content.pm.PackageManager
 import android.app.Activity
 import android.net.Uri
 import android.provider.MediaStore
+import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
@@ -79,6 +81,7 @@ import com.xiaojoo.lightplayer.data.PinnedRepository
 import com.xiaojoo.lightplayer.ui.AddToPlaylistDialog
 import com.xiaojoo.lightplayer.ui.ApiSearchPage
 import com.xiaojoo.lightplayer.ui.AppearancePage
+import com.xiaojoo.lightplayer.ui.DeleteConfirmDialog
 import com.xiaojoo.lightplayer.ui.PlayerArtPage
 import com.xiaojoo.lightplayer.ui.Skin
 import com.xiaojoo.lightplayer.ui.LyricStore
@@ -643,37 +646,74 @@ private fun App(
 
     LaunchedEffect(tab, nowPlaying) { history = PlayHistory.list(context) }
 
-    /* 删除走系统的删除请求：确认框由系统弹，成功回调里才动数据。
-       回调拿不到"刚才要删的是哪一条"，所以那条先寄存在这个格子里 */
+    /* 删除分两步：先过我们画的那一框（系统那一框的字我们改不了），确认之后自己摘媒体库那一行。
+       前提是有「所有文件访问权限」—— 那一下同意放在**进删除之前**拿，不在删除当场弹（他 10-17 点的：
+       一开始就获取系统授权，授权后才可删除）。没授权时这一颗只带你去系统那一页，不动数据。 */
+    /** 待确认的那一条：非空就出那一框 */
+    var deletingAsk by remember { mutableStateOf<Track?>(null) }
+    /** 退回系统删除请求那一条时，回调拿不到"刚才要删的是哪一条"，所以那条先寄存在这里 */
     var deleting by remember { mutableStateOf<Track?>(null) }
+
+    /** 删完的收尾：自己删成的那一条和系统同意回来那一条都走这一颗 */
+    fun finishDelete(t: Track) {
+        val u = t.uri.toString()
+        if (u in favorites) {
+            favRepo.remove(u)
+            favorites = favRepo.all()
+        }
+        pinRepo.drop(u)
+        pinned = pinRepo.all()
+        lastRepo.drop(u)
+        if (bar.shown?.toString() == u) bar.forget()
+        // 歌单里那条 uri 也要摘掉：列表行会自己把死 uri 滤没，但歌单上写的"N首"是按名单数的
+        playlists.filter { u in it.uris }.forEach { repo.removeSong(it.id, u) }
+        playlists = repo.all()
+        refreshLibrary()
+    }
+
     val deleter = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { res ->
         val t = deleting
         deleting = null
-        if (res.resultCode == Activity.RESULT_OK && t != null) {
-            val u = t.uri.toString()
-            if (u in favorites) {
-                favRepo.remove(u)
-                favorites = favRepo.all()
-            }
-            pinRepo.drop(u)
-            pinned = pinRepo.all()
-            lastRepo.drop(u)
-            if (bar.shown?.toString() == u) bar.forget()
-            // 歌单里那条 uri 也要摘掉：列表行会自己把死 uri 滤没，但歌单上写的"N首"是按名单数的
-            playlists.filter { u in it.uris }.forEach { repo.removeSong(it.id, u) }
-            playlists = repo.all()
-            refreshLibrary()
+        if (res.resultCode == Activity.RESULT_OK && t != null) finishDelete(t)
+    }
+
+    /** 「所有文件访问权限」：API 30+ 才有这颗，有了它删除才不用每条都弹系统同意 */
+    fun hasAllFiles(): Boolean = Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
+
+    fun askAllFiles() {
+        val pkg = Uri.parse("package:" + context.packageName)
+        val i = if (Build.VERSION.SDK_INT >= 30) {
+            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, pkg)
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg)
         }
+        runCatching { context.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            .onFailure { Log.w("LightPlayer", "授权页没开起来", it) }
     }
 
     // createDeleteRequest 是 API 30 才有的；抽屉里那颗也按这个版本才摆出来
     fun deleteTrack(t: Track) {
         if (Build.VERSION.SDK_INT < 30) return
+        if (!hasAllFiles()) {
+            askAllFiles()
+            return
+        }
+        deletingAsk = t
+    }
+
+    /** 框上那颗「确认」：先试自己删；抛了（权限中途被收回那一类）才退回系统那条删除请求 */
+    fun confirmDelete(t: Track) {
+        deletingAsk = null
+        if (runCatching { context.contentResolver.delete(t.uri, null, null) }.isSuccess) {
+            finishDelete(t)
+            return
+        }
         deleting = t
-        val req = MediaStore.createDeleteRequest(context.contentResolver, listOf(t.uri))
-        deleter.launch(IntentSenderRequest.Builder(req.intentSender).build())
+        runCatching { MediaStore.createDeleteRequest(context.contentResolver, listOf(t.uri)) }
+            .onSuccess { deleter.launch(IntentSenderRequest.Builder(it.intentSender).build()) }
+            .onFailure { deleting = null; Log.w("LightPlayer", "删除请求没建起来", it) }
     }
 
     fun shareTrack(t: Track) {
@@ -2522,6 +2562,14 @@ private fun App(
                 pl != null
             },
             onDismiss = { pendingAdd = null }
+        )
+    }
+
+    deletingAsk?.let { t ->
+        DeleteConfirmDialog(
+            video = t.isVideo,
+            onDismiss = { deletingAsk = null },
+            onConfirm = { confirmDelete(t) }
         )
     }
 }
