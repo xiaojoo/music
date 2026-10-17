@@ -1944,8 +1944,10 @@ fun DeleteConfirmDialog(
     val what = if (video) "视频" else "歌曲"
     InputSheet("删除$what", onDismiss) {
         Text("确认删除${what}吗", color = Tokens.Ink, fontSize = 15.sp)
-        // 两颗并排压在右下角（和 SheetActions 同一档尺寸：40dp 高、15sp 字、左右各 4dp 内衬，
-        // 所以两颗的墨间隙 = 4 + 4 = 8dp）。那颗"取消"不再单独占左端 —— 他点名的就是这一框。
+        /* 两颗并排压在右下角（和 SheetActions 同一档：40dp 高、15sp 字、左右各 4dp 内衬）。
+           那颗"取消"不再单独占左端 —— 他点名的就是这一框。两颗之间原来只靠各自那 4dp 相加
+           = 8dp（真机量到两团墨隔 28px，比一个字的墨宽还窄），他 10-17 点的"间隙改大一点"，
+           这里明着再垫 8dp；SheetActions 那几框还是老样子，只改这一框。 */
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
             horizontalArrangement = Arrangement.End,
@@ -1958,6 +1960,7 @@ fun DeleteConfirmDialog(
                     .padding(horizontal = 4.dp),
                 contentAlignment = Alignment.CenterEnd
             ) { Text("取消", color = Tokens.InkFaint, fontSize = 15.sp) }
+            Spacer(Modifier.width(8.dp))
             Box(
                 modifier = Modifier
                     .height(40.dp)
