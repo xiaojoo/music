@@ -19,12 +19,70 @@ import androidx.media3.common.Player
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 /** 视频那一屏长按落在屏宽四等分的哪一格。Middle 不进「按住」那一档：它到点开抽屉，没有松手要收回的东西。 */
 enum class FeedZone { Left, Middle, Right }
 
 /** 按住快进、按住倒带共用这一个倍率 */
 const val HOLD_SPEED = 2f
+
+/**
+ * 双指张开 = 进全屏，双指捏合 = 出全屏（他 10-17 点的，在线、本地两栏都要）。
+ *
+ * 判据只看**两指距离的变化**，起点距离不算数 —— 两个人手指头开局分多开因人而异。
+ * 越过 [PINCH_GATE_RATIO]（短边的 8%，这台机两档都是 86px，和横滑跳档同一把比例）报一次，
+ * 一次手势只报一次。
+ *
+ * 两指一落地就把位移全部吃掉：不然 `VerticalPager` 会拿其中一指当竖滑，捏到一半页面自己滑走。
+ * 只有一指时一个事件都不 consume，翻页、单击、长按那几档照旧。
+ *
+ * **键要带上 fullscreen**：那颗开关翻的时候 pointerInput 不重开就一直拿着旧闭包，
+ * 里面那个 fullscreen 永远停在按之前那一档 —— 本地那一栏在单击那颗上真机撞到过（见 VideoFeed 那段注释）。
+ */
+fun Modifier.feedPinchFullscreen(
+    key: Any?,
+    onSpread: () -> Unit,
+    onPinch: () -> Unit,
+): Modifier = pointerInput(key) {
+    val gate = minOf(size.width, size.height) * PINCH_GATE_RATIO
+    awaitEachGesture {
+        var start = -1f
+        var fired = false
+        while (true) {
+            val e = awaitPointerEvent()
+            val down = e.changes.filter { it.pressed }
+            if (down.size >= 2) {
+                val dx = down[0].position.x - down[1].position.x
+                val dy = down[0].position.y - down[1].position.y
+                val d = sqrt(dx * dx + dy * dy)
+                if (start < 0f) start = d
+                if (!fired) when (pinchCall(start, d, gate)) {
+                    1 -> { onSpread(); fired = true }
+                    -1 -> { onPinch(); fired = true }
+                }
+                down.forEach { it.consume() }
+            }
+            if (down.isEmpty()) break
+        }
+    }
+}
+
+/** 双指捏合/张开认的门槛：短边的 8%（这台机竖屏 86px、横屏也是 86px） */
+const val PINCH_GATE_RATIO = 0.08f
+
+/**
+ * 这一次双指该报什么：1 = 张开、-1 = 捏合、0 = 还没越过门槛。
+ * 只看两指距离相对**起手那一刻**的变化量，起点分多开不算数。
+ *
+ * 单独抽出来是为了能测：这台机注入不了真双指（`sendevent` 被 selinux 拒、
+ * `input motionevent` 一个事件只带一个触点 —— 真机试过，Compose 一次都没收到两根手指），
+ * 所以判定这一段只能拿数字过，见 PinchCallTest。
+ */
+internal fun pinchCall(start: Float, now: Float, gate: Float): Int {
+    val moved = now - start
+    return if (moved >= gate) 1 else if (-moved >= gate) -1 else 0
+}
 
 /** 倒带一跳退 500ms、隔 250ms 跳一次：净下来正好也是 2.0 倍速往后 */
 private const val REWIND_STEP_MS = 500L
