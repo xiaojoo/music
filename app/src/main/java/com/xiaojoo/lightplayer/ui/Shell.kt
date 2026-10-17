@@ -1554,7 +1554,8 @@ private fun TrackMenuSheet(
                 onCopyName()
                 onDismiss()
             }
-            /* 删除走系统那条删除请求，确认框由系统弹，不在这里再画一层。
+            /* 确认框由我们画（[DeleteConfirmDialog]）：系统那一框的字改不了，所以那一下同意挪到了
+               进这一颗之前 —— 先拿"所有文件访问权限"，拿到了才删。
                createDeleteRequest 是 API 30 才有的，29 上拿不到授权入口，所以这颗只在 30+ 出现 */
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 MenuRow(IconKind.Trash, if (track.isVideo) "删除视频" else "删除音乐") {
@@ -1869,6 +1870,40 @@ private fun SheetActions(cancel: () -> Unit, confirmText: String, confirmEnabled
             contentAlignment = Alignment.CenterEnd
         ) {
             Text(confirmText, color = if (confirmEnabled) Tokens.InkStrong else Tokens.InkFaint, fontSize = 15.sp)
+        }
+    }
+}
+
+@Composable
+fun DeleteConfirmDialog(
+    video: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    val what = if (video) "视频" else "歌曲"
+    InputSheet("删除$what", onDismiss) {
+        Text("确认删除${what}吗", color = Tokens.Ink, fontSize = 15.sp)
+        // 两颗并排压在右下角（和 SheetActions 同一档尺寸：40dp 高、15sp 字、左右各 4dp 内衬，
+        // 所以两颗的墨间隙 = 4 + 4 = 8dp）。那颗"取消"不再单独占左端 —— 他点名的就是这一框。
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .height(40.dp)
+                    .tap(onClick = onDismiss)
+                    .padding(horizontal = 4.dp),
+                contentAlignment = Alignment.CenterEnd
+            ) { Text("取消", color = Tokens.InkFaint, fontSize = 15.sp) }
+            Box(
+                modifier = Modifier
+                    .height(40.dp)
+                    .tap(onClick = onConfirm)
+                    .padding(horizontal = 4.dp),
+                contentAlignment = Alignment.CenterEnd
+            ) { Text("确认", color = Tokens.InkStrong, fontSize = 15.sp) }
         }
     }
 }

@@ -1371,7 +1371,8 @@ private fun VideoMoreRows(a: VideoMoreActions) {
         SheetLine(IconKind.Copy, "复制视频地址", a.onCopyAddress)
         SheetDivider()
         SheetLine(IconKind.OpenLink, "分享视频", a.onShare)
-        /* 删除走系统那条删除请求，确认框由系统弹，不在这里再画一层。
+        /* 确认框由我们画（和列表抽屉那一颗同一个入口，都在壳层的 deletingAsk 上）：
+           系统那一框的字改不了，所以那一下同意挪到进这一行之前 —— 先拿"所有文件访问权限"。
            createDeleteRequest 是 API 30 才有的，29 上拿不到授权入口，所以这一行只在 30+ 出现 */
         if (a.canDelete) {
             SheetDivider()
