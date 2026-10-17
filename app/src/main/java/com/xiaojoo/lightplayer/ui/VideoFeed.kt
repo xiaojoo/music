@@ -597,22 +597,6 @@ fun VideoFeed(
             onDispose { before?.let { ctl.isAppearanceLightStatusBars = it } }
         }
 
-        DisposableEffect(fullscreen) {
-            if (w != null) {
-                val ctl = WindowInsetsControllerCompat(w, w.decorView)
-                // 平时也是铺到系统栏底下的（壳层白底栏要一直盖住导航条那一格），
-                // 这里只在开全屏时把两条栏收掉，关的时候只是把它们放回来，不能改 fits 状态
-                WindowCompat.setDecorFitsSystemWindows(w, false)
-                if (fullscreen) {
-                    ctl.systemBarsBehavior =
-                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    ctl.hide(WindowInsetsCompat.Type.systemBars())
-                } else {
-                    ctl.show(WindowInsetsCompat.Type.systemBars())
-                }
-            }
-            onDispose { }
-        }
 
         // 离开视频页才把系统栏和底栏还回去（上面那个 effect 每次切档都会 dispose，
         // 在它里面回调会把刚打开的全屏立刻关掉）
@@ -626,12 +610,30 @@ fun VideoFeed(
             }
         }
 
-        /* 全屏 = 横屏的片子把屏幕躺过来；竖屏的片子不转屏。
-           尺寸看"出声那一格"的，不再有一整屏共用的画面了。 */
+        /* 全屏这一档要动三样：收/放系统那两条栏、把屏幕躺过来、壳层那行白底页签增删。
+           原来三样在同一个重组里一起发，转屏动画会把还没收完（或刚放出来）的白条一起带进那一两帧
+           —— 他给的录屏量到：进全屏第 73 帧整帧黑、底带 0.97→0 一帧到位；出全屏那 8 帧里白色页签条
+           斜着画进来才落正。所以这里排个序：**进 = 先收栏、等动画走完再躺；出 = 先躺回来、再放栏**。
+           栏和转屏都只归这一处发（一扇窗的 WindowInsetsController 只能有一个主人）。 */
         LaunchedEffect(fullscreen, clipW, clipH) {
-            (context as? Activity)?.requestedOrientation =
-                if (fullscreen && landscapeClip) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            val act = context as? Activity
+            val ctl = w?.let { WindowInsetsControllerCompat(it, w.decorView) }
+            if (fullscreen) {
+                ctl?.let {
+                    it.systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    it.hide(WindowInsetsCompat.Type.systemBars())
+                }
+                if (landscapeClip) delay(BAR_SETTLE_MS)
+                act?.requestedOrientation =
+                    if (landscapeClip) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            } else {
+                val wasLandscape = landscapeClip
+                act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                if (wasLandscape) delay(BAR_SETTLE_MS)
+                ctl?.show(WindowInsetsCompat.Type.systemBars())
+            }
         }
         DisposableEffect(Unit) {
             onDispose { (context as? Activity)?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
@@ -996,28 +998,36 @@ fun VideoFeed(
                         modifier = Modifier.align(Alignment.Center),
                     )
                 }
+                /* 进出全屏那一下，标题和底下这根线原来是「一帧整条没了 / 一帧整条冒出来」
+                   （他 10-17 点的"竖屏的进度条也会闪一下"点的就是这根线）。改成淡出淡入。
+                   淡进来还要等屏转回竖屏（那口气和收放系统栏同一个数 BAR_SETTLE_MS）——
+                   不然淡的那几帧正压在转屏动画上，又斜着画一遍，白改。 */
+                val chromeA by animateFloatAsState(
+                    if (fullscreen) 0f else 1f,
+                    tween(160, delayMillis = if (fullscreen) 0 else BAR_SETTLE_MS.toInt()),
+                    label = "feedChrome",
+                )
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .fillMaxWidth()
+                        .graphicsLayer { alpha = chromeA }
                 ) {
-                    if (!fullscreen) {
-                        // 右沿让到 76dp：右侧那一列悬浮键占掉右边 60dp（12 内缩 + 48 命中），
-                        // 视频名是 36 字符的 uuid，不让开就会从键底下穿过去
-                        Column(modifier = Modifier.padding(start = 18.dp, end = 76.dp)) {
-                            Text(t.name, color = Color.White, style = MaterialTheme.typography.titleSmall)
-                            Spacer(Modifier.height(3.dp))
-                            Text(
-                                text = listOfNotNull(
-                                    MediaLibrary.fmtDuration(t.durationMs).takeIf { t.durationMs > 0 },
-                                    MediaLibrary.fmtSize(t.sizeBytes).takeIf { t.sizeBytes > 0 },
-                                    if (wantPlay) "播放中" else "已暂停"
-                                ).joinToString(" · "),
-                                color = Color(0xFFBDBDBD),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Spacer(Modifier.height(2.dp))
-                        }
+                    // 右沿让到 76dp：右侧那一列悬浮键占掉右边 60dp（12 内缩 + 48 命中），
+                    // 视频名是 36 字符的 uuid，不让开就会从键底下穿过去
+                    Column(modifier = Modifier.padding(start = 18.dp, end = 76.dp)) {
+                        Text(t.name, color = Color.White, style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            text = listOfNotNull(
+                                MediaLibrary.fmtDuration(t.durationMs).takeIf { t.durationMs > 0 },
+                                MediaLibrary.fmtSize(t.sizeBytes).takeIf { t.sizeBytes > 0 },
+                                if (wantPlay) "播放中" else "已暂停"
+                            ).joinToString(" · "),
+                            color = Color(0xFFBDBDBD),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(Modifier.height(2.dp))
                     }
                     /* 这一页自己的进度 = 这一格自己那个成员的进度。整屏共用一份的时候，
                        滑进来的那一下会先画出上一页走了多远（实测 4.2%）再归零。
@@ -1040,10 +1050,13 @@ fun VideoFeed(
                     /* 左右到边、下沿贴导航栏；高 16dp=44px 刚好容得下半径 19px 的滑块。
                        全屏那一档这一条不要了：控制条自己带一条全宽的进度线（贴在画面下沿），
                        屏幕最下沿再留一条就是同一件事两个主人（他 10-16 点的）。 */
-                    if (!fullscreen) FeedScrub(
+                    FeedScrub(
                         fraction = if (own.second > 0) own.first.toFloat() / own.second.toFloat() else 0f,
-                        // 只有出声那一格能拖：拖邻条那一格会把没在放的那条按走
-                        enabled = s != null && page == active && own.second > 0,
+                        /* 只有出声那一格能拖：拖邻条那一格会把没在放的那条按走。
+                           全屏那一档这根线是淡掉的（alpha 0），淡的那 160ms 里还看得见 ——
+                           enabled 一起关掉，别让人拖到一根已经看不见的线；退全屏那头是反的——
+                           淡进来之前它先是 0 又已经不算全屏，光看 !fullscreen 会拖到一根还没现形的线 */
+                        enabled = s != null && page == active && own.second > 0 && !fullscreen && chromeA > 0f,
                         expanded = scrubbing,
                         onDragStart = { scrubbing = true },
                         onDrag = { f -> if (s != null) s.posMs = (f * own.second).toLong() },

@@ -194,6 +194,9 @@ fun Modifier.edgeValueDrag(
 /** 横滑一次跳多少：和条子上那两颗 ±10 秒同一个数 */
 const val SWIPE_SEEK_MS = 10_000L
 
+/** 收/放系统那两条栏和转屏之间隔这一口气：MIUI 那两条栏的动画约 200ms 走完，给足 260ms */
+const val BAR_SETTLE_MS = 260L
+
 /**
  * 全屏那一档、中间那一半的横滑：往右跳进 10 秒、往左跳退 10 秒（他 10-16 点的）。
  *

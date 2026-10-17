@@ -18,6 +18,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.core.view.WindowCompat
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -2503,7 +2504,12 @@ private fun App(
                 onOpenQueue = { queueRoute = QueueRoute.Bar }
             )
         }
-        if (page == null && !videoFullscreen && !videoSourceOpen) {
+        /* 出全屏那一刻屏还在"转回竖屏"的动画里：这行白底页签要是立刻摆出来，就会跟着斜着画进去
+           （他给的录屏量到转屏那 5 帧里底带半开 0.15→0.77；我把系统那条 show() 延后之后，
+           这一行还是立刻摆，所以闪的其实是它）。等屏正了再摆。 */
+        val portraitNow = LocalConfiguration.current.orientation !=
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        if (page == null && !videoFullscreen && !videoSourceOpen && portraitNow) {
             BottomBar(tab = tab, onSelect = { backToMusicOnline = false; tab = it })
         }
     }
