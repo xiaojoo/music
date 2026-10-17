@@ -117,6 +117,9 @@ class MainActivity : ComponentActivity() {
 
     private var mediaGranted by mutableStateOf(false)
 
+    /** 通知上那颗「歌词」按下来要翻到歌词那一格：服务同进程，直接写这个状态，界面侧用 effect 接 */
+    private var wantLyrics by mutableStateOf(false)
+
     private val requestMedia = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result -> mediaGranted = result.values.all { it } }
@@ -161,7 +164,24 @@ class MainActivity : ComponentActivity() {
             requestNotification.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        setContent { App(mediaGranted = mediaGranted, onAskMediaPermission = { requestMedia.launch(mediaPermissions()) }) }
+        // 冷启动就是从通知那颗「歌词」拉起来的：先记下来，交给界面那一侧去翻页
+        if (intent?.action == ACTION_LYRICS) wantLyrics = true
+
+        setContent {
+            App(
+                mediaGranted = mediaGranted,
+                onAskMediaPermission = { requestMedia.launch(mediaPermissions()) },
+                wantLyrics = wantLyrics,
+                onLyricsShown = { wantLyrics = false },
+            )
+        }
+    }
+
+    /** 界面已经活着（singleTask）时，通知那颗「歌词」走的是这一条，不是重建 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == ACTION_LYRICS) wantLyrics = true
     }
 
     private fun hasMediaPermission(): Boolean = mediaPermissions().all { granted(it) }
@@ -176,6 +196,14 @@ class MainActivity : ComponentActivity() {
 
     private fun granted(p: String) =
         checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+
+    companion object {
+        /**
+         * 通知上那颗「歌词」把界面拉起来时带的 action。界面被回收后没有可写的那一份状态，
+         * 只能走 intent —— 这一条负责的就是那一种情况。
+         */
+        const val ACTION_LYRICS = "com.xiaojoo.lightplayer.action.LYRICS"
+    }
 }
 
 /* media3 的 UnstableApi 挂的是 androidx 的 @RequiresOptIn，Kotlin 的 @OptIn 认不出它
@@ -276,7 +304,13 @@ private const val MUSIC_ONLINE_SONGS = 30
 private const val HOT_MUSIC_PER_BOARD = 50
 
 @Composable
-private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
+private fun App(
+    mediaGranted: Boolean,
+    onAskMediaPermission: () -> Unit,
+    /** 通知上那颗「歌词」在界面已经没了时拉起来的：见 [MainActivity.ACTION_LYRICS] */
+    wantLyrics: Boolean,
+    onLyricsShown: () -> Unit,
+) {
     val context = LocalContext.current
     val repo = remember { PlaylistRepository(context) }
     val controller = rememberPlaybackController()
@@ -523,6 +557,32 @@ private fun App(mediaGranted: Boolean, onAskMediaPermission: () -> Unit) {
     // video-blacklist | artists | artist-search | artist:<歌手名> | pl:<歌单id> | local-search | appearance |
     // player-art | music-source
     var page by remember { mutableStateOf<String?>(null) }
+
+    /* 通知上那两颗自定义按钮的落点（收藏 / 歌词）。服务和界面同进程，走 [NotificationCommands] 这座桥。
+       收藏由服务那边落盘，这边只把名单重读一遍；歌词直接把播放页翻到那一格。
+       onDispose 要收回：Activity 被回收之后这两个不能打到没了的界面上，那时那颗该走"拉起界面"那一条。 */
+    DisposableEffect(Unit) {
+        NotificationCommands.onFavoritesChanged = { favorites = favRepo.all() }
+        NotificationCommands.onLyrics = {
+            page = null
+            tab = AppTab.Music
+            musicPlayerPage = 1
+        }
+        onDispose {
+            NotificationCommands.onFavoritesChanged = null
+            NotificationCommands.onLyrics = null
+        }
+    }
+
+    /* 界面已经没了、由通知把它拉起来的那一种：落点在 intent 的 action 上，上面那一份注册是空的 */
+    LaunchedEffect(wantLyrics) {
+        if (!wantLyrics) return@LaunchedEffect
+        page = null
+        tab = AppTab.Music
+        musicPlayerPage = 1
+        onLyricsShown()
+    }
+
     // 搜索词存在壳层：搜索是一个整屏页，开着它的时候列表页不挂着，词存在列表页里会跟着一起没
     var searchQuery by remember { mutableStateOf("") }
     var searchFrom by remember { mutableStateOf<String?>(null) }
