@@ -3,6 +3,7 @@ package com.xiaojoo.lightplayer.ui
 import android.util.Log
 import android.view.TextureView
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -744,14 +745,22 @@ private fun OnlinePage(
 
         /* 底下这一竖排和本地那一栏同一套：标题块（右沿让开悬浮键 76dp）→ 等待那颗 →
            拖着才出的时间行 → 贴底那根进度线。原来标题块自己带 22dp 下内衬，线加进来之后
-           那条缝由线自己占 —— 两栏"字离屏底"要一个数。 */
+           那条缝由线自己占 —— 两栏"字离屏底"要一个数。
+           进出全屏那一下改成淡出淡入（他 10-17 点的"竖屏的进度条也会闪一下"）：
+           原来是 `if (fullscreen) return@Column`，一帧整条没了、一帧整条冒出来。
+           淡进来还要等屏转回竖屏（和收放系统栏同一口气），不然淡的那几帧压在转屏动画上。 */
+        val chromeA by animateFloatAsState(
+            if (fullscreen) 0f else 1f,
+            tween(160, delayMillis = if (fullscreen) 0 else BAR_SETTLE_MS.toInt()),
+            label = "feedChrome",
+        )
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
+                .graphicsLayer { alpha = chromeA }
         ) {
             Column(modifier = Modifier.padding(start = 18.dp, end = 76.dp)) {
-                if (fullscreen) return@Column
                 Text(track.name, color = Color.White, style = MaterialTheme.typography.titleSmall)
                 Text(
                     text = listOfNotNull(
@@ -786,12 +795,14 @@ private fun OnlinePage(
                 )
             }
             /* 全屏那一档这一条不要了：控制条自己带一条全宽的进度线（贴在画面下沿），
-               屏幕最下沿再留一条就是同一件事两个主人 —— 和本地那一栏同一条口径 */
-            if (fullscreen) return@Column
+               屏幕最下沿再留一条就是同一件事两个主人 —— 和本地那一栏同一条口径。
+               收法是淡掉（上面那颗 chromeA），这里只把命中关掉：淡的那 160ms 里还看得见，
+               别让人拖到一根已经看不见的线；退全屏那一头反过来——淡进来之前它先是 0 又是
+               非全屏，光看 !fullscreen 会拖到一根还没现形的线，所以再吃一颗 chromeA */
             FeedScrub(
                 fraction = if (durMs > 0) posMs.toFloat() / durMs.toFloat() else 0f,
                 // 只有脚下这一格能拖：拖邻条那一格会把没在放的那条按走
-                enabled = current && player != null && durMs > 0,
+                enabled = current && player != null && durMs > 0 && !fullscreen && chromeA > 0f,
                 expanded = scrubbing,
                 onDragStart = { scrubbing = true },
                 onDrag = { f -> if (durMs > 0) posMs = (f * durMs).toLong() },
