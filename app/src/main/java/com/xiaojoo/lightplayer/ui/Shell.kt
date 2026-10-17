@@ -1,6 +1,14 @@
 package com.xiaojoo.lightplayer.ui
 
 import android.content.ClipData
+import android.view.TextureView
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -10,6 +18,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -1716,9 +1725,61 @@ internal fun PressableRow(
 }
 
 /** 离开播放/视频页后常驻底部的迷你播放条：整幅贴底，只留顶部两个圆角 */
+/**
+ * 迷你条最左那一格：当前放的是视频就把那台播放器的画面搬进来（真在动，不是首帧）。
+ *
+ * 拿得到那块表面是因为条子露出来的那几屏（首页 / 我的 / 各种子页）正好没有别的东西占着它 ——
+ * `showBar` 在音乐和视频那两屏是 false，而那两屏才是画面本来挂着的地方。一个播放器同时只有一块表面，
+ * 所以这颗和视频页那一格永远不会同时拿同一台。
+ *
+ * 比例没回来之前仍由封面顶着：空 surface 是透的，会露出这一格后面的东西（和视频页那层海报同一个理由）。
+ */
+@Composable
+private fun BarCover(video: ExoPlayer?, track: Track?, side: Dp) {
+    val player = video
+    if (player == null) {
+        CoverBox(track = track, side = side, badge = false)
+        return
+    }
+    var ratio by remember(player) { mutableFloatStateOf(0f) }
+    DisposableEffect(player) {
+        ratio = player.videoSize.let { if (it.height > 0) it.width.toFloat() / it.height else 0f }
+        val l = object : Player.Listener {
+            override fun onVideoSizeChanged(size: VideoSize) {
+                if (size.height > 0) ratio = size.width.toFloat() / size.height
+            }
+        }
+        player.addListener(l)
+        onDispose { player.removeListener(l) }
+    }
+    // TextureView 只把画面拉满自己那块框，所以把框按视频比例给足：长的那一边溢出，靠外层 clip 裁掉
+    val picW = if (ratio >= 1f) side * ratio else side
+    val picH = if (ratio >= 1f) side else side / ratio
+    Box(
+        modifier = Modifier
+            .size(side)
+            .clip(RoundedCornerShape(Tokens.Dimen.ThumbCorner))
+            .background(Tokens.Track),
+        contentAlignment = Alignment.Center
+    ) {
+        if (ratio <= 0f) {
+            CoverBox(track = track, side = side, badge = false)
+        } else {
+            key(player) {
+                AndroidView(
+                    modifier = Modifier.requiredSize(picW, picH),
+                    factory = { ctx -> TextureView(ctx).also { player.setVideoTextureView(it) } },
+                    onRelease = { tv -> player.clearVideoTextureView(tv) }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun NowPlayingBar(
     track: Track?,
+    video: ExoPlayer?,
     playing: Boolean,
     favorite: Boolean,
     underSystemNav: Boolean,
@@ -1745,7 +1806,7 @@ fun NowPlayingBar(
             .padding(start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ColEndPad),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CoverBox(track = track, side = 42.dp, badge = false)
+        BarCover(video = video, track = track, side = 42.dp)
         Text(
             text = listOfNotNull(
                 track?.name?.takeIf { it.isNotBlank() },
