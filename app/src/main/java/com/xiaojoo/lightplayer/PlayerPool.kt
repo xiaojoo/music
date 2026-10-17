@@ -105,6 +105,8 @@ object PlayerPool {
     /** 视频那一栏接手会话：把在线这台放掉 */
     fun useVideoFeed() {
         onlineMembers.forEach { it.pause() }
+        // 音频那一路同理：会话要交给视频这一格了，歌还留着就是两路一起出声
+        audio?.pause()
         val c = current ?: localMembers.firstOrNull() ?: return
         if (onSession !== c) {
             session?.setPlayer(c)
@@ -143,10 +145,15 @@ object PlayerPool {
      * 把会话交给音频那一路：离开视频 tab、从列表页起播一首歌之前调。
      * 顺序仍是**先放视频那台再换** —— ExoPlayer 在 pause 时才交回音频焦点。
      * 只换会话、不清 [current]：视频页还要认它那一格。
+     *
+     * 在线那几台也必须一起放掉。它们不在 [current] 里（10-13 起这是第三路），以前这里只放 `current`，
+     * 于是"在线那条还在放、他去点了一下音乐"之后：会话/迷你条/通知都变成这首歌，而那条视频还在出声出画
+     * —— 他报的「视频在播放，但是迷你窗没有显示啊，显示的是音乐」就是这一条。
      */
     fun useAudio() {
         val a = audio ?: return
         current?.pause()
+        onlineMembers.forEach { it.pause() }
         if (onSession !== a) {
             session?.setPlayer(a)
             onSession = a
@@ -161,6 +168,8 @@ object PlayerPool {
      */
     fun use(next: ExoPlayer) {
         audio?.pause()
+        // 同 useAudio()：在线那几台不在 current 里，接手这一格就得一起放掉，不然两路一起出声
+        onlineMembers.forEach { it.pause() }
         val cur = current
         if (cur !== next) cur?.pause()
         current = next

@@ -44,6 +44,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import com.xiaojoo.lightplayer.data.Appearance
@@ -1031,7 +1032,15 @@ private fun App(
     fun tapOnline(t: Track, index: Int) {
         val p = PlayerPool.onlineAt(index)
         if (p != null && onlinePlaying == t.uri.toString()) {
-            if (p.playWhenReady && p.playbackState != Player.STATE_ENDED) p.pause() else p.play()
+            if (p.playWhenReady && p.playbackState != Player.STATE_ENDED) p.pause()
+            else {
+                /* 放之前先把它交给会话。原来这一支只 `p.play()`：会话还挂在音频那台上，
+                   于是"视频在放、迷你条和通知显示的是那首歌"（他 10-17 报的这条）。
+                   useOnline 顺手把本地那台、音频那台和别的在线台都按停 —— 正是"只留眼前这一栏出声"。
+                   按停那一支不接手：停着的时候会话该留在原来那一路。 */
+                PlayerPool.useOnline(index)
+                p.play()
+            }
         } else {
             playOnlineItem(t, index)
         }
@@ -2417,8 +2426,17 @@ private fun App(
             )
         }
         if (showBar) {
+            /* 条上那颗格子要不要摆真画面：得同时满足"这一条是视频"+"会话挂的那台手里正是这一条"。
+               敢绑是因为条子露出来的这几屏没有别的东西占着那块表面 —— 视频和音乐那两屏 showBar 是 false，
+               而画面本来挂着的地方就是那两屏。一个播放器同时只有一块表面，两边不会抢。 */
+            val barVideoPlayer = if (barIsVideo) {
+                (PlayerPool.onSessionPlayer() as? ExoPlayer)?.takeIf {
+                    it.currentMediaItem?.localConfiguration?.uri == bar.shown
+                }
+            } else null
             NowPlayingBar(
                 track = barTrack,
+                video = barVideoPlayer,
                 playing = bar.playing,
                 favorite = bar.shown?.toString() in favorites,
                 underSystemNav = page != null,
