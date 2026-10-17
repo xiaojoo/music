@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -35,6 +36,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -58,13 +60,14 @@ import androidx.media3.common.util.UnstableApi
 import com.xiaojoo.lightplayer.PlayerPool
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import com.xiaojoo.lightplayer.data.Track
-import com.xiaojoo.lightplayer.videosource.OnlineSort
 import com.xiaojoo.lightplayer.videosource.headersForUrl
 import android.graphics.BitmapFactory
 import java.net.HttpURLConnection
 import java.net.URL
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 
@@ -80,7 +83,7 @@ import kotlinx.coroutines.withContext
  */
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
-fun OnlineFeed(
+internal fun OnlineFeed(
     items: List<Track>,
     /** 上一次看到第几页：这一屏切走就被销毁，pager 的位置只能由外面递进来 */
     initialPage: Int,
@@ -99,10 +102,35 @@ fun OnlineFeed(
     onDownload: (Track) -> Unit,
     downloadingUrl: String?,
     downloadProgress: Float,
-    /** 现在按什么排（长按那一栏开的那层里选中的那一行就是它） */
-    sort: OnlineSort,
-    /** 选完这一句要立刻回给外面存起来：这一屏一切走就被销毁，不存就回到默认那一种 */
-    onSort: (OnlineSort) -> Unit,
+    /** 抽屉里那一档倍速：按住左四分之一只吃这一档的临时值，松手回到它 */
+    speed: Float,
+    /** 抽屉里那一档播放模式：播完一条怎么办，三档三种走法，见下面那一段翻页 */
+    mode: Int,
+    /** 抽屉里「视频旋转」那一行的度数：0 = 这一格原来的摆法 */
+    rotation: Int,
+    /** 长按中间那一档开的那一层：原来开的是排序层，排序已经整块搬进「视频地址源」那一屏，这里只开设置 */
+    onSettings: () -> Unit,
+    /** 下面这一排是全屏那一档的手势：和本地那一栏同一套（单击出/收条子、双击播停、
+        横滑 ±10 秒、两头竖滑亮度音量）。`barMode` = 全屏且脚下这一条是横屏片子，由壳层判 */
+    fullscreen: Boolean,
+    barMode: Boolean,
+    /** 条子此刻亮不亮：亮着的时候右侧那一列才让位摆到中间 */
+    barUp: Boolean,
+    /** 正中已经被浮标/跳档回显占了：那两样和暂停三角同一个位置 */
+    echo: Boolean,
+    seekToast: Boolean?,
+    onToggleBar: () -> Unit,
+    onShowBar: () -> Unit,
+    onPlayPause: () -> Unit,
+    onSeekBy: (Long) -> Unit,
+    /** 两头竖滑的三句：起点/增量/收尾都回壳层，因为亮度落在窗口上、音量落在成员上 */
+    onEdgeStart: (Int) -> Unit,
+    onEdgeStep: (Int, Float) -> Unit,
+    onEdgeEnd: () -> Unit,
+    /** 脚下这一格的进度/时长/画面宽高/在不在放，报给壳层那份 `onlineLane` */
+    onLane: (LaneProgress) -> Unit,
+    /** 控制条那两颗「上一条/下一条」：递一个累加的数进来，这一栏自己滑 */
+    step: FeedStep,
     /** 每加一次就把这一栏送回第一个视频（顶栏那一栏被再点一次的时候加） */
     resetTick: Int,
     /** 滑到离栏尾三格以内时喊一声：外面去要下一批（重复喊由外面挡） */
@@ -110,7 +138,6 @@ fun OnlineFeed(
     /** 这一条应该挂在哪台成员身上的那个 mediaId：只有"这台成员手里就是这一条"时，它报的尺寸才算数 */
     mediaIdOf: (Track) -> String,
 ) {
-    var sortOpen by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     val players = remember { PlayerPool.ensureOnline(ctx) }
     val pager = rememberPagerState(
@@ -192,6 +219,22 @@ fun OnlineFeed(
        站着不动的时候不亮 —— 相邻那条没到手不是他此刻要做的事（他点的就是"别每次进这一栏都在"）。
        闸门本身照旧不看这个：没到手的方向一直拦着。 */
     var blockedNow by remember { mutableStateOf(false) }
+    /* 控制条那两颗「上一条/下一条」：这一栏的 pager 在自己里面，外面只能递一个累加的数进来。
+       相邻那一页直接滑过去（就一格，不会路过中间那些） */
+    var lastStep by remember { mutableIntStateOf(step.req) }
+    LaunchedEffect(step.req) {
+        val d = step.req - lastStep
+        lastStep = step.req
+        if (d == 0) return@LaunchedEffect
+        val n = items.size
+        if (n == 0) return@LaunchedEffect
+        val to = (settled + d).coerceIn(0, n - 1)
+        if (to != settled) pager.animateScrollToPage(to)
+    }
+    /* 播完那一下（ENDED）这一格是不是就该停着不动：「单个播放」是；「列表循环」只有整栏一条可去的时候是
+       （没人可翻页）；「单个循环」永远不是（播放器自己重播）。这一句要递给每一格，
+       它决定那一瞬露不露正中那支三角。 */
+    val endsToStop = mode == PlayMode.ONE || (mode == PlayMode.LIST && items.size <= 1)
 
     LaunchedEffect(pager.settledPage, items.size) {
         val i = pager.settledPage.coerceAtMost((items.size - 1).coerceAtLeast(0))
@@ -205,6 +248,34 @@ fun OnlineFeed(
         settled = i
         onPage(i)
         onPlayAt(t, i)
+    }
+
+    /* 播完一条怎么办。三档里这一栏要外面搭手的只有一档：
+       「单个循环」直接交给播放器（repeatMode=ONE，见 VideoFeed 那一段），
+       「单个播放」停在这最后一帧 —— 停住的样子靠上面那颗"ENDED 也算到手"，露三角不转点；
+       「列表循环」必须在这里翻页：在线每台成员手里就一条，Media3 自己推不动。
+       状态跳变全都折进 tick 了，所以这一句在每一次跳变后被叫一次：下一条还没到手就先原地等
+       （原地也不转点，见上面那颗 ENDED），到手那一刻 tick 又翻一次，这里再走一遍就过去了。 */
+    LaunchedEffect(tick, mode, items.size, settled) {
+        if (mode != PlayMode.LIST) return@LaunchedEffect
+        val n = items.size
+        if (n <= 1) return@LaunchedEffect
+        val p = players.getOrNull(settled % players.size.coerceAtLeast(1)) ?: return@LaunchedEffect
+        // 只看脚下这一格那台：别的成员停在上一条的 ENDED，不算"这一条放完了"
+        if (p.playbackState != Player.STATE_ENDED) return@LaunchedEffect
+        val cur = items.getOrNull(settled) ?: return@LaunchedEffect
+        if (p.currentMediaItem?.mediaId != mediaIdOf(cur)) return@LaunchedEffect
+        val to = if (settled + 1 < n) settled + 1 else 0
+        /* 到尾巴回第一条用**瞬移**，和上面 resetTick 那一支同一个理由：一路滑过去会路过中间每一页、
+           每一站都 onPlayAt 一次。瞬移前先把 settled 按到新页 —— 不然落位那一段的兜底看见
+           "这一条还没到手"就把页号推回原地（尾巴后面那条在这一栏里从没被预取过，多半真没到手）。 */
+        if (to == 0) {
+            settled = 0
+            pager.scrollToPage(0)
+        } else {
+            if (!isReady(items[to], to)) return@LaunchedEffect
+            pager.animateScrollToPage(to)
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -272,6 +343,9 @@ fun OnlineFeed(
                     OnlinePage(
                         track = t,
                         player = player,
+                        speed = speed,
+                        rotation = rotation,
+                        endedMeansStop = endsToStop,
                         cover = covers[t.uri.toString()],
                         current = i == pager.currentPage,
                         waitingSide = blockedNow,
@@ -283,22 +357,24 @@ fun OnlineFeed(
                         onAdd = onAdd,
                         onDownload = { onDownload(t) },
                         onDelete = { onDelete(t) },
-                        onLongPress = { sortOpen = true },
+                        onLongPress = onSettings,
+                        fullscreen = fullscreen,
+                        barMode = barMode,
+                        barUp = barUp,
+                        echo = echo,
+                        seekToast = seekToast,
+                        onToggleBar = onToggleBar,
+                        onShowBar = onShowBar,
+                        onPlayPause = onPlayPause,
+                        onSeekBy = onSeekBy,
+                        onEdgeStart = onEdgeStart,
+                        onEdgeStep = onEdgeStep,
+                        onEdgeEnd = onEdgeEnd,
+                        onLane = onLane,
                     )
                 }
             }
         }
-    }
-    if (sortOpen) {
-        SortSheet(
-            modes = OnlineSort.values().toList(),
-            current = sort,
-            onPick = { m ->
-                onSort(m)
-                sortOpen = false
-            },
-            onDismiss = { sortOpen = false },
-        )
     }
 }
 
@@ -339,6 +415,26 @@ private object FeedCovers {
 private fun OnlinePage(
     track: Track,
     player: Player?,
+    /** 抽屉里那一档倍速 */
+    speed: Float,
+    /** 画面转多少度（抽屉里「视频旋转」那一行）：0 = 这一格原来的摆法 */
+    rotation: Int,
+    /** 这一档播完就该停住吗：见上面那颗 `endsToStop`。不停的时候 ENDED 只是交接中的一瞬，不露三角 */
+    endedMeansStop: Boolean,
+    /** 全屏那一档的同一套手势，见 [OnlineFeed] 那一段注释 */
+    fullscreen: Boolean,
+    barMode: Boolean,
+    barUp: Boolean,
+    echo: Boolean,
+    seekToast: Boolean?,
+    onToggleBar: () -> Unit,
+    onShowBar: () -> Unit,
+    onPlayPause: () -> Unit,
+    onSeekBy: (Long) -> Unit,
+    onEdgeStart: (Int) -> Unit,
+    onEdgeStep: (Int, Float) -> Unit,
+    onEdgeEnd: () -> Unit,
+    onLane: (LaneProgress) -> Unit,
     cover: String?,
     current: Boolean,
     /** 左右哪一条还没到手：等待的样子摆在这一页的底部（和抖音同一处） */
@@ -366,6 +462,11 @@ private fun OnlinePage(
     var ready by remember(player, track.uri) {
         mutableStateOf(player?.playbackState == Player.STATE_READY)
     }
+    /** 这一条放完了没有：`ready` 把 ENDED 也算"到手"（不这么判会被闸门挡住、转三个点），
+        所以"放完"这件事得单独记一颗，不然下面分不清"停住了"和"正要交给下一条" */
+    var ended by remember(player, track.uri) {
+        mutableStateOf(player?.playbackState == Player.STATE_ENDED)
+    }
 
     DisposableEffect(player, track.uri, current) {
         val p = player ?: return@DisposableEffect onDispose { }
@@ -379,8 +480,12 @@ private fun OnlinePage(
             override fun onPlayWhenReadyChanged(ready: Boolean, reason: Int) {
                 playing = ready && p.playbackState != Player.STATE_ENDED
             }
+            /* 播完（ENDED）也算"到手"：这一条已经在手上、画面停在最后一帧，不该转三个点
+               （他 10-17 点的这一条）—— 三个点的本意是"这一条还没拉下来"。
+               但"放完了"这件事得另外记一颗：露不露正中那支三角要看它，不是看"到手没"。 */
             override fun onPlaybackStateChanged(state: Int) {
-                ready = state == Player.STATE_READY
+                ready = state == Player.STATE_READY || state == Player.STATE_ENDED
+                ended = state == Player.STATE_ENDED
             }
         }
         p.addListener(l)
@@ -394,21 +499,56 @@ private fun OnlinePage(
            无条件读就把**上一条**的尺寸读进这一格，而它排在封面比例前面 —— 横屏 16:9 会被
            竖屏那格整幅拉开（他 10-15 报"还是存在"的那一处就是这个）。 */
         if (p.currentMediaItem?.mediaId == mediaIdOf(track)) {
-            ready = p.playbackState == Player.STATE_READY
+            ready = p.playbackState == Player.STATE_READY || p.playbackState == Player.STATE_ENDED
+            ended = p.playbackState == Player.STATE_ENDED
             p.videoSize?.let { if (it.width > 0 && it.height > 0) { vidW = it.width; vidH = it.height } }
             playing = p.isPlaying
         }
         onDispose { p.removeListener(l) }
     }
 
-    val here = track.uri.toString() == playingUrl
+    /* 进度不是 Compose state，得自己隔一会儿问一次 —— 和本地那一栏同一颗节奏：在放 250ms 一问、
+       停着 1s 一问。三件事要守住：拖着的时候别问（问回来会把人手指的位置顶走）；
+       只问脚下这一格；还要对一句"这台成员手里就是这一条"，池子只有三台、来回滑会复用，
+       不对就把上一条的进度画进这一格。 */
+    var posMs by remember(player, track.uri) { mutableLongStateOf(0L) }
+    var dur by remember(player, track.uri) { mutableLongStateOf(0L) }
+    var scrubbing by remember { mutableStateOf(false) }
+    // 站点报的时长和真解出来的那份取大的顶着：没解码好之前那一段线不会缩成一格
+    val durMs = dur.coerceAtLeast(track.durationMs)
+    LaunchedEffect(player, current, playing) {
+        val q = player ?: return@LaunchedEffect
+        while (isActive) {
+            if (!scrubbing && current && q.currentMediaItem?.mediaId == mediaIdOf(track)) {
+                posMs = q.currentPosition
+                dur = q.duration.coerceAtLeast(0L)
+            }
+            delay(if (playing) 250L else 1_000L)
+        }
+    }
 
-    /* 长按落在屏宽哪四分之一：左=按住期间 2.0 倍速往前、右=按住期间倒带；中间那一档直接开排序层，
+    /* 脚下这一格的四样数报给壳层：全屏走哪一档、条子那根线、音量落在哪台成员上都读它。
+       只报 current 那一格，别的页不动它 */
+    LaunchedEffect(current, posMs, durMs, vidW, vidH, playing) {
+        if (current) onLane(LaneProgress(posMs, durMs, vidW, vidH, playing))
+    }
+    // 竖滑那一段落在哪一边：修饰符只在起手那一刻报边号，后面的增量要自己带着
+    var oSide by remember { mutableIntStateOf(0) }
+
+    val here = track.uri.toString() == playingUrl
+    /* 停住没：没出声，而且这一档此刻确实该停着。列表循环/单个循环里 ENDED 只是交接中的一瞬
+       （前者要翻页、后者播放器自己重播），那一百来毫秒既不该露三角、也不该把底下那行写成「已暂停」
+       —— 真机探针量到翻页前 139ms 里画了 2 帧三角，就是他报的"自动划下一个会闪一下"。 */
+    val stopped = !playing && (!ended || endedMeansStop)
+
+    /* 长按落在屏宽哪四分之一：左=按住期间 2.0 倍速往前、右=按住期间倒带；中间那一档直接开设置抽屉，
        不进这里（它没有松手要收回的东西）。null = 现在没按着 */
     var hold by remember { mutableStateOf<FeedZone?>(null) }
-    /* 在线这一栏没有选倍速的地方，按住左四分之一是唯一动它的人，所以松手回 1.0，不用留"原来那一档" */
-    LaunchedEffect(hold, player) {
-        player?.setPlaybackSpeed(if (hold == FeedZone.Left) HOLD_SPEED else 1f)
+    /* 松手回到抽屉那一档，和本地那一栏同一条规矩：按住只在按住期间生效。
+       原来这里写死回 1f —— 那时候在线这一栏没有选倍速的地方；抽屉现在给了倍速那一行，
+       回 1f 就把他选的那一档吃掉了。键里带上 speed：抽屉里换档那一下要立刻落到这台成员身上。 */
+    LaunchedEffect(hold, player, speed) {
+        player?.setPlaybackSpeed(if (hold == FeedZone.Left) HOLD_SPEED else speed)
     }
     HoldRewindEffect(hold == FeedZone.Right, player)
 
@@ -416,14 +556,40 @@ private fun OnlinePage(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            /* 单击切播放/暂停照旧、长按四等分 —— 和本地那一栏走同一颗 feedZoneGestures：
-               左=快进、右=倒带、中间=开排序那一层（原来整屏长按都开它）。
+            /* 单击、长按四等分 —— 和本地那一栏走同一颗 feedZoneGestures：左=快进、右=倒带、
+               中间=开设置那一层。全屏那一档（barMode）改成和另一栏一模一样：单击出/收控制条、
+               中间那一档长按也是出条子、双击才切播停；横滑 ±10 秒、两头竖滑亮度音量同样只在那一档装。
                两栏按法不一样会被当成 bug 报回来。 */
             .feedZoneGestures(
-                key = Unit,
-                onTap = onTap,
-                onZone = { z -> if (z == FeedZone.Middle) onLongPress() else hold = z },
+                // 键要带上 barMode：那颗开关翻的时候 pointerInput 不重开就一直拿着旧闭包
+                // —— 本地那一栏真机撞到过：全屏里点屏幕还是去切播停、控制条出不来
+                key = Unit to barMode,
+                onTap = { if (barMode) onToggleBar() else onTap() },
+                onZone = { z ->
+                    if (z == FeedZone.Middle) {
+                        if (barMode) onShowBar() else onLongPress()
+                    } else hold = z
+                },
                 onRelease = { hold = null },
+                // 双击 = 播/停，只在全屏那一档装：那里单击已经归了条子，暂停时没别的手指可用
+                onDoubleTap = if (barMode) {
+                    {
+                        onPlayPause()
+                        onShowBar()
+                    }
+                } else null,
+            )
+            .edgeValueDrag(
+                key = Unit to barMode,
+                enabled = barMode,
+                onStart = { side -> oSide = side; onEdgeStart(side) },
+                onStep = { d -> if (oSide != 0) onEdgeStep(oSide, d) },
+                onEnd = { oSide = 0; onEdgeEnd() },
+            )
+            .feedSeekSwipe(
+                key = Unit to barMode,
+                enabled = barMode,
+                onSeekBy = onSeekBy,
             )
     ) {
         /* 背景 = 这一条自己的封面，放大模糊后铺满（和抖音/本地那一栏同一套观感）。
@@ -480,9 +646,16 @@ private fun OnlinePage(
         ) {
             val pageW = maxWidth
             val pageH = maxHeight
-            // contain：两个维度都不放大，比例不变
-            val picW = if (pageW / pageH > a) pageH * a else pageW
-            val picH = if (pageW / pageH > a) pageH else pageW / a
+            /* contain：两个维度都不放大，比例不变。
+               转 90°/270° 时先在**转完之后**的那一侧可用宽高里摆：竖屏片转完其实是横的那张，
+               按没转的比例判撑满会把画面甩到屏幕外（本地那一栏同一处踩过，见 rotBox 那段）。
+               转这件事由 graphicsLayer 在画的时候做，layout 仍然按没转的样子给 ——
+               框会往页外凸，但这一层没有裁剪，转完正好落回 pageW×pageH 这一格里。 */
+            val swapped = rotation % 180 != 0
+            val availW = if (swapped) pageH else pageW
+            val availH = if (swapped) pageW else pageH
+            val picW = if (availW / availH > a) availH * a else availW
+            val picH = if (availW / availH > a) availH else availW / a
             // 临时探针（量"筛选后闪过一帧画面撑满屏幕"）：把这一格每次重算用的四个数都写出来。
             // 要看的是 vidW/vidH 有没有 0 的那几帧 —— 0 时比例兜底 0.75，
             // 横屏片子会被塞进 1080×1440 那一格（TextureView 不做信箱，整幅拉满），就是他看到的那一帧。
@@ -514,7 +687,9 @@ private fun OnlinePage(
                     onRelease = { v ->
                         (player as? androidx.media3.exoplayer.ExoPlayer)?.clearVideoTextureView(v)
                     },
-                    modifier = Modifier.size(width = picW, height = picH),
+                    modifier = Modifier
+                        .size(width = picW, height = picH)
+                        .graphicsLayer { rotationZ = rotation.toFloat() },
                 )
             }
         }
@@ -529,44 +704,106 @@ private fun OnlinePage(
             OnlineDots(modifier = Modifier.align(Alignment.Center))
         }
 
-        if (current && waitingSide) {
-            /* 下一条还在拉：等待摆在**脚下这一页**的底部（标题那一行下面 —— 标题底 22dp，这里 8dp，
-               两行不打架）。他要的是"在当前页面底部等"，不是滑到下一条那里去等。 */
-            OnlineDots(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
-        }
-
-        // 按住那一档占的是正中央，和暂停三角同一个位置，所以两个不会同时出现
-        if (here && hold == null && !playing && ready) {
+        /* 按住那一档、浮标、跳档回显占的都是正中央，和这支三角同一个位置，所以同时只有一样东西。
+           它自己可点 = 开播（全屏那一档单击已经归了出/收条子，暂停时想就地播起来只能点它）：
+           挂在它自己身上就只吃这一格 72dp，点到外面照旧是出/收条子。 */
+        if (here && hold == null && stopped && ready && !echo) {
             LineIcon(
                 IconKind.Play,
-                modifier = Modifier.align(Alignment.Center),
+                modifier = Modifier.align(Alignment.Center).tap {
+                    onPlayPause()
+                    onShowBar()
+                },
                 size = 72.dp,
                 color = Color.White.copy(alpha = 0.55f),
+            )
+        }
+        if (seekToast != null) {
+            FeedSeekToast(
+                forward = seekToast,
+                seconds = (SWIPE_SEEK_MS / 1000L).toInt(),
+                modifier = Modifier.align(Alignment.Center),
             )
         }
         if (here) hold?.let {
             FeedHoldHint(forward = it == FeedZone.Left, modifier = Modifier.align(Alignment.Center))
         }
 
+        /* 底下这一竖排和本地那一栏同一套：标题块（右沿让开悬浮键 76dp）→ 等待那颗 →
+           拖着才出的时间行 → 贴底那根进度线。原来标题块自己带 22dp 下内衬，线加进来之后
+           那条缝由线自己占 —— 两栏"字离屏底"要一个数。 */
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 18.dp, end = 76.dp, bottom = 22.dp)
+                .fillMaxWidth()
         ) {
-            Text(track.name, color = Color.White, style = MaterialTheme.typography.titleSmall)
-            Text(
-                text = listOfNotNull(
-                    track.artist?.takeIf { it.isNotBlank() },
-                    MediaLibrary.fmtDuration(track.durationMs).takeIf { track.durationMs > 0 },
-                    if (here && playing) "播放中" else "已暂停",
-                ).joinToString(" · "),
-                color = Color(0xFFBDBDBD),
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 3.dp),
+            Column(modifier = Modifier.padding(start = 18.dp, end = 76.dp)) {
+                if (fullscreen) return@Column
+                Text(track.name, color = Color.White, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = listOfNotNull(
+                        track.artist?.takeIf { it.isNotBlank() },
+                        MediaLibrary.fmtDuration(track.durationMs).takeIf { track.durationMs > 0 },
+                        if (here && !stopped) "播放中" else "已暂停",
+                    ).joinToString(" · "),
+                    color = Color(0xFFBDBDBD),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 3.dp),
+                )
+                Spacer(Modifier.height(2.dp))
+            }
+            if (current && waitingSide) {
+                /* 下一条还在拉：等待摆在脚下这一页的底部（标题那一行下面），
+                   他要的是"在当前页面底部等"，不是滑到下一条那里去等。摆在排里而不是叠在屏底：
+                   线要钉在屏底不跳，这一档亮不亮也不能把线顶走。 */
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    OnlineDots()
+                }
+            }
+            if (scrubbing) {
+                // 时间不预留格子：线贴底画，上面多一行字不会把线顶走，信息行自己往上让
+                Text(
+                    text = MediaLibrary.fmtDuration(posMs) + " / " + MediaLibrary.fmtDuration(durMs),
+                    color = Color.White.copy(alpha = 0.90f),
+                    fontSize = 25.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 2.dp),
+                )
+            }
+            /* 全屏那一档这一条不要了：控制条自己带一条全宽的进度线（贴在画面下沿），
+               屏幕最下沿再留一条就是同一件事两个主人 —— 和本地那一栏同一条口径 */
+            if (fullscreen) return@Column
+            FeedScrub(
+                fraction = if (durMs > 0) posMs.toFloat() / durMs.toFloat() else 0f,
+                // 只有脚下这一格能拖：拖邻条那一格会把没在放的那条按走
+                enabled = current && player != null && durMs > 0,
+                expanded = scrubbing,
+                onDragStart = { scrubbing = true },
+                onDrag = { f -> if (durMs > 0) posMs = (f * durMs).toLong() },
+                onDragEnd = { f ->
+                    val q = player
+                    if (q != null && durMs > 0) {
+                        q.seekTo((f * durMs).toLong())
+                        posMs = q.currentPosition
+                    }
+                    scrubbing = false
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(16.dp)
             )
         }
 
-        Column(modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 22.dp)) {
+        /* 和本地那一列同一个命：全屏那一档抬到纵向居中给控制条让位、条子收起来的时候一起藏。
+           垃圾桶在全屏那一档不出现 —— 另一栏早就定了"全屏没有删除入口"。 */
+        if (barMode && !barUp) return@Box
+        Column(
+            modifier = Modifier
+                .align(if (barMode) Alignment.CenterEnd else Alignment.BottomEnd)
+                .padding(end = 12.dp, bottom = if (barMode) 0.dp else 22.dp)
+        ) {
             FeedRailButton(IconKind.OpenLink, active = false, size = 26.dp, onClick = onAdd)
             Spacer(modifier = Modifier.height(16.dp))
             FeedRailButton(
@@ -576,8 +813,10 @@ private fun OnlinePage(
                 progress = downloadProgress,
                 onClick = { if (busy) onDownload() },
             )
-            Spacer(modifier = Modifier.height(16.dp))
-            FeedRailButton(IconKind.Trash, active = false, size = 26.dp, onClick = onDelete)
+            if (!fullscreen) {
+                Spacer(modifier = Modifier.height(16.dp))
+                FeedRailButton(IconKind.Trash, active = false, size = 26.dp, onClick = onDelete)
+            }
         }
     }
 }

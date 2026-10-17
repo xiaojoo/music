@@ -40,6 +40,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiaojoo.lightplayer.videosource.MusicVideo
+import com.xiaojoo.lightplayer.videosource.OnlineSort
 
 /**
  * 「视频地址源」那一屏：地址源做成选项卡 + 几行筛选，整屏，不是抽屉。
@@ -71,6 +72,10 @@ fun VideoSourcePage(
     onAddUrl: (String) -> Unit,
     /** 那条地址在解析中：那颗「+」按住不松、换成一枚转圈的弧（结果最快也要几秒，抖音那一趟 8 秒） */
     urlBusy: Boolean,
+    /** 在线那一串现在按什么排。这一档不进 `draft`：它改的是**怎么排**、不是筛掉谁，
+        所以点一颗立刻生效、立刻回写外面存起来，按不按「确定」都算数 */
+    sort: OnlineSort,
+    onSort: (OnlineSort) -> Unit,
     onApply: (VideoFilter) -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -193,6 +198,14 @@ fun VideoSourcePage(
                         onAskDelete = { pendingDelete = r.id },
                         onDelete = { pendingDelete = null; onDeleteSource(r.id) },
                     )
+                }
+            }
+            /* 排序整块从「长按那一栏开的那层」搬到这里（他 10-17 点的：那一层改成设置）。
+               四颗单选、各落在条目身上一个真字段上。不摆条数：这四档排的是同一批条目，
+               没有"这一档里有几条"可报。 */
+            FilterGroup("排序", collapsible = false, expanded = false, onToggle = {}) {
+                OnlineSort.values().forEach { m ->
+                    FilterChip(m.label, null, m == sort) { onSort(m) }
                 }
             }
             if (styles.isNotEmpty()) {
