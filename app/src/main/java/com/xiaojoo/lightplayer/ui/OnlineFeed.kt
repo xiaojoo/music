@@ -131,6 +131,9 @@ internal fun OnlineFeed(
     onLane: (LaneProgress) -> Unit,
     /** 控制条那两颗「上一条/下一条」：递一个累加的数进来，这一栏自己滑 */
     step: FeedStep,
+    /** 双指张开/捏合 = 进/出全屏，和另一栏同一颗 */
+    onEnterFullscreen: () -> Unit,
+    onExitFullscreen: () -> Unit,
     /** 每加一次就把这一栏送回第一个视频（顶栏那一栏被再点一次的时候加） */
     resetTick: Int,
     /** 滑到离栏尾三格以内时喊一声：外面去要下一批（重复喊由外面挡） */
@@ -371,6 +374,8 @@ internal fun OnlineFeed(
                         onEdgeStep = onEdgeStep,
                         onEdgeEnd = onEdgeEnd,
                         onLane = onLane,
+                        onEnterFullscreen = onEnterFullscreen,
+                        onExitFullscreen = onExitFullscreen,
                     )
                 }
             }
@@ -435,6 +440,8 @@ private fun OnlinePage(
     onEdgeStep: (Int, Float) -> Unit,
     onEdgeEnd: () -> Unit,
     onLane: (LaneProgress) -> Unit,
+    onEnterFullscreen: () -> Unit,
+    onExitFullscreen: () -> Unit,
     cover: String?,
     current: Boolean,
     /** 左右哪一条还没到手：等待的样子摆在这一页的底部（和抖音同一处） */
@@ -590,6 +597,12 @@ private fun OnlinePage(
                 key = Unit to barMode,
                 enabled = barMode,
                 onSeekBy = onSeekBy,
+            )
+            // 双指张开/捏合进出全屏：和本地那一栏同一颗、同一个门槛
+            .feedPinchFullscreen(
+                key = Unit to fullscreen,
+                onSpread = onEnterFullscreen,
+                onPinch = onExitFullscreen,
             )
     ) {
         /* 背景 = 这一条自己的封面，放大模糊后铺满（和抖音/本地那一栏同一套观感）。

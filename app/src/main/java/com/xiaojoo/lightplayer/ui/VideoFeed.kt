@@ -675,6 +675,16 @@ fun VideoFeed(
             if (side < 0) win?.let { val lp = it.attributes; lp.screenBrightness = v; it.attributes = lp }
             else liveMember?.setVolume(v)
         }
+        /* 进/出全屏这一对：抽屉里那颗开关、双指张开/捏合、控制条右端那颗退出，三条路都走这里。
+           横屏片子进全屏要把条子一起叫出来（不然躺过来黑一下、得再点一下才出）。 */
+        fun enterFullscreen() {
+            if (!fullscreen && landscapeClip) {
+                controls = true
+                controlsTick = System.currentTimeMillis()
+            }
+            onFullscreenChange(true)
+        }
+        fun exitFullscreen() { onFullscreenChange(false) }
         // 真正开播这一下要记进「已播」（默认不自动播）。三条路都走这里：非全屏的单击、
         // 全屏的双击、还有暂停时屏幕正中那支三角
         fun startPlaying() {
@@ -952,6 +962,12 @@ fun VideoFeed(
                                 }
                             },
                         )
+                        .feedPinchFullscreen(
+                            // 键带上 fullscreen：翻那一档要把这颗重开，不然它拿着旧的 fullscreen
+                            key = page to fullscreen,
+                            onSpread = { enterFullscreen() },
+                            onPinch = { exitFullscreen() },
+                        )
                 )
                 /* 暂停时中央那支半透明白三角：原来那层 40% 黑圆底按他点名撤掉了，透明度给 0.55
                    （原来是 0.92 靠黑底托着才看得清）。按住那一档占的是同一个位置，正中同时只有一样东西。
@@ -1146,6 +1162,8 @@ fun VideoFeed(
                 onEdgeEnd = { dragSide = 0 },
                 onLane = { onlineLane = it },
                 step = onlineStep,
+                onEnterFullscreen = { enterFullscreen() },
+                onExitFullscreen = { exitFullscreen() },
                 onMore = onOnlineMore,
                 resetTick = onlineResetTick,
             )
@@ -1221,12 +1239,8 @@ fun VideoFeed(
                 onFullscreen = {
                     // 从抽屉里开全屏要把抽屉一起收掉：全屏那一档改用压在画面下沿的控制条，
                     // 抽屉留着就会在躺过来的屏上从底下拉一大片
-                    if (!fullscreen && landscapeClip) {
-                        controls = true
-                        controlsTick = System.currentTimeMillis()
-                    }
+                    if (fullscreen) exitFullscreen() else enterFullscreen()
                     moreOpen = false
-                    onFullscreenChange(!fullscreen)
                 },
                 onRotate = { rotation = (rotation + 90) % 360 },
                 onMode = { mode = it },
