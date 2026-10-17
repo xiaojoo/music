@@ -15,7 +15,9 @@ import android.view.Gravity
 import android.view.TextureView
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.fadeIn
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloat
@@ -87,6 +89,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.Image
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalDensity
@@ -326,8 +329,18 @@ fun VideoFeed(
            拿它判横竖屏，在线的片子就会按本地那一档摆（躺不过来、控制条也出不来）。 */
         val clipW = if (online) onlineLane.vidW else aSlot?.vidW ?: 0
         val clipH = if (online) onlineLane.vidH else aSlot?.vidH ?: 0
-        val landscapeClip = clipW > 0 && clipH > 0 && clipW > clipH
-        val barMode = fullscreen && landscapeClip
+        /* 换条那几帧新页那一台还没报画面宽高，读回来是 0x0：原来 0 就算成"竖屏的片子"，于是
+           全屏里换下一条会先躺回竖屏、等尺寸报上来再躺回横屏（他 10-17 点的第 2 条，真机量到
+           站着不动的那 768ms）。判不出来那一帧沿用上一次判到的：没定出横竖屏之前不转。 */
+        val lastLandscape = remember { mutableStateOf(false) }
+        if (clipW > 0 && clipH > 0) lastLandscape.value = clipW > clipH
+        val landscapeClip = lastLandscape.value
+        /* 屏真的躺过来才算横屏那一档：进全屏到 requestedOrientation 落地中间隔着 BAR_SETTLE_MS
+           那一口气（还要等系统转屏动画走完），这一档里就把条子摆出来，等于在竖屏上画横屏那套
+           （他 10-17 点的第 1 条，真机量到 420ms）。 */
+        val rotatedLandscape = LocalConfiguration.current.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val barMode = fullscreen && landscapeClip && rotatedLandscape
         val barUp = barMode && controls
         // 海报按 uri 缓存，来回滑不重新解帧
         val posters = remember { mutableMapOf<String, ImageBitmap?>() }
@@ -615,7 +628,7 @@ fun VideoFeed(
            —— 他给的录屏量到：进全屏第 73 帧整帧黑、底带 0.97→0 一帧到位；出全屏那 8 帧里白色页签条
            斜着画进来才落正。所以这里排个序：**进 = 先收栏、等动画走完再躺；出 = 先躺回来、再放栏**。
            栏和转屏都只归这一处发（一扇窗的 WindowInsetsController 只能有一个主人）。 */
-        LaunchedEffect(fullscreen, clipW, clipH) {
+        LaunchedEffect(fullscreen, landscapeClip) {
             val act = context as? Activity
             val ctl = w?.let { WindowInsetsControllerCompat(it, w.decorView) }
             if (fullscreen) {
@@ -1287,7 +1300,7 @@ fun VideoFeed(
             )
             /* 全屏那一档不再用横屏那套从左边拉的抽屉，换成压在画面下沿的那一条控制条
                （照参考图等比摆）；竖屏那一路的底部抽屉原样留着。 */
-            if (barUp) {
+            AnimatedVisibility(visible = barUp, enter = fadeIn(tween(160))) {
                 val slot = slots.firstOrNull { it.page == active }
                 val onlineMember = if (online) PlayerPool.onlineAt(onlinePage) else null
                 val ownDur = (if (online) onlineLane.durMs else slot?.durMs ?: 0L)
