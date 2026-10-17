@@ -342,6 +342,15 @@ fun VideoFeed(
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
         val barMode = fullscreen && landscapeClip && rotatedLandscape
         val barUp = barMode && controls
+        /* 底下那层填什么：全屏那一档填纯黑，其余填这一条自己的虚化垫图。
+           不能只看"要不要全屏"那个意图 —— 退全屏那一下 flag 先翻假、屏还要 ~95ms 才站回竖屏
+           （真机量的），这一窗里就换成竖屏那套垫图，等于还在躺着的屏上闪一下竖屏的底
+           （他 10-18 点的）。黑底跟着屏走，不跟着意图走。 */
+        val blackFill = fullscreen || rotatedLandscape
+        /* 黑 ↔ 垫图这一换不要硬切：屏一站回竖屏的那一毫秒，画面上下那两条从纯黑（量的 0.0）
+           直接跳到垫图（同一把尺子 34.5 / 70.2 / 50.0）—— 他 10-18 点的"颜色的闪烁还是有"
+           量的就是这个跳。改成淡过去，黑底常驻、垫图淡在它上面。 */
+        val padA by animateFloatAsState(if (blackFill) 0f else 1f, tween(220), label = "feedPad")
         // 海报按 uri 缓存，来回滑不重新解帧
         val posters = remember { mutableMapOf<String, ImageBitmap?>() }
         // 每条的模糊垫图，按 uri 缓存。用 state map 存：垫图一到位底下那层就要立刻重画
@@ -757,23 +766,29 @@ fun VideoFeed(
                 val pb = poster
                 /* 最底下：这一条自己的放大模糊 + 45% 黑，专门填画面框以外的上下两条，不跟着海报淡掉。
                    全屏那一档换成纯黑 —— 铺满整屏时那两条就是影院的黑边，留着模糊底等于在片子外面
-                   再画一层比片子还抢眼的东西（他 10-16 点的）。 */
-                if (fullscreen) {
-                    Box(modifier = Modifier.fillMaxSize().background(Color.Black))
-                } else {
-                    pbBlur?.let {
-                        Image(
-                            bitmap = it,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                    }
+                   再画一层比片子还抢眼的东西（他 10-16 点的）。哪一档黑、黑到什么时候收，看壳层
+                   那颗 blackFill（他 10-18 点的：退全屏那一窗垫图提前露出来）。 */
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+                if (padA > 0f) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.45f))
-                    )
+                            .graphicsLayer { alpha = padA }
+                    ) {
+                        pbBlur?.let {
+                            Image(
+                                bitmap = it,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.45f))
+                        )
+                    }
                 }
                 /* 这一页自己的画面（转 90°/270° 时把框的宽高对调再转，转完正好铺满竖屏那一格）。
                    原来那套"整屏一个出图 View、跟着翻页偏移每帧位移"整个删了：
