@@ -226,7 +226,12 @@ internal fun VideoFullscreenBar(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 BarIcon(IconKind.Rotate, a.rotation != 0, r(BAR_ICON), r(45f), onPoke) { a.onRotate() }
-                BarIcon(IconKind.Repeat, a.autoNext, r(BAR_ICON), r(45f), onPoke) { a.onAutoNext() }
+                /* 这一颗还是那颗「连播开关」，没跟着抽屉改成三档循环：全屏那一档只有图标、没有字，
+                   三档在这一点上说不清（按下去不知道切到了哪一档）。要三档去底下那个抽屉里选。
+                   所以它的读法是"要不要自动接下一条"：亮=列表循环，灭=单个播放；正处在单个循环时按它 → 列表循环。 */
+                BarIcon(IconKind.Repeat, a.mode == PlayMode.LIST, r(BAR_ICON), r(45f), onPoke) {
+                    a.onMode(if (a.mode == PlayMode.LIST) PlayMode.ONE else PlayMode.LIST)
+                }
                 Text(
                     text = MediaLibrary.fmtDuration(if (preview != null) targetMs else posMs) +
                         " / " + MediaLibrary.fmtDuration(durMs),

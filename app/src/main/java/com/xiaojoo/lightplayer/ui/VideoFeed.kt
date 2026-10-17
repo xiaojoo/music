@@ -195,7 +195,8 @@ fun VideoFeed(
     onlineMediaId: (Track) -> String,
     onOnlineDelete: (Track) -> Unit,
     onOnlineDownload: (Track) -> Unit,
-    /** 在线那一栏现在按什么排 / 选完存回去（长按那一栏开的那一层） */
+    /** 在线那一串现在按什么排。这一档从他点名的"长按那一层"搬进了「视频地址源」那一屏，
+        这里只负责把它递给那一屏、选完回写外面存起来 */
     onlineSort: OnlineSort,
     onOnlineSort: (OnlineSort) -> Unit,
     /** 那一栏滑到栏尾了：外面去要下一批（要不要得回来、要不要挡并发，都不关这一屏的事） */
@@ -274,7 +275,10 @@ fun VideoFeed(
         }
         val pagerState = rememberPagerState(initialPage = startPage, pageCount = { videos.size })
         var speed by remember { mutableStateOf(controller.playbackParameters.speed) }
-        var autoNext by remember { mutableStateOf(true) }
+        /* 播完一条怎么办，三档（抽屉里那一行选它）。直接映射到 `Player.repeatMode`：
+           单个播放=OFF、列表循环=ALL、单个循环=ONE —— 两条栏都读这一颗。
+           原来那是个「自动连播」开关，只有开/关两档，末尾回不到第一条。 */
+        var mode by remember { mutableIntStateOf(PlayMode.LIST) }
         var rotation by remember { mutableIntStateOf(0) }
         var moreOpen by remember { mutableStateOf(false) }
         /* 长按落在屏宽哪四分之一：左=按住期间 2.0 倍速往前、右=按住期间倒带。
@@ -287,6 +291,10 @@ fun VideoFeed(
         // 顶栏落在哪一栏由外面定（迷你条点进来要按条上那一条属于哪一栏来落）；
         // 默认仍是每次进这一屏从在线开始，那条默认写在 MainActivity 的 videoOnline 上
         var online by remember { mutableStateOf(onlineStart) }
+        /* 在线那一栏"脚下这一格"的进度/时长/画面宽高/在不在放，由那一栏每 250ms 报一次上来：
+           全屏那一档要看它判横屏还是竖屏，控制条那根线要读它。 */
+        var onlineLane by remember { mutableStateOf(LaneProgress()) }
+        val onlineStep = remember { FeedStep() }
         /* 换栏之后回写给壳层：底部那行 tab 切走再回来，这一屏是重新组合的，
            不回写就每次都掉回「在线」（他 10-15 点的：按上次离开那一栏进）。
            第一次组合写回的是同一个值，等于不动。 */
@@ -314,7 +322,11 @@ fun VideoFeed(
            横屏的片子进全屏才把屏幕躺过来、才换成底下那条控制条；竖屏的片子进全屏**仍然站着**，
            只收状态栏和导航条，菜单还是下面那个抽屉（他 10-17 点的）。barMode = 前者那一档。 */
         val aSlot = slots.firstOrNull { it.page == active }
-        val landscapeClip = aSlot != null && aSlot.vidW > 0 && aSlot.vidH > 0 && aSlot.vidW > aSlot.vidH
+        /* 画面尺寸看**眼前这一栏**：在线那一栏挂着的时候 aSlot 是本地那串里的那一格，
+           拿它判横竖屏，在线的片子就会按本地那一档摆（躺不过来、控制条也出不来）。 */
+        val clipW = if (online) onlineLane.vidW else aSlot?.vidW ?: 0
+        val clipH = if (online) onlineLane.vidH else aSlot?.vidH ?: 0
+        val landscapeClip = clipW > 0 && clipH > 0 && clipW > clipH
         val barMode = fullscreen && landscapeClip
         val barUp = barMode && controls
         // 海报按 uri 缓存，来回滑不重新解帧
@@ -325,13 +337,23 @@ fun VideoFeed(
         val borders = remember { mutableStateMapOf<String, FloatArray>() }
         // 会话（通知栏、别的页）看到的那一个 Player = 当前成员；换成员走 MediaSession.setPlayer
         val scope = rememberCoroutineScope()
+        /* 连播放完一条时，我们会把那个成员按停在它自己那一页的最后一帧 —— 那一下 pause 不是他按的，
+           "还要不要接着播"这个意图得留给下一页（单实例时是 Media3 自己翻页，不存在这件事）。
+           声明要在这里：上面那个 controller 监听要读它 —— 交接那一下的 pause 不该翻掉 wantPlay。 */
+        var carryPlay by remember { mutableStateOf(false) }
         DisposableEffect(controller) {
             val l = object : Player.Listener {
                 override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
-                override fun onPlayWhenReadyChanged(ready: Boolean, reason: Int) { wantPlay = ready }
+                override fun onPlayWhenReadyChanged(ready: Boolean, reason: Int) {
+                    /* 连播交接那一下是我们自己 `pause()` 出来的（置 carryPlay 在那一句之前），
+                       不是他按的暂停 —— 别把它记成 wantPlay=false，否则正中那支三角和底下那行
+                       「已暂停」会在换条时闪一下（真机抽帧量到 2 帧 ≈66ms）。 */
+                    if (!ready && carryPlay) return
+                    wantPlay = ready
+                }
                 override fun onPlaybackStateChanged(state: Int) {
                     // 队列到头停在 ENDED 时 Media3 不把 playWhenReady 翻回去，这里自己收
-                    if (state == Player.STATE_ENDED) wantPlay = false
+                    if (state == Player.STATE_ENDED && !carryPlay) wantPlay = false
                 }
                 /* 从这一页外头换的条（耳机/通知栏/媒体键的上一曲下一曲）：出声的那个成员自己
                    往前走了，可它那块画面就挂在原来这一格上 —— 看着像跟上了，底下那行标题和进度
@@ -411,9 +433,6 @@ fun VideoFeed(
 
         // 只有"这次进来落到的那一页"回到上次的进度；自己滑过去的条从头播
         var resumePending by remember { mutableStateOf(true) }
-        /* 连播放完一条时，我们会把那个成员按停在它自己那一页的最后一帧 —— 那一下 pause 不是他按的，
-           "还要不要接着播"这个意图得留给下一页（单实例时是 Media3 自己翻页，不存在这件事）。 */
-        var carryPlay by remember { mutableStateOf(false) }
         LaunchedEffect(slots, controller, online, videos) {
             /* 在线那一栏挂着的时候，本地这一栏一个字都不动：它这一串会在落位时把会话抢过去
                （`use` + `play`），于是声音还在在线那台上放，会话却已经换成了本地那台 ——
@@ -504,21 +523,25 @@ fun VideoFeed(
            可它的画面还挂在原来那一格上 —— 一推就把下一条的画面画进这一格（就是串画面）。
            所以立刻把它放下来、按回自己这一页的最后一帧停住；翻页交给 pager，
            下一条由它自己那个已经解码好的成员出声。 */
-        DisposableEffect(slots, autoNext) {
+        DisposableEffect(slots, mode) {
             val ls = slots.map { s ->
                 object : Player.Listener {
                     override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                         if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) return
                         val p = s.page
                         val to = s.member.currentMediaItemIndex
+                        /* 有下一页可去，这一次按停才算"我们自己交接"。关了连播、或这就是最后一条的时候
+                           不能置旗 —— 置了旗 `wantPlay` 就不会翻 false，正中那支三角和底下那行
+                           「已暂停」永远不出来，等于把"停住了"这件事做没了。 */
+                        val go = mode == PlayMode.LIST && to in videos.indices && to != p
                         // 这一条放完了，"他还要接着播"这个意图交给下一页（下一页要换成员，
                         // 而换成员那一下我们按 playWhenReady 决定放不放 —— 上面刚 pause 过它）
-                        carryPlay = autoNext && s.member.playWhenReady
+                        carryPlay = go && s.member.playWhenReady
                         s.member.pause()
                         // 画面停在这一页自己的最后一帧：Long.MAX_VALUE 会夹到这一条末尾，
                         // 不能写 TIME_UNSET（那会把这个成员直接打进 IDLE）
                         if (p in videos.indices && to != p) s.member.seekTo(p, Long.MAX_VALUE)
-                        if (autoNext && to in videos.indices && to != p) {
+                        if (go) {
                             scope.launch { pagerState.animateScrollToPage(to) }
                         }
                     }
@@ -532,6 +555,17 @@ fun VideoFeed(
             // 倍速在这一屏有两个主人：抽屉里选的那一档，和按住左四分之一那一下。
             // 按住只在按住期间生效，松手回到抽屉那一档（他 10-16 点的）
             controller.setPlaybackSpeed(if (hold == FeedZone.Left) HOLD_SPEED else speed)
+        }
+        /* 抽屉里那三档落到播放器上。本地这一栏三台都要落 —— 会话在谁身上会换，换过去那台也得带着这一档，
+           不然"列表循环"只在眼前这一台上灵。
+           在线那一栏只有「单个循环」能直接交给播放器（每台手里就一条，ALL 和 OFF 在那儿是一回事）；
+           列表循环要靠外面翻页，见 OnlineFeed。 */
+        LaunchedEffect(mode) {
+            val r = PlayMode.toRepeat(mode)
+            PlayerPool.members().forEach { it.repeatMode = r }
+            PlayerPool.onlinePlayers().forEach {
+                it.repeatMode = if (mode == PlayMode.LOOP) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+            }
         }
         // 右四分之一按住 = 倒带，动的是出声那一格自己的成员（和底下那根进度条同一台）
         HoldRewindEffect(
@@ -594,7 +628,7 @@ fun VideoFeed(
 
         /* 全屏 = 横屏的片子把屏幕躺过来；竖屏的片子不转屏。
            尺寸看"出声那一格"的，不再有一整屏共用的画面了。 */
-        LaunchedEffect(fullscreen, aSlot?.vidW, aSlot?.vidH) {
+        LaunchedEffect(fullscreen, clipW, clipH) {
             (context as? Activity)?.requestedOrientation =
                 if (fullscreen && landscapeClip) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -627,6 +661,8 @@ fun VideoFeed(
                 seekToast = null
             }
         }
+        // 出声那一路的成员：两条栏各有各的池子，竖滑那颗音量要落在真正出声的那台上
+        val liveMember = if (online) PlayerPool.onlineAt(onlinePage) else aSlot?.member
         fun valueOf(side: Int): Float = if (side < 0) {
             val b = win?.attributes?.screenBrightness ?: -1f
             if (b >= 0f) b else runCatching {
@@ -634,10 +670,10 @@ fun VideoFeed(
                     context.contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS, 128
                 ) / 255f
             }.getOrDefault(0.5f)
-        } else aSlot?.member?.volume ?: 1f
+        } else liveMember?.volume ?: 1f
         fun putValue(side: Int, v: Float) {
             if (side < 0) win?.let { val lp = it.attributes; lp.screenBrightness = v; it.attributes = lp }
-            else aSlot?.member?.setVolume(v)
+            else liveMember?.setVolume(v)
         }
         // 真正开播这一下要记进「已播」（默认不自动播）。三条路都走这里：非全屏的单击、
         // 全屏的双击、还有暂停时屏幕正中那支三角
@@ -1066,8 +1102,50 @@ fun VideoFeed(
                 onDownload = { onOnlineDownload(it) },
                 downloadingUrl = onlineDownloading,
                 downloadProgress = onlineDownloadProgress,
-                sort = onlineSort,
-                onSort = onOnlineSort,
+                speed = speed,
+                rotation = rotation,
+                mode = mode,
+                onSettings = { moreOpen = true },
+                fullscreen = fullscreen,
+                barMode = barMode,
+                barUp = barUp,
+                echo = hud != null || seekToast != null,
+                seekToast = seekToast,
+                onToggleBar = {
+                    controls = !controls
+                    controlsTick = System.currentTimeMillis()
+                },
+                onShowBar = {
+                    controls = true
+                    controlsTick = System.currentTimeMillis()
+                },
+                onPlayPause = {
+                    if (controller.playWhenReady) controller.pause() else controller.play()
+                },
+                onSeekBy = { d ->
+                    val m = PlayerPool.onlineAt(onlinePage)
+                    val dur = onlineLane.durMs.coerceAtLeast(m?.duration?.coerceAtLeast(0L) ?: 0L)
+                    if (m != null && dur > 0L) {
+                        val to = (m.currentPosition + d).coerceIn(0L, dur)
+                        m.seekTo(to)
+                        onlineLane = onlineLane.copy(posMs = to)
+                        seekToast = d > 0L
+                    }
+                },
+                onEdgeStart = { side ->
+                    dragSide = side
+                    dragValue = valueOf(side)
+                },
+                onEdgeStep = { side, d ->
+                    if (side != 0) {
+                        dragValue = (dragValue + d).coerceIn(0f, 1f)
+                        putValue(side, dragValue)
+                        hud = (if (side < 0) IconKind.Sun else IconKind.Volume) to dragValue
+                    }
+                },
+                onEdgeEnd = { dragSide = 0 },
+                onLane = { onlineLane = it },
+                step = onlineStep,
                 onMore = onOnlineMore,
                 resetTick = onlineResetTick,
             )
@@ -1112,6 +1190,8 @@ fun VideoFeed(
                 start = videoFilter,
                 initialUrl = savedUrl,
                 blacklistCount = blacklistCount,
+                sort = onlineSort,
+                onSort = onOnlineSort,
                 onOpenBlacklist = onOpenBlacklist,
                 onToggleSource = onToggleSource,
                 onDeleteSource = onDeleteSource,
@@ -1123,17 +1203,20 @@ fun VideoFeed(
         }
 
         if (moreOpen || barUp) {
-            // 抽屉和控制条都是对着"眼前这一页"操作的，不是播放器正在放的那一条
-            val cur = videos.getOrNull(pagerState.currentPage)
+            /* 抽屉和控制条都是对着"眼前这一页"操作的，不是播放器正在放的那一条。
+               在线那一栏挂着的时候本地那一串在底下，得数在线那一栏的脚下那条。 */
+            val cur = if (online) onlineItems.getOrNull(onlinePage) else videos.getOrNull(pagerState.currentPage)
             val clip = LocalClipboard.current
             val actions = VideoMoreActions(
                 speed = speed,
                 fullscreen = fullscreen,
                 rotation = rotation,
-                autoNext = autoNext,
+                mode = mode,
                 // 在线条目没有本地文件可删，走 createDeleteRequest 会直接抛；这一行对它不出现，
                 // 和 API 29 上"系统没这个入口"是同一种处理
                 canDelete = android.os.Build.VERSION.SDK_INT >= 30 && !(cur?.let { Online.isOnline(it) } ?: false),
+                // 在线那一栏的抽屉只摆设置那四行（他点名的"改成设置"）；按条目操作的那几行不给它
+                settingsOnly = online,
                 onSpeed = { speed = it },
                 onFullscreen = {
                     // 从抽屉里开全屏要把抽屉一起收掉：全屏那一档改用压在画面下沿的控制条，
@@ -1146,7 +1229,7 @@ fun VideoFeed(
                     onFullscreenChange(!fullscreen)
                 },
                 onRotate = { rotation = (rotation + 90) % 360 },
-                onAutoNext = { autoNext = !autoNext },
+                onMode = { mode = it },
                 onCopyName = {
                     cur?.let {
                         scope.launch {
@@ -1179,7 +1262,10 @@ fun VideoFeed(
                （照参考图等比摆）；竖屏那一路的底部抽屉原样留着。 */
             if (barUp) {
                 val slot = slots.firstOrNull { it.page == active }
-                val ownDur = (slot?.durMs ?: 0L).coerceAtLeast(cur?.durationMs ?: 0L)
+                val onlineMember = if (online) PlayerPool.onlineAt(onlinePage) else null
+                val ownDur = (if (online) onlineLane.durMs else slot?.durMs ?: 0L)
+                    .coerceAtLeast(cur?.durationMs ?: 0L)
+                val barPlaying = if (online) onlineLane.playing else wantPlay
                 VideoFullscreenBar(
                     a = actions,
                     title = cur?.name ?: "",
@@ -1190,21 +1276,31 @@ fun VideoFeed(
                             if (wantPlay) "播放中" else "已暂停",
                         ).joinToString(" · ")
                     } ?: "",
-                    posMs = slot?.posMs ?: 0L,
+                    posMs = if (online) onlineLane.posMs else slot?.posMs ?: 0L,
                     durMs = ownDur,
-                    playing = wantPlay,
-                    uri = cur?.uri,
+                    playing = barPlaying,
+                    /* 预览那一段要真解得出帧：在线那些条目身上挂的还是页地址，解不出画面 ——
+                       拿成员手里那条已经解析好的直链 */
+                    uri = if (online) onlineMember?.currentMediaItem?.localConfiguration?.uri else cur?.uri,
                     onPlayPause = {
-                        if (wantPlay) {
+                        if (barPlaying) {
                             controller.pause()
                         } else {
                             controller.play()
-                            videos.getOrNull(pagerState.currentPage)?.let { PlayHistory.record(context, it) }
+                            if (!online) videos.getOrNull(pagerState.currentPage)
+                                ?.let { PlayHistory.record(context, it) }
                         }
                     },
-                    onSeek = { ms -> slot?.let { it.member.seekTo(ms); it.posMs = ms } },
-                    onPrev = { controller.seekToPreviousMediaItem() },
-                    onNext = { controller.seekToNextMediaItem() },
+                    onSeek = { ms ->
+                        if (online) {
+                            onlineMember?.seekTo(ms)
+                            onlineLane = onlineLane.copy(posMs = ms)
+                        } else slot?.let { it.member.seekTo(ms); it.posMs = ms }
+                    },
+                    /* 本地那两边走会话的队列；在线这一栏每台成员手里就一条，会话推不动，
+                       只能把"上一条/下一条"折成页号递进那一栏自己的 pager */
+                    onPrev = { if (online) onlineStep.req -= 1 else controller.seekToPreviousMediaItem() },
+                    onNext = { if (online) onlineStep.req += 1 else controller.seekToNextMediaItem() },
                     onPoke = { controlsTick = System.currentTimeMillis() },
                 )
             }
@@ -1299,17 +1395,70 @@ private fun queuePages(c: MediaController, library: List<Track>): List<Track>? {
     return out
 }
 
+/**
+ * 脚下那一格报给壳层的几样数。两条栏各报各的：全屏那一档走哪一路（横屏片子才躺过来换控制条）、
+ * 条子上那根线摆到哪儿、拖完线进度归谁，全读这一份 —— 原来这些只从本地那一栏的 slots 取，
+ * 在线那一栏挂着的时候取到的是本地那串里的一格。
+ */
+internal data class LaneProgress(
+    val posMs: Long = 0L,
+    val durMs: Long = 0L,
+    val vidW: Int = 0,
+    val vidH: Int = 0,
+    val playing: Boolean = false,
+)
+
+/**
+ * 控制条那两颗「上一条/下一条」递给在线那一栏的那支 pager：pager 在它自己里面，
+ * 外面只能递一个累加的数进去让它自己滑。取两次之间的差 = 这次要走的步数（正=下一条）。
+ */
+internal class FeedStep {
+    var req by mutableIntStateOf(0)
+}
+
+/**
+ * 播完一条怎么办，三档。值直接对上 `Player.REPEAT_MODE_*`，所以两栏都只改一处播放器状态：
+ * 在线那一栏每台成员手里只有一条，ALL 和 ONE 在那边是一回事 —— 列表循环要靠外面翻页，见 OnlineFeed。
+ */
+internal object PlayMode {
+    /** 放完停住（= REPEAT_MODE_OFF） */
+    const val ONE = 0
+
+    /** 放完跳下一条，到尾巴回第一条（= REPEAT_MODE_ALL） */
+    const val LIST = 1
+
+    /** 放完重播这一条（= REPEAT_MODE_ONE） */
+    const val LOOP = 2
+
+    fun of(repeat: Int): Int = when (repeat) {
+        Player.REPEAT_MODE_ALL -> LIST
+        Player.REPEAT_MODE_ONE -> LOOP
+        else -> ONE
+    }
+
+    fun toRepeat(mode: Int): Int = when (mode) {
+        LIST -> Player.REPEAT_MODE_ALL
+        LOOP -> Player.REPEAT_MODE_ONE
+        else -> Player.REPEAT_MODE_OFF
+    }
+
+    /** 抽屉里那一行的三档：顺序就是摆出来的顺序 */
+    val LABELS = listOf("单个播放", "列表循环", "单个循环")
+}
+
 /** 抽屉里那几行的数据与回调，底部壳和全屏控制条共用 */
 internal class VideoMoreActions(
     val speed: Float,
     val fullscreen: Boolean,
     val rotation: Int,
-    val autoNext: Boolean,
+    val mode: Int,
     val canDelete: Boolean,
+    /** true = 只摆设置那四行（倍速 / 全屏 / 旋转 / 播放模式），复制分享删除那几行不出现 */
+    val settingsOnly: Boolean = false,
     val onSpeed: (Float) -> Unit,
     val onFullscreen: () -> Unit,
     val onRotate: () -> Unit,
-    val onAutoNext: () -> Unit,
+    val onMode: (Int) -> Unit,
     val onCopyName: () -> Unit,
     val onCopyAddress: () -> Unit,
     val onShare: () -> Unit,
@@ -1364,7 +1513,49 @@ private fun VideoMoreRows(a: VideoMoreActions) {
             Text(a.rotation.toString() + "°", color = Tokens.InkFaint, fontSize = 14.sp)
         })
         SheetDivider()
-        SheetLine(IconKind.Repeat, "自动连播", a.onAutoNext, trailing = { SheetSwitch(a.autoNext) })
+        /* 播放模式三档摆成一排，选中那档上主题色。形状照上面那行倍速：同一只 20dp 图标、
+           同一档 15sp 标签、等分 weight、同样的 16dp 竖内衬 —— 两行并排看节奏要一致。 */
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LineIcon(IconKind.Repeat, size = 20.dp, color = Tokens.Ink)
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "播放模式",
+                color = Tokens.InkStrong,
+                fontSize = 15.sp,
+                modifier = Modifier.padding(vertical = 16.dp)
+            )
+            Spacer(Modifier.width(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PlayMode.LABELS.forEachIndexed { i, label ->
+                    Text(
+                        text = label,
+                        color = if (i == a.mode) Tokens.Accent else Tokens.InkFaint,
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .weight(1f)
+                            .tap { a.onMode(i) }
+                            .padding(vertical = 16.dp)
+                    )
+                }
+            }
+        }
+        if (!a.settingsOnly) VideoItemRows(a)
+    }
+}
+
+/** 抽屉里按"眼前这一条"操作的那几行：本地那一栏才有，在线那一栏的抽屉只摆设置 */
+@Composable
+private fun VideoItemRows(a: VideoMoreActions) {
+    Column {
         SheetDivider()
         SheetLine(IconKind.Copy, "复制视频名", a.onCopyName)
         SheetDivider()
@@ -1595,77 +1786,6 @@ internal fun QualitySheet(
                         maxLines = 1,
                         modifier = Modifier.padding(start = 12.dp)
                     )
-                }
-            }
-        }
-    }
-}
-
-/**
- * 长按那一栏拉出来的「排序方式」。四个选项各落在条目身上一个真字段上
- * （发布时间 / 播放数 / 时长 / 源），没有"综合排序"那种说不出凭的是什么的一项。
- *
- * 选中那一项右边出一枚勾，**没选中的什么都不摆**（和筛选页那颗「选中才出」同一条口径）——
- * 四行都摆一个空圈会让"现在按什么排"看不出来。
- * 形状还是那一套：48dp 标题 + 右端 Close 22dp、发丝线、60.5dp 一行。
- */
-@kotlin.OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun SortSheet(
-    modes: List<OnlineSort>,
-    current: OnlineSort,
-    onPick: (OnlineSort) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = Tokens.ListBg,
-        shape = RoundedCornerShape(
-            topStart = Tokens.Dimen.SheetCorner,
-            topEnd = Tokens.Dimen.SheetCorner
-        ),
-        dragHandle = null
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .padding(horizontal = Tokens.Dimen.ScreenPad)
-            ) {
-                Text(
-                    "排序方式",
-                    color = Tokens.InkStrong,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.align(Alignment.CenterStart)
-                )
-                RightIcon(
-                    IconKind.Close, inkDp = 13.50f, canvas = 22.dp, enabled = true,
-                    modifier = Modifier.align(Alignment.CenterEnd),
-                    onClick = onDismiss,
-                )
-            }
-            Hairline()
-            modes.forEachIndexed { i, m ->
-                if (i > 0) Hairline()
-                Row(
-                    modifier = Modifier.fillMaxWidth().height(60.5.dp)
-                        .tap(onClick = { onPick(m) })
-                        .padding(horizontal = Tokens.Dimen.ScreenPad),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        m.label,
-                        color = Tokens.InkStrong,
-                        fontSize = 15.sp,
-                        maxLines = 1,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (m == current) {
-                        LineIcon(IconKind.Check, size = 18.dp, color = Tokens.Accent)
-                    }
                 }
             }
         }
@@ -1920,7 +2040,7 @@ internal fun rotBox(
  * 圆点直径不超过条高（正好内切在条里）；条贴底画，两档下沿都落在画布底，变粗时只往上长。
  */
 @Composable
-private fun FeedScrub(
+internal fun FeedScrub(
     fraction: Float,
     enabled: Boolean,
     expanded: Boolean,

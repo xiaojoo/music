@@ -860,7 +860,10 @@ private fun App(
     fun onlineReady(t: Track, index: Int): Boolean {
         if (t.uri.toString() in onlineFailed) return true
         val p = PlayerPool.onlineAt(index) ?: return false
-        return p.playbackState == Player.STATE_READY && p.currentMediaItem?.mediaId == onlineMediaId(t)
+        /* 播完（ENDED）也算到手：这一条已经在手上、停在最后一帧。判成没到手会把闸门按下去 ——
+           于是滑回刚放完那一条时被挡、底下转三个点（他 10-17 报的就是"播完就转点"）。 */
+        return (p.playbackState == Player.STATE_READY || p.playbackState == Player.STATE_ENDED) &&
+            p.currentMediaItem?.mediaId == onlineMediaId(t)
     }
 
     /**
@@ -1039,6 +1042,10 @@ private fun App(
                    useOnline 顺手把本地那台、音频那台和别的在线台都按停 —— 正是"只留眼前这一栏出声"。
                    按停那一支不接手：停着的时候会话该留在原来那一路。 */
                 PlayerPool.useOnline(index)
+                /* 放完那一下 playWhenReady 还是 true，光 play() 什么都不做（Media3 就停在 ENDED）——
+                   于是"停在最后一帧、正中那支三角按了没反应"（真机量的：按完中心那 200x200 的
+                   高亮像素数一动不动）。先 seekTo(0) 把它拉回开头，这一按才算"重播"。 */
+                if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
                 p.play()
             }
         } else {
