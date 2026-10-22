@@ -1,3 +1,6 @@
+> 这一份是 Google media3 1.11.1 `libraries/decoder_ffmpeg/README.md` 的原文，留着当模块说明。
+> 下面那句"this repository"说的是 media3 上游，不是本工程：本工程的许可见 [../README.md](../README.md) 的「许可」一节。
+
 # FFmpeg decoder module
 
 The FFmpeg module provides `FfmpegAudioRenderer`, which uses FFmpeg for decoding
@@ -9,7 +12,7 @@ Please note that whilst the code in this repository is licensed under
 [Apache 2.0][], using this module also requires building and including one or
 more external libraries as described below. These are licensed separately.
 
-[Apache 2.0]: ../../LICENSE
+[Apache 2.0]: https://www.apache.org/licenses/LICENSE-2.0
 
 ## Build instructions (Linux, macOS)
 
@@ -117,7 +120,7 @@ a custom track selector the choice of `Renderer` is up to your implementation,
 so you need to make sure you are passing an `FfmpegAudioRenderer` to the player,
 then implement your own logic to use the renderer for a given track.
 
-[top level README]: ../../README.md
+[top level README]: ../README.md
 [Android NDK]: https://developer.android.com/tools/sdk/ndk/index.html
 [Ninja]: https://ninja-build.org/
 [Install CMake]: https://developer.android.com/studio/projects/install-ndk
