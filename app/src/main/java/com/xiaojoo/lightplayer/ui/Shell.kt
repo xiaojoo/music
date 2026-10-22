@@ -1176,7 +1176,7 @@ fun TrackListPage(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = Tokens.Dimen.IconHit),
+                        .padding(start = Tokens.Dimen.searchTextStart(Tokens.Dimen.ScreenPad)),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(modifier = Modifier.weight(1f)) {
@@ -1199,15 +1199,14 @@ fun TrackListPage(
                         )
                     }
                     // ✕ 一直占位：有词先清词，词空了再退这一页（打字时文字不左右跳）
-                    // 画框贴右 + CloseInkShift：墨右沿要和放大镜、和下面那行排序落在同一条线上。
-                    // 命中盒另补一笔：贴右画的时候 48dp 盒的中心比墨的中心偏左 (48−19)/2 = 14.5dp，
-                    // 所以点在 ✕ 上不算、要往左一点才关得掉（和 ApiSearchPage 那一颗同一个病、同一个补法）。
-                    // 整盒往右挪、字形往左挪同样多：墨一格没动，只有命中带跟着墨走了。
+                    // 位置照 Tokens 里 searchCloseShift 那一套：墨右沿离屏幕右 = 左缝 ×1.2（他 10-22 要"右边间隙大一点"）。
+                    // 命中盒那笔补法不变：贴右画的时候 48dp 盒的中心比墨的中心偏左 (48−19)/2 = 14.5dp，
+                    // 所以点在 ✕ 上不算、要往左一点才关得掉。整盒往右挪、字形往左挪同样多：墨一格没动，只有命中带跟着墨走。
                     val hitSkew = (Tokens.Dimen.IconHit - 19.dp) / 2f
                     Box(
                         modifier = Modifier
                             .size(Tokens.Dimen.IconHit)
-                            .offset(x = Tokens.Dimen.CloseInkShift + hitSkew)
+                            .offset(x = Tokens.Dimen.searchCloseShift(Tokens.Dimen.ScreenPad) + hitSkew)
                             .tap { if (q.isEmpty()) onBack() else search.second("") },
                         contentAlignment = Alignment.CenterEnd
                     ) {
@@ -1266,7 +1265,7 @@ fun TrackListPage(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .size(Tokens.Dimen.IconHit)
-                        .offset(x = Tokens.Dimen.SearchInkShift)
+                        .offset(x = Tokens.Dimen.searchInkShift(Tokens.Dimen.ScreenPad, 22.dp))
                         .tap(onClick = onOpenSearch),
                     contentAlignment = Alignment.CenterEnd
                 ) {

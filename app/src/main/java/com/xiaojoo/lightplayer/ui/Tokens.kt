@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.xiaojoo.lightplayer.data.Appearance
 
@@ -172,13 +173,10 @@ object Tokens {
         // 所以 Row 的右内衬要收成 20 − 13.4 = 6.6dp，最右一颗的墨右沿才压在内容右边界上
         // （原来那把数是靠"最右一颗贴盒右沿 + 自带 11px 画框留白"凑出来的，归一后那两样都没了）
         val ColEndPad = 6.6.dp
-        // 顶栏右端那两颗要按"墨的右沿"对齐到下方那一行排序那顆的墨右沿（真机 1022px = 离屏幕右 57px）。
-        // 画框右沿贴在容器右边界 1025，可两颗图形在画框里都不占满：放大镜的墨只到画框 0.7465
-        // （柄在右下，左边留 0.1425）→ 墨右沿落在 1010，差 12px = 4.4dp；
-        // ✕ 的画框是居中在 48dp 盒里的，墨右沿只到 974，差 48px —— 先把它改成贴右（补回 41px），
-        // 再补 3.0dp 收尾（真机 2.6dp 出 1021、离目标还差 1px）。
-        val SearchInkShift = 4.5.dp
-        val CloseInkShift = 3.0.dp
+        // 顶栏右端那颗放大镜的 offset 从 2026-10-22 起跟搜索框那一行的 ✕ 共线（下面 searchInkShift）。
+        // 它原来是钉在下方那一行排序那顆的墨右沿上（真机 1022px = 离屏幕右 57px，放大镜的墨只到画框 0.7465
+        // → 补 4.5dp 收尾）。现在放大镜挪到 79px 那一档，**排序那一行没跟着挪，还停在 57px** —— 这一屏
+        // 右缘因此差 22px，要一起挪说一句（挪的是那行的右内衬，动的是另一屏的东西，没自己动）。
         // 三个 surface 的右内衬一律 ScreenPad（迷你条原来收 16dp 是给旧队列画法那 11px 画框留白补的）：
         // 最右一颗的墨右沿因此落在离内容右边界 6.28dp 处，和改前量到的 5.45dp 差 0.8dp
         val IconSize = 18.dp                  // 工具行图标宽 ~54px = 18dp
@@ -222,6 +220,37 @@ object Tokens {
         val SheetCorner = 12.dp               // 原 material3 默认 28（抽屉顶两角）
         val ThumbCorner = 3.dp                // 原 6（列表封面）
         val ScreenPad = 20.dp
+
+        /* 搜索框那一行（五屏共用：列表页搜索态、本地整屏搜索、接口整屏搜索、相关视频、搜歌手）的三笔间隙，
+           一律从 pathData 反解，别再抄字面量 —— 改前五处是各抄各的，抄出两种结果：三处 ✕ 离屏幕右 20.85dp、
+           两处（相关视频、搜歌手）压根没补 offset，落在 38.35 / 33.35dp。
+             · 返回箭头：22dp 画框，中心线 x 0.22..0.74，两端圆头各伸出半个笔画（0.0375 画框）
+               → 墨占画框 0.1825..0.7775。
+             · ✕：19dp 画框，中心线 x 0.24..0.76 → 墨右沿离画框右沿 0.2025 画框 = 3.8475dp。
+             · 那颗的命中盒 48dp：CenterEnd 画的时候盒心比墨心偏左 (48−19)/2 = 14.5dp，所以整盒先往右补这
+               14.5、字形再往左回同样多 —— 墨不动，只有点击带跟着墨走（10-14 他点名的那条判据）。
+             · pad 各屏不同：四屏 20（ScreenPad），歌手那一屏跟它的列表页在 15 的网格上。
+           算式锁在 JVM 测试 SearchBarGapTest 里。 */
+
+        /** 屏幕左沿 → 返回箭头墨左沿。这一笔是这一行的参照缝（pad=20 时 24.015dp = 真机 66px） */
+        fun searchBackGap(pad: Dp): Dp = pad + 22.dp * 0.1825f
+
+        /** 输入文字起点（相对容器左边界）：让「箭头墨右沿 → 文字」和 searchBackGap 同宽。改前这里是 IconHit=48，那笔是 30.895 */
+        fun searchTextStart(pad: Dp): Dp = 22.dp * 0.7775f + searchBackGap(pad)
+
+        /** ✕ 的墨右沿离屏幕右：他要"右边间隙大一点"、没给数 → 参照缝 ×1.2（×1.0 = 和左缝同宽，那是下一档） */
+        fun searchCloseGap(pad: Dp): Dp = searchBackGap(pad) * 1.2f
+
+        /** ✕ 那颗 48dp 命中盒的 offset：用的地方写成 offset(x = 这一笔 + hitSkew)、字形 offset(x = −hitSkew) */
+        fun searchCloseShift(pad: Dp): Dp = pad - searchCloseGap(pad) + 19.dp * 0.2025f
+
+        /**
+         * 未搜索态那颗放大镜的 offset：让它的墨右沿和搜索态的 ✕ 落在同一条线（searchCloseGap）上，
+         * 不然列表页每进出一次搜索，右端那颗就横跳一笔（真机量过：57px vs 79px = 跳 22px）。
+         * 放大镜的墨只到画框 0.7465（柄在右下、左边留 0.1425）→ 右下角留白 = 0.2535·画框。
+         * icon 要传那颗自己的画框：列表页 22dp、歌手页 21dp，两档的留白不同。
+         */
+        fun searchInkShift(pad: Dp, icon: Dp): Dp = pad - searchCloseGap(pad) + icon * 0.2535f
         val NavHeight = 62.dp
     }
 }

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -60,8 +61,10 @@ private const val ALL = "全部"
  * 分区（站点的 tname）/ 播放量 / 时长 三档，每一颗都真能筛。
  *
  * 间隙只认一个数 `BlockGap`：芯片行之间用它，歌手行上下各取一半，于是两处空档是同一个可见距离。
- * 头像 55dp、左沿 15dp、头像→名字 36dp 是 2026-10-13 从 1080px 宽的参考图上量的
- * （152px / 41px / 99px）；行距不再跟那张图（它给的是 366px = 133dp），照他两次点名改成了空档=芯片行距。
+ * 头像 55dp、头像→名字 36dp 是 2026-10-13 从 1080px 宽的参考图上量的（152px / 99px）；行距不再跟那张图
+ * （它给的是 366px = 133dp），照他两次点名改成了空档=芯片行距。
+ * 左沿原来是那张图的 15dp（41px），2026-10-22 并到全应用的 ScreenPad 20dp —— 为的是搜索框那一行的三笔
+ * 间隙和另外四屏同一档（那三笔是从左沿推出来的）。点进一位歌手那一屏（海报 + 他名下那几首）还在 15dp 上。
  */
 @Composable
 fun ArtistListPage(
@@ -86,11 +89,12 @@ fun ArtistListPage(
             .background(Tokens.Backdrop)
             .statusBarsPadding()
     ) {
-        // 唯一钉住的一行。左右内衬和下面对齐：标题、芯片、行都是 15dp
+        // 唯一钉住的一行。左右内衬和下面对齐：标题、芯片、行都是 ScreenPad（2026-10-22 从 15dp 并过来的，
+        // 为的是搜索框那一行的三笔间隙和另外四屏同一档）
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 15.dp)
+                .padding(horizontal = Tokens.Dimen.ScreenPad)
                 .size(Tokens.Dimen.IconHit),
             contentAlignment = Alignment.CenterStart
         ) {
@@ -100,6 +104,7 @@ fun ArtistListPage(
             ) { LineIcon(IconKind.ArrowLeft, size = 22.dp, color = Tokens.InkStrong) }
             Box(
                 modifier = Modifier.align(Alignment.CenterEnd).size(Tokens.Dimen.IconHit)
+                    .offset(x = Tokens.Dimen.searchInkShift(Tokens.Dimen.ScreenPad, 21.dp))
                     .tap(onClick = onSearch),
                 contentAlignment = Alignment.CenterEnd
             ) { LineIcon(IconKind.Search, size = 21.dp, color = Tokens.InkStrong) }
@@ -109,13 +114,15 @@ fun ArtistListPage(
             item(key = "title") {
                 Text(
                     "歌手", color = Tokens.InkStrong, fontSize = 34.sp, fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(start = 15.dp)
+                    modifier = Modifier.padding(start = Tokens.Dimen.ScreenPad)
                 )
             }
             itemsIndexed(rows, key = { i, _ -> "chiprow$i" }) { r, labels ->
                 LazyRow(
                     modifier = Modifier.fillMaxWidth().padding(top = if (r == 0) 12.dp else BlockGap),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 15.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = Tokens.Dimen.ScreenPad
+                    ),
                     horizontalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
                     items(labels, key = { "$r:$it" }) { label ->
@@ -129,7 +136,7 @@ fun ArtistListPage(
                 Text(
                     text = statusLine(artists, shown.size, busy, filtered),
                     color = Tokens.InkFaint, fontSize = 13.sp,
-                    modifier = Modifier.padding(start = 15.dp, top = 12.dp, bottom = 4.dp)
+                    modifier = Modifier.padding(start = Tokens.Dimen.ScreenPad, top = 12.dp, bottom = 4.dp)
                 )
             }
             items(shown, key = { it.name }) { a -> ArtistRow(a, onOpen) }
@@ -174,7 +181,7 @@ fun ArtistSearchPage(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 15.dp)
+                .padding(horizontal = Tokens.Dimen.ScreenPad)
         ) {
             Box(
                 modifier = Modifier
@@ -184,7 +191,7 @@ fun ArtistSearchPage(
                 contentAlignment = Alignment.CenterStart
             ) { LineIcon(IconKind.ArrowLeft, size = 22.dp, color = Tokens.InkStrong) }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = Tokens.Dimen.IconHit),
+                modifier = Modifier.fillMaxWidth().padding(start = Tokens.Dimen.searchTextStart(Tokens.Dimen.ScreenPad)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(modifier = Modifier.weight(1f)) {
@@ -207,18 +214,26 @@ fun ArtistSearchPage(
                         modifier = Modifier.fillMaxWidth().focusRequester(fr)
                     )
                 }
+                // ✕ 和另外四屏同一套几何（这一屏改前没补 offset）；盒和墨中心那 14.5dp 的补法见 ApiSearchPage 那段注释
+                val hitSkew = (Tokens.Dimen.IconHit - 19.dp) / 2f
                 Box(
                     modifier = Modifier
                         .size(Tokens.Dimen.IconHit)
+                        .offset(x = Tokens.Dimen.searchCloseShift(Tokens.Dimen.ScreenPad) + hitSkew)
                         .tap { if (query.isEmpty()) onBack() else onQuery("") },
-                    contentAlignment = Alignment.Center
-                ) { LineIcon(IconKind.Close, size = 19.dp, color = Tokens.Ink) }
+                    contentAlignment = Alignment.CenterEnd
+                ) {
+                    LineIcon(
+                        IconKind.Close, size = 19.dp, color = Tokens.Ink,
+                        modifier = Modifier.offset(x = -hitSkew),
+                    )
+                }
             }
         }
         Text(
             text = if (q.isEmpty()) "${artists.size} 位可选" else "命中 ${shown.size} / ${artists.size} 位",
             color = Tokens.InkFaint, fontSize = 13.sp,
-            modifier = Modifier.padding(start = 15.dp, top = 6.dp, bottom = 2.dp)
+            modifier = Modifier.padding(start = Tokens.Dimen.ScreenPad, top = 6.dp, bottom = 2.dp)
         )
         LazyColumn(modifier = Modifier.fillMaxWidth()) {
             items(shown, key = { it.name }) { a -> ArtistRow(a, onOpen) }
@@ -240,7 +255,7 @@ private fun ArtistRow(a: Artist, onOpen: (Artist) -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .tap { onOpen(a) }
-            .padding(horizontal = 15.dp, vertical = ArtistRowPadV),
+            .padding(horizontal = Tokens.Dimen.ScreenPad, vertical = ArtistRowPadV),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Face(url = a.faceUrl, name = a.name)

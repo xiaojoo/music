@@ -108,7 +108,7 @@ fun LocalSearchPage(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = Tokens.Dimen.IconHit),
+                    .padding(start = Tokens.Dimen.searchTextStart(Tokens.Dimen.ScreenPad)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(modifier = Modifier.weight(1f)) {
@@ -128,12 +128,12 @@ fun LocalSearchPage(
                         modifier = Modifier.fillMaxWidth().focusRequester(fr),
                     )
                 }
-                // ✕ 那颗的命中盒补法和接口搜索那一屏同一条道理，见 ApiSearchPage 那段注释
+                // ✕ 那颗的位置和命中盒补法都跟接口搜索那一屏同一套，见 Tokens 里 searchCloseShift 那段
                 val hitSkew = (Tokens.Dimen.IconHit - 19.dp) / 2f
                 Box(
                     modifier = Modifier
                         .size(Tokens.Dimen.IconHit)
-                        .offset(x = Tokens.Dimen.CloseInkShift + hitSkew)
+                        .offset(x = Tokens.Dimen.searchCloseShift(Tokens.Dimen.ScreenPad) + hitSkew)
                         .tap { if (keyword.isEmpty()) onBack() else onKeyword("") },
                     contentAlignment = Alignment.CenterEnd
                 ) {

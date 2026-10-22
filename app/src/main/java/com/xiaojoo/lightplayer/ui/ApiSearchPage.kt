@@ -122,7 +122,7 @@ fun ApiSearchPage(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = Tokens.Dimen.IconHit),
+                    .padding(start = Tokens.Dimen.searchTextStart(Tokens.Dimen.ScreenPad)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(modifier = Modifier.weight(1f)) {
@@ -144,16 +144,18 @@ fun ApiSearchPage(
                     )
                 }
                 /* ✕ 一直占位：有词先清词，词空了再退这一页（和列表页搜索态同一只手势）。
+                   这一行的三笔间隙一律从 pathData 反解，算式在 Tokens 的 searchCloseShift 那一组里：
+                   ① 屏幕左 → 箭头墨 24.015dp，② 箭头墨 → 文字 和①同宽（改前 ② 是 30.895，文字起点抄的是
+                   IconHit=48），③ ✕ 墨右沿离屏幕右 = ①×1.2 = 28.818dp（他 10-22 要"右边间隙大一点"，没给数）。
                    命中盒要**压在墨的中心上**：字形贴右（CenterEnd）时，48dp 盒的中心落在墨中心左边
                    `(48−19)/2 = 14.5dp` —— 真机量到墨中心 x=1006.5、盒中心 x=967，偏 39.5px，
                    所以点在 ✕ 上不算、往左一点才关得掉（他 10-15 点的）。
-                   补法：整盒往右挪 14.5dp，再把字形往左挪同样多 —— 墨右沿还钉在 `CloseInkShift`
-                   那一条线上（和下面那行放大镜/排序对齐，一个字都没动），只有命中带跟着墨走了。 */
+                   补法：整盒往右挪 14.5dp，再把字形往左挪同样多 —— 墨停在③那一条线上，只有命中带跟着墨走了。 */
                 val hitSkew = (Tokens.Dimen.IconHit - 19.dp) / 2f
                 Box(
                     modifier = Modifier
                         .size(Tokens.Dimen.IconHit)
-                        .offset(x = Tokens.Dimen.CloseInkShift + hitSkew)
+                        .offset(x = Tokens.Dimen.searchCloseShift(Tokens.Dimen.ScreenPad) + hitSkew)
                         .tap { if (keyword.isEmpty()) onBack() else onKeyword("") },
                     contentAlignment = Alignment.CenterEnd
                 ) {

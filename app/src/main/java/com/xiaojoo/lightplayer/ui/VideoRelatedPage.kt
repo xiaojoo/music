@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -121,7 +122,7 @@ fun VideoRelatedPage(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = Tokens.Dimen.IconHit),
+                    .padding(start = Tokens.Dimen.searchTextStart(Tokens.Dimen.ScreenPad)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(modifier = Modifier.weight(1f)) {
@@ -142,13 +143,20 @@ fun VideoRelatedPage(
                         modifier = Modifier.fillMaxWidth().focusRequester(fr)
                     )
                 }
+                // ✕ 这一行五屏同一套几何（这一屏改前压根没补 offset，墨比另外四屏往左偏出一大截）：
+                // 位置见 Tokens 的 searchCloseShift，命中盒那 14.5dp 的补法见 ApiSearchPage 那段注释
+                val hitSkew = (Tokens.Dimen.IconHit - 19.dp) / 2f
                 Box(
                     modifier = Modifier
                         .size(Tokens.Dimen.IconHit)
+                        .offset(x = Tokens.Dimen.searchCloseShift(Tokens.Dimen.ScreenPad) + hitSkew)
                         .tap { if (query.isEmpty()) onBack() else query = "" },
-                    contentAlignment = Alignment.Center
+                    contentAlignment = Alignment.CenterEnd
                 ) {
-                    LineIcon(IconKind.Close, size = 19.dp, color = Tokens.Ink)
+                    LineIcon(
+                        IconKind.Close, size = 19.dp, color = Tokens.Ink,
+                        modifier = Modifier.offset(x = -hitSkew),
+                    )
                 }
             }
         }
