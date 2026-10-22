@@ -1,12 +1,13 @@
-<!-- 牌底不走蓝渐变了，改铺应用自己那两档底色（Surface 白 → ListBg #F1F4F9）；蓝渐变挪到图形那一层。 -->
+<!-- 牌底按第二张那颗小牌量回来的白（上部 #FAFDFC），底下压一档到 ListBg #F1F4F9，和界面同源；
+     上一版那圈发光亮边撤了 —— 白牌上它读作脏边。 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
     <path android:pathData="M0,0h108v108h-108z">
         <aapt:attr name="android:fillColor">
-            <gradient android:type="linear" android:startX="24" android:startY="24"
-                android:endX="84" android:endY="84">
+            <gradient android:type="linear" android:startX="30" android:startY="20"
+                android:endX="78" android:endY="92">
                 <item android:offset="0.000" android:color="#FFFFFFFF" />
                 <item android:offset="1.000" android:color="#FFF1F4F9" />
             </gradient>
