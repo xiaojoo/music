@@ -245,17 +245,24 @@ fun LineIcon(
                补的是横、没动竖：竖边（底）一格不缩，加号那颗也一格没动，所以整颗的墨外接框
                还是 0.26274..0.73726 那只正方框（宽=高=0.4745），和这一族"同一只框、等比不形变"不打架。 */
             IconKind.PlayQueue -> {
+                /* 三角 + 右下那枚加号。加号自己吃 0.72 成笔画（和 LoopOne 里那个「1」同一条道理）。
+                   改前：加号和三角一样粗（1.875dp = 真机 5.2px）、臂只到画框 0.08（整条 11px）⇒ 四个象限
+                   各剩 2.9px 空，读不出是加号；而且它离三角的尖顶净缝只有 3.8px，比一支笔画还窄，两坨糊在一起
+                   （他 10-22 说这一颗"有缺陷"）。
+                   改后：三角收到画框 0.33 高、加号臂 0.105、笔画 0.72 成 ⇒ 净缝 5.5px（≥ 一支笔画）、
+                   象限空 5.4px。墨外接框还是 0.22524..0.77476 那一只 13.74dp 正方框，家族口径没动。 */
+                val ds = st * 0.72f
                 drawPath(
                     Path().apply {
                         moveTo(s * 0.26274f, s * 0.26274f)
-                        lineTo(s * 0.26274f, s * 0.65718f)
-                        lineTo(s * 0.604346f, s * 0.45996f)
+                        lineTo(s * 0.26274f, s * 0.59274f)
+                        lineTo(s * 0.54853f, s * 0.42774f)
                         close()
                     }, color,
                     style = Stroke(width = st, cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
-                drawLine(color, Offset(s * 0.65726f, s * 0.57726f), Offset(s * 0.65726f, s * 0.73726f), st, StrokeCap.Round)
-                drawLine(color, Offset(s * 0.57726f, s * 0.65726f), Offset(s * 0.73726f, s * 0.65726f), st, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.64276f, s * 0.53776f), Offset(s * 0.64276f, s * 0.74776f), ds, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.53776f, s * 0.64276f), Offset(s * 0.74776f, s * 0.64276f), ds, StrokeCap.Round)
             }
 
             /* 三点（更多）：竖排三枚实心点，等距压在画框中线。没进 InkFit 归一 ——
