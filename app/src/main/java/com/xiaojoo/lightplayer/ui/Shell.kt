@@ -1555,8 +1555,18 @@ internal fun TrackLine(
         endPad = Tokens.Dimen.ColEndPad
     ) {
         if (multi) {
-            // 圈勾占的就是序号那一格（4 + 22 + 4 = 30dp），所以封面和名字在两种态里同一个 x 起头
-            PickCheck(checked, padStart = 4.dp, padEnd = 4.dp)
+            /* 这一格要和序号那一格**同宽同高**：
+               宽 30dp —— 和 `Text("${index + 1}")` 那个 width(30.dp) 一个数，名字起点才还在 x=139；
+               圈勾左右不再另垫内衬 —— 行左内衬已经是 ScreenPad，和上面「共N首」同一格，
+               原来那 4dp 让圈的墨比那句字往右偏了 11px。
+               高 IconHit(48dp) —— 正常态这一行的高是行右端那两颗 48dp 命中盒顶出来的，
+               多选态那两颗让位之后没人顶，整行会矮 46px（真机行距 148 → 102），上下间隙就和列表不一样了。 */
+            Box(
+                modifier = Modifier.width(30.dp).height(Tokens.Dimen.IconHit),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                PickCheck(checked, padStart = 0.dp, padEnd = 0.dp)
+            }
         } else {
             Text(
                 text = "${index + 1}",
