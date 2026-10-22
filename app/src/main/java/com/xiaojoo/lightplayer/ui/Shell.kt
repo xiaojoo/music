@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -384,10 +385,11 @@ private fun FavoriteCover(side: Dp) {
 }
 
 /** 多选模式每行右端那颗：没选是灰圈，选中填主色加一道白勾。
-    右边留 16dp：参考图圈到抽屉右缘 60px、左缘内缩 33px（1.8 倍），我们内缩 20dp 所以再让进 16dp */
+    右边留 16dp：参考图圈到抽屉右缘 60px、左缘内缩 33px（1.8 倍），我们内缩 20dp 所以再让进 16dp。
+    列表页多选态把同一只圈挪到行左端（序号那一格），所以左右内衬改成参数、不给就还是抽屉那一档。 */
 @Composable
-private fun PickCheck(checked: Boolean) {
-    Canvas(modifier = Modifier.padding(start = AddGap, end = 16.dp).size(22.dp)) {
+private fun PickCheck(checked: Boolean, padStart: Dp = AddGap, padEnd: Dp = 16.dp) {
+    Canvas(modifier = Modifier.padding(start = padStart, end = padEnd).size(22.dp)) {
         val s = size.minDimension
         val c = s / 2f
         if (checked) {
@@ -1070,6 +1072,8 @@ internal fun matchInk(text: String, q: String): AnnotatedString =
 @Composable
 fun TrackListPage(
     title: String,
+    /** 计数用的量词：音乐是"首"、视频是"个"，多选态那一行「共N首」用它 */
+    unit: String,
     searchHint: String,
     sort: SortMode,
     onSortChange: (SortMode) -> Unit,
@@ -1099,7 +1103,19 @@ fun TrackListPage(
     // 搜索也是整屏页（和筛选同一套路）：给了 search 就把顶栏那条换成输入框，这一屏就是搜索结果。
     // 词本身存在壳层，因为这一页挂的是同一个 TrackListPage，不放出去会跟着列表页串味
     search: Pair<String, (String) -> Unit>? = null,
-    onOpenSearch: () -> Unit = {}
+    onOpenSearch: () -> Unit = {},
+    /* 多选态：只在「音乐」「视频」那两屏开（multiAllowed）。开关和已选集合都存在壳层 ——
+       筛选、搜索是整屏页，打开它们的时候这一页不挂着，放在这里会丢。
+       已选存 uri 字符串：行的 key 带序号会换位，Track.id 在解析不出来时是 0，只有 uri 是身份 */
+    multiAllowed: Boolean = false,
+    multi: Boolean = false,
+    selected: Set<String> = emptySet(),
+    onToggleMulti: () -> Unit = {},
+    onToggleSelect: (String) -> Unit = {},
+    /** 全选要的是这一屏**看得见**的那一批（带置顶顺序、带已生效的筛选），所以由这一页把 visible 交回去 */
+    onSelectAll: (List<Track>) -> Unit = {},
+    onQueueAddAll: (List<Track>) -> Unit = {},
+    onDeleteAll: (List<Track>) -> Unit = {}
 ) {
     var sortOpen by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<Track?>(null) }
@@ -1119,6 +1135,8 @@ fun TrackListPage(
     val visible = pinned.mapNotNull { u -> matched.firstOrNull { it.uri.toString() == u } } +
         matched.filter { it.uri.toString() !in pinned }
     val filtered = filterArtist.isNotEmpty() || filterLength.isNotEmpty()
+    // 多选态勾了哪几条：按 uri 认（行的 key 带序号会换位），底部那两颗和「已选N」都吃这一份
+    val picked = visible.filter { it.uri.toString() in selected }
 
     menuFor?.let { picked ->
         TrackMenuSheet(
@@ -1155,14 +1173,25 @@ fun TrackListPage(
                 .fillMaxWidth()
                 .padding(horizontal = Tokens.Dimen.ScreenPad)
         ) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .size(Tokens.Dimen.IconHit)
-                    .tap(onClick = onBack),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                LineIcon(IconKind.ArrowLeft, size = 22.dp, color = Tokens.InkStrong)
+            if (multi) {
+                // 多选态：顶栏左端不再是返回箭头，换成「全选」文字键（照他给的图：全选 | 批量操作 | 完成）
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .height(Tokens.Dimen.IconHit)
+                        .tap { onSelectAll(visible) },
+                    contentAlignment = Alignment.CenterStart
+                ) { Text("全选", color = Tokens.InkStrong, fontSize = 15.sp) }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .size(Tokens.Dimen.IconHit)
+                        .tap(onClick = onBack),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    LineIcon(IconKind.ArrowLeft, size = 22.dp, color = Tokens.InkStrong)
+                }
             }
             /* 带页签的那几页（收藏里的音乐/视频、音乐、视频）：顶上这一条本身就是页签，标题不再单摆一行 ——
                照他给的那张图：返回箭头 + 页签居中，选中黑、没选中灰，中间一根竖线，不带下划线。
@@ -1216,9 +1245,10 @@ fun TrackListPage(
                         )
                     }
                 }
-            } else if (tabs == null) {
+            } else if (tabs == null || multi) {
+                // 多选态标题写死「批量操作」；带页签的那几页也走这一支（多选态不摆页签）
                 Text(
-                    title,
+                    if (multi) "批量操作" else title,
                     color = Tokens.InkStrong,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Medium,
@@ -1260,7 +1290,16 @@ fun TrackListPage(
             }
             /* 搜索收进顶栏这一支短尾放大镜：原来那一行胶囊整行占 50dp，列表就少看得见一行。
                点它进搜索整屏页（和筛选同一套路：开着搜索页时列表页不挂着）。 */
-            if (search == null) {
+            if (multi) {
+                // 顶栏右端这一格在多选态是「完成」（就是放大镜那个位置），点它退多选
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .height(Tokens.Dimen.IconHit)
+                        .tap(onClick = onToggleMulti),
+                    contentAlignment = Alignment.CenterEnd
+                ) { Text("完成", color = Tokens.InkStrong, fontSize = 15.sp) }
+            } else if (search == null) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
@@ -1279,27 +1318,52 @@ fun TrackListPage(
            这一行上方那条白带量到 82px，下方（列表滚起来之后）只有 41px，看着就是"顶部高"。
            命中框收到 26dp（68px，仍是 28px 底线的 2.4 倍），行就只剩墨的高度；
            上方余下的空全是顶栏命中框的（43px），下方用 14dp 内衬补到同一档。 */
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ColEndPad)
-                .padding(bottom = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            PlayAllButton(onClick = { onPlayList(visible, 0) })
-            Text(
-                text = "全部播放(${visible.size})",
-                color = Tokens.InkStrong,
-                fontSize = 15.sp,
+        if (multi) {
+            // 多选态：这一行不再是「全部播放 + 三颗图标」，换成图里那一档计数行。
+            // 高度锁死成 IconHit（48dp）—— 和原来那一行（RowIcon 的命中盒定的高）同一个数，
+            // 进多选的时候列表不上蹿。右端那枚「一键倒序」图里有，我们没有那个动作，不摆。
+            Row(
                 modifier = Modifier
-                    .padding(start = 10.dp)
-                    .tap(enabled = visible.isNotEmpty()) { onPlayList(visible, 0) }
-            )
-            Spacer(Modifier.weight(1f))
-            // 两颗并排：漏斗=筛选，上下箭头=排序。走和列表行同一只 RowIcon，所以这两颗正好落在
-            // 下面那一列的第 2、3 条车道上（原来命中框只有 26dp，不到 28dp 的下限）
-            RowIcon(IconKind.Filter, if (filtered) Tokens.Accent else Tokens.Ink, onClick = onOpenFilter)
-            RowIcon(IconKind.Sort, if (sort == SortMode.Default) Tokens.Ink else Tokens.Accent) { sortOpen = !sortOpen }
+                    .fillMaxWidth()
+                    .height(Tokens.Dimen.IconHit)
+                    .padding(start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ColEndPad),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (picked.isEmpty()) "共${visible.size}$unit"
+                    else "共${visible.size}$unit · 已选${picked.size}$unit",
+                    color = Tokens.InkStrong, fontSize = 15.sp
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ColEndPad)
+                    .padding(bottom = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PlayAllButton { onPlayList(visible, 0) }
+                Text(
+                    text = "全部播放(${visible.size})",
+                    color = Tokens.InkStrong,
+                    fontSize = 15.sp,
+                    modifier = Modifier
+                        .padding(start = 10.dp)
+                        .tap(enabled = visible.isNotEmpty()) { onPlayList(visible, 0) }
+                )
+                Spacer(Modifier.weight(1f))
+                // 多选那颗摆在筛选**左边**：筛选、排序一格没动，仍压住下面列表行那两条车道，
+                // 整簇只是往左多让出一条车道（它自己走同一只 39.5dp 的 RowIcon 盒）。
+                // 搜索态不摆：那一屏顶栏整条换成输入框，两个态叠在一起会分不清在选哪一批。
+                if (multiAllowed && search == null) {
+                    RowIcon(IconKind.MultiSelect, Tokens.Ink, onClick = onToggleMulti)
+                }
+                // 两颗并排：漏斗=筛选，上下箭头=排序。走和列表行同一只 RowIcon，所以这两颗正好落在
+                // 下面那一列的第 2、3 条车道上（原来命中框只有 26dp，不到 28dp 的下限）
+                RowIcon(IconKind.Filter, if (filtered) Tokens.Accent else Tokens.Ink, onClick = onOpenFilter)
+                RowIcon(IconKind.Sort, if (sort == SortMode.Default) Tokens.Ink else Tokens.Accent) { sortOpen = !sortOpen }
+            }
         }
 
         /* 排序：原来是右上角一个 190dp 的 Popup，改成底部抽屉 —— 手机上要挑东西的浮层一律走抽屉，
@@ -1407,14 +1471,56 @@ fun TrackListPage(
                         q = q,
                         thumbs = thumbs,
                         favorite = t.uri.toString() in favorites,
+                        multi = multi,
+                        checked = t.uri.toString() in selected,
                         onPlay = { onPlayList(visible, i) },
-                        onLongClick = { _, _ -> menuFor = t },
+                        onToggle = { onToggleSelect(t.uri.toString()) },
+                        onLongClick = if (multi) null else { _, _ -> menuFor = t },
                         onToggleFavorite = { onToggleFavorite(t) },
                         onQueueAdd = { onQueueAdd(t) },
                     )
                 }
                 item { Spacer(Modifier.height(20.dp)) }
             }
+        }
+        /* 多选态底部那一排：图标在上、文字在下、横排等分（照他给的那张图那一档，顶上还有一道发丝线）。
+           图里三颗（删除 / 添加到 / 下载），我们只摆他点名的两件：删除、加入播放列表 ——
+           "下载"是本地曲库没有的能力，不照抄文案。一条没选的时候整排置灰、位置留着。 */
+        if (multi) {
+            val n = picked.size
+            val ink = if (n > 0) Tokens.InkStrong else Tokens.InkFaint
+            Hairline()
+            Row(
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MultiAction(IconKind.Trash, "删除", ink, enabled = n > 0, onClick = { onDeleteAll(picked) })
+                MultiAction(IconKind.PlayQueue, "加入播放列表", ink, enabled = n > 0, onClick = { onQueueAddAll(picked) })
+            }
+        }
+    }
+}
+
+/** 多选态底部那一格里的一颗：25dp 画框 + 1.875dp 笔画（和行末那一族同一只数），字压在图标下面。
+    等分那一排要 weight，所以挂在 RowScope 上。 */
+@Composable
+private fun RowScope.MultiAction(
+    kind: IconKind,
+    label: String,
+    ink: Color,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .tap(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            LineIcon(kind, size = Tokens.Dimen.ColIcon, color = ink, stroke = Tokens.Dimen.ColStroke)
+            Text(label, color = ink, fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp))
         }
     }
 }
@@ -1433,23 +1539,32 @@ internal fun TrackLine(
     q: String,
     thumbs: Boolean,
     favorite: Boolean,
+    /** 多选态：整行点击改成勾选、长按菜单关掉、行右端那两颗让位（这一屏正在挑东西，不是播放） */
+    multi: Boolean = false,
+    checked: Boolean = false,
     onPlay: () -> Unit,
+    onToggle: () -> Unit = {},
     onLongClick: ((top: Int, height: Int) -> Unit)? = null,
     onToggleFavorite: () -> Unit,
     onQueueAdd: () -> Unit,
 ) {
     PressableRow(
-        onClick = onPlay,
+        onClick = if (multi) onToggle else onPlay,
         onLongClick = onLongClick,
         verticalPad = 3.dp,
         endPad = Tokens.Dimen.ColEndPad
     ) {
-        Text(
-            text = "${index + 1}",
-            color = Tokens.InkFaint,
-            fontSize = 14.sp,
-            modifier = Modifier.width(30.dp)
-        )
+        if (multi) {
+            // 圈勾占的就是序号那一格（4 + 22 + 4 = 30dp），所以封面和名字在两种态里同一个 x 起头
+            PickCheck(checked, padStart = 4.dp, padEnd = 4.dp)
+        } else {
+            Text(
+                text = "${index + 1}",
+                color = Tokens.InkFaint,
+                fontSize = 14.sp,
+                modifier = Modifier.width(30.dp)
+            )
+        }
         if (thumbs) {
             CoverBox(track = track, side = 42.dp, badge = false)
             Spacer(Modifier.width(12.dp))
@@ -1472,13 +1587,16 @@ internal fun TrackLine(
         // 归一之后每颗墨都是 12.5dp 宽且居中，所以白缝恒等于 27dp，
         // 不用再按每颗的墨宽去凑盒宽。栏位见 RowIcon
         // 和视频页、歌单页那一颗同一套规矩：已收藏实心、未收藏只描边
-        RowIcon(
-            if (favorite) IconKind.Favorite else IconKind.FavoriteLine,
-            if (favorite) Tokens.Accent else Tokens.InkFaint,
-            onClick = onToggleFavorite
-        )
-        // 闭合三角形 + 一枚加号压在它的下斜边上（挖口见 LineIcon 该分支）
-        RowIcon(IconKind.PlayQueue, Tokens.InkFaint, onClick = onQueueAdd)
+        // 多选态这两颗让位（整行就是勾选），不是摆两颗按不动的图标在这里
+        if (!multi) {
+            RowIcon(
+                if (favorite) IconKind.Favorite else IconKind.FavoriteLine,
+                if (favorite) Tokens.Accent else Tokens.InkFaint,
+                onClick = onToggleFavorite
+            )
+            // 闭合三角形 + 一枚加号压在它的下斜边上（挖口见 LineIcon 该分支）
+            RowIcon(IconKind.PlayQueue, Tokens.InkFaint, onClick = onQueueAdd)
+        }
         // 「更多」那颗按他要求撤掉；同一份菜单还在，长按这一行调出（onLongClick 见调用方）
     }
 }
@@ -1937,12 +2055,18 @@ private fun SheetActions(cancel: () -> Unit, confirmText: String, confirmEnabled
 @Composable
 fun DeleteConfirmDialog(
     video: Boolean,
+    /** 多选一次交 N 条时框上说的是条数；1 就是原来那一句，一个字没改 */
+    count: Int = 1,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
     val what = if (video) "视频" else "歌曲"
+    val unit = if (video) "个" else "首"
     InputSheet("删除$what", onDismiss) {
-        Text("确认删除${what}吗", color = Tokens.Ink, fontSize = 15.sp)
+        Text(
+            if (count > 1) "确认删除这 $count ${unit}吗" else "确认删除${what}吗",
+            color = Tokens.Ink, fontSize = 15.sp
+        )
         /* 两颗并排压在右下角（和 SheetActions 同一档：40dp 高、15sp 字、左右各 4dp 内衬）。
            那颗"取消"不再单独占左端 —— 他点名的就是这一框。两颗之间原来只靠各自那 4dp 相加
            = 8dp（真机量到两团墨隔 28px，比一个字的墨宽还窄），他 10-17 点的"间隙改大一点"，

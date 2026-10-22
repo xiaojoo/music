@@ -351,6 +351,23 @@ fun LineIcon(
                 )
             }
 
+            /* 多选：一只方框里一道勾。按这一族的口径画 —— 默认笔画 0.075·画框下墨宽正好 0.5 画框
+               （25dp 上 12.50 x 12.50dp = 真机 34.4px 见方）、墨中心压在画框正中，所以它和旁边筛选、
+               排序共用同一只 RowIcon 盒时白缝仍是 27dp、下面那一列车道不断。
+               框的中心线 0.2875..0.7125（加半个笔画正好落到 0.25..0.75）；勾吃 0.72 成笔画
+               （LoopOne 里那个「1」同一条道理：框里的东西再按满笔画，就会糊到框上）。 */
+            IconKind.MultiSelect -> {
+                val b0 = s * 0.2875f
+                val b1 = s * 0.7125f
+                drawLine(color, Offset(b0, b0), Offset(b1, b0), st, StrokeCap.Round)
+                drawLine(color, Offset(b1, b0), Offset(b1, b1), st, StrokeCap.Round)
+                drawLine(color, Offset(b1, b1), Offset(b0, b1), st, StrokeCap.Round)
+                drawLine(color, Offset(b0, b1), Offset(b0, b0), st, StrokeCap.Round)
+                val ds = st * 0.72f
+                drawLine(color, Offset(s * 0.39f, s * 0.50f), Offset(s * 0.47f, s * 0.58f), ds, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.47f, s * 0.58f), Offset(s * 0.62f, s * 0.39f), ds, StrokeCap.Round)
+            }
+
 
             IconKind.Download -> {                drawLine(color, Offset(s * 0.50f, s * 0.18f), Offset(s * 0.50f, s * 0.60f), st, StrokeCap.Round)
                 drawLine(color, Offset(s * 0.33f, s * 0.44f), Offset(s * 0.50f, s * 0.62f), st, StrokeCap.Round)
@@ -710,7 +727,7 @@ fun LineIcon(
 enum class IconKind {
     Play, Pause, Next, Prev, Repeat, Queue, ChevronDown, ChevronRight,
     Home, MusicNote, Video, Person, Shirt, Add, Favorite, FavoriteLine, PlayAdd, PlayQueue, SquareAdd, Share, PinTop, Trash,
-    Download, ArrowLeft, Search, PlaylistAdd, Sort,
+    Download, ArrowLeft, Search, PlaylistAdd, Sort, MultiSelect,
     Close, Drag, Speed, Check, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh, Photo,
     SeekBack10, SeekForward10, Shrink, Volume, Sun
 }

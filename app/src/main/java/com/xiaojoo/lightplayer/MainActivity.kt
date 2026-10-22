@@ -596,6 +596,17 @@ private fun App(
     // 筛选的两组选择存在这里，不存列表页：列表页在打开筛选页的那一帧是不挂着的
     var filterArtist by remember { mutableStateOf(setOf<String>()) }
     var filterLength by remember { mutableStateOf(setOf<String>()) }
+    /* 多选态同样存壳层，和上面那两组一个道理：列表页在打开筛选/搜索那一整屏的时候不挂着。
+       已选存 uri 字符串 —— 行的 key 带序号会换位，Track.id 在解析不出来的时候是 0，只有 uri 是身份。
+       这一态只在「音乐」「视频」两屏开得到（multiAllowed 在调用点按 sourcePage 算）。 */
+    var multiSel by remember { mutableStateOf(false) }
+    var selectedUris by remember { mutableStateOf(setOf<String>()) }
+
+    /** 退多选：开关和那一堆勾一起清 —— 上一批的勾不带到下一批 */
+    fun exitMulti() {
+        multiSel = false
+        selectedUris = emptySet()
+    }
     // 收藏页自己那两个页签（音乐 / 视频）落在哪一个，和下面整库的那两页互不相干
     var favTab by remember { mutableIntStateOf(0) }
     // 最近播放页自己那两支页签（音乐 / 视频），和收藏页的两支互不相干
@@ -658,27 +669,32 @@ private fun App(
     /* 删除分两步：先过我们画的那一框（系统那一框的字我们改不了），确认之后自己摘媒体库那一行。
        前提是有「所有文件访问权限」—— 那一下同意放在**进删除之前**拿，不在删除当场弹（他 10-17 点的：
        一开始就获取系统授权，授权后才可删除）。没授权时这一颗只带你去系统那一页，不动数据。 */
-    /** 待确认的那一条：非空就出那一框 */
-    var deletingAsk by remember { mutableStateOf<Track?>(null) }
-    /** 退回系统删除请求那一条时，回调拿不到"刚才要删的是哪一条"，所以那条先寄存在这里 */
-    var deleting by remember { mutableStateOf<Track?>(null) }
+    /** 待确认的那一批：非空就出那一框（多选一次交 N 条，一框说条数，不是每一条弹一框） */
+    var deletingAsk by remember { mutableStateOf<List<Track>?>(null) }
+    /** 退回系统删除请求那一批时，回调拿不到"刚才要删的是哪些"，所以先寄存在这里 */
+    var deleting by remember { mutableStateOf<List<Track>?>(null) }
 
-    /** 删完的收尾：自己删成的那一条和系统同意回来那一条都走这一颗 */
-    fun finishDelete(t: Track) {
-        val u = t.uri.toString()
-        if (u in favorites) {
-            favRepo.remove(u)
-            favorites = favRepo.all()
+    /** 删完的收尾：自己删成的和系统同意回来的都走这一颗。批量只重扫一次媒体库 */
+    fun finishDelete(ts: List<Track>) {
+        if (ts.isEmpty()) return
+        ts.forEach { t ->
+            val u = t.uri.toString()
+            if (u in favorites) favRepo.remove(u)
+            pinRepo.drop(u)
+            lastRepo.drop(u)
+            if (bar.shown?.toString() == u) bar.forget()
+            // 歌单里那条 uri 也要摘掉：列表行会自己把死 uri 滤没，但歌单上写的"N首"是按名单数的
+            playlists.filter { u in it.uris }.forEach { repo.removeSong(it.id, u) }
         }
-        pinRepo.drop(u)
+        favorites = favRepo.all()
         pinned = pinRepo.all()
-        lastRepo.drop(u)
-        if (bar.shown?.toString() == u) bar.forget()
-        // 歌单里那条 uri 也要摘掉：列表行会自己把死 uri 滤没，但歌单上写的"N首"是按名单数的
-        playlists.filter { u in it.uris }.forEach { repo.removeSong(it.id, u) }
         playlists = repo.all()
+        // 多选态里删成的那几条从已选里摘掉：行已经没了，留着那一堆死 uri 只会让"已选"和看得见的对不上
+        selectedUris = selectedUris - ts.map { it.uri.toString() }.toSet()
         refreshLibrary()
     }
+
+    fun finishDelete(t: Track) = finishDelete(listOf(t))
 
     val deleter = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -703,24 +719,30 @@ private fun App(
     }
 
     // createDeleteRequest 是 API 30 才有的；抽屉里那颗也按这个版本才摆出来
-    fun deleteTrack(t: Track) {
+    /** 多选那一批：「所有文件访问权限」那道闸门只过一遍（不然 N 条弹 N 次系统授权页），框也只出一框 */
+    fun deleteTracks(ts: List<Track>) {
+        if (ts.isEmpty()) return
         if (Build.VERSION.SDK_INT < 30) return
         if (!hasAllFiles()) {
             askAllFiles()
             return
         }
-        deletingAsk = t
+        deletingAsk = ts
     }
 
-    /** 框上那颗「确认」：先试自己删；抛了（权限中途被收回那一类）才退回系统那条删除请求 */
-    fun confirmDelete(t: Track) {
+    fun deleteTrack(t: Track) = deleteTracks(listOf(t))
+
+    /** 框上那颗「确认」：先试自己删；抛了（权限中途被收回那一类）才退回系统那条删除请求。
+     *  自己删不成的那一批一次交系统 —— 系统那一框本来就是全同意或全拒绝，没有逐条同意这一说。 */
+    fun confirmDelete(ts: List<Track>) {
         deletingAsk = null
-        if (runCatching { context.contentResolver.delete(t.uri, null, null) }.isSuccess) {
-            finishDelete(t)
-            return
-        }
-        deleting = t
-        runCatching { MediaStore.createDeleteRequest(context.contentResolver, listOf(t.uri)) }
+        val done = ts.filter { runCatching { context.contentResolver.delete(it.uri, null, null) }.isSuccess }
+        finishDelete(done)
+        val doneUri = done.map { it.uri }.toSet()
+        val rest = ts.filter { it.uri !in doneUri }
+        if (rest.isEmpty()) return
+        deleting = rest
+        runCatching { MediaStore.createDeleteRequest(context.contentResolver, rest.map { it.uri }) }
             .onSuccess { deleter.launch(IntentSenderRequest.Builder(it.intentSender).build()) }
             .onFailure { deleting = null; Log.w("LightPlayer", "删除请求没建起来", it) }
     }
@@ -1831,6 +1853,26 @@ private fun App(
         android.widget.Toast.makeText(context, "已加入播放列表", android.widget.Toast.LENGTH_SHORT).show()
     }
 
+    /** 多选那一批一起加进播放列表：路由的判据和单条那颗一模一样（不能动会话，换人会把正在播的那台按停），
+     *  只是 N 条一次交、吐司也只报一次 —— 逐条叫上面那颗会弹 N 次吐司。 */
+    fun queueAppendAll(ts: List<Track>) {
+        if (ts.isEmpty()) return
+        val c = controller
+        if (c == null || c.mediaItemCount == 0) {
+            startPlaylist(ts, 0)
+            return
+        }
+        // 一屏里勾出来的都是同一路（音乐屏只有音频、视频屏只有视频），按第一条判就够了
+        val video = ts.first().isVideo
+        if (PlayerPool.onAudio() != video) {
+            ts.forEach { c.addMediaItem(MediaItem.fromUri(it.uri)) }
+        } else {
+            val target = if (video) PlayerPool.members().firstOrNull() else PlayerPool.audioPlayer()
+            ts.forEach { target?.addMediaItem(MediaItem.fromUri(it.uri)) }
+        }
+        android.widget.Toast.makeText(context, "已加入播放列表 ${ts.size} 项", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     fun playPlaylistAt(p: Playlist, index: Int) {
         val tracks = MediaLibrary.resolve(context, p.uris)
         if (tracks.isNotEmpty()) startPlaylist(tracks, index.coerceIn(0, tracks.lastIndex))
@@ -1914,7 +1956,7 @@ private fun App(
         else withContext(Dispatchers.IO) { MediaLibrary.resolve(context, p.uris) }
     }
 
-    val (pageTitle, _, pageList) = when {
+    val (pageTitle, pageUnit, pageList) = when {
         openPlaylist != null -> Triple(openPlaylist.name, "首", openPlaylistTracks)
         sourcePage == "history" ->
             if (histTab == 0) Triple("音乐", "首", histMusic) else Triple("视频", "个", histVideos)
@@ -1923,6 +1965,8 @@ private fun App(
             if (favTab == 0) Triple("收藏音乐", "首", favMusic) else Triple("收藏视频", "个", favVideos)
         else -> Triple("音乐", "首", audioTracks)
     }
+    // 换一屏就退出多选：在音乐页勾的那一批带到视频页去，删除的时候会对不上号
+    LaunchedEffect(sourcePage) { exitMulti() }
 
     // 歌手那一页的人是从**已取回的在线那批**里数的：合集和热门都要 —— 合集那位名下几百首，
     // 热门里每位基本一首。本地曲库的 ARTIST 列不掺进来（那是「筛选」页管的归类）
@@ -1989,15 +2033,22 @@ private fun App(
        第一下后退却把身后那一屏的地址源关掉了 —— 按下去屏幕上什么都没发生。 */
     BackHandler(enabled = videoSourceOpen && page == null) { videoSourceOpen = false }
 
+    /* 多选态第一下后退先退多选，别整页退掉。注册排在上面那颗 `page != null` 的后退之后 ——
+       两个 BackHandler 同时 enabled 时后注册的那个先接（同一件事写在上面那一条注释里）。
+       顶栏那颗返回箭头也走同一只 exitMulti（见调用点的 onBack）。 */
+    BackHandler(enabled = multiSel) { exitMulti() }
+
     /* 迷你条要不要占底部那一格；子页的导航条余量由谁留，全看这一个判断。
        只有音乐/视频两个 tab 本身不收 —— 那两屏整页就是播放器/视频，条子在那儿反而挡画面。
        筛选页也收：这一屏底部要留给"重置/确定"那两颗（2026-10-12 他点名，红框圈的就是条子那一条）。
        装扮页也收（2026-10-15 他点名）：换的正是这一屏往下透出去的那层底，条子横在底下挡掉一条，
        换一颗色板看不出换没换。
        「播放画幅」那一屏同一条理由也收（和装扮同一族：换的就是身后那一屏的样子），
-       而且它尾巴那句说明正落在条子那一格上。 */
+       而且它尾巴那句说明正落在条子那一格上。
+       多选态也收（2026-10-22）：底部那一格要让给「删除 / 加入播放列表」那一排，和筛选页同一处理 ——
+       两条都贴底就会叠在一起（真机量到动作条被迷你条顶到上面去）。 */
     val showBar = bar.shown != null && page != "filter" && page != "appearance" &&
-        page != "player-art" &&
+        page != "player-art" && !multiSel &&
         !(page == null && (tab == AppTab.Music || tab == AppTab.Video))
     // 迷你条这一条是视频还是歌：先认曲库里查到的那条，查不到（SAF 选进来的文件）再按 uri 形状判
     val barIsVideo = barTrack?.isVideo ?: bar.shown?.let { QueueEntry.isVideoUri(it.toString()) } ?: false
@@ -2205,13 +2256,15 @@ private fun App(
             } else if (page != null) {
                 TrackListPage(
                     title = pageTitle,
+                    unit = pageUnit,
                     searchHint = "搜索" + pageTitle,
                     sort = sortMode,
                     onSortChange = { m -> sortMode = m; ListSort.save(context, m) },
                     tracks = pageList,
                     permissionGranted = mediaGranted,
                     onRequestPermission = onAskMediaPermission,
-                    onBack = { leavePage() },
+                    // 多选态里第一下返回退多选、不是退这一页（和后面那颗 BackHandler 同一只 exitMulti）
+                    onBack = { if (multiSel) exitMulti() else leavePage() },
                     onPlayList = { tracks, index -> startPlaylist(tracks, index) },
                     onAddToPlaylist = { pendingAdd = it },
                     onQueueAdd = { t -> queueAppend(t) },
@@ -2227,6 +2280,23 @@ private fun App(
                     },
                     onShare = { t -> shareTrack(t) },
                     onDelete = { t -> deleteTrack(t) },
+                    /* 多选只开在「音乐」「视频」这两屏（同一只列表组件还挂着收藏/最近播放/歌单/搜索，
+                       那些屏里"删除"不是删文件）。开关和那一堆勾都存壳层，见上面 multiSel 那段。 */
+                    multiAllowed = sourcePage == "songs" || sourcePage == "videos",
+                    multi = multiSel,
+                    selected = selectedUris,
+                    onToggleMulti = { if (multiSel) exitMulti() else multiSel = true },
+                    onToggleSelect = { u ->
+                        selectedUris = if (u in selectedUris) selectedUris - u else selectedUris + u
+                    },
+                    // 全选吃列表页算好的那一份"看得见的行"（带置顶顺序、带已生效的筛选），不是整库
+                    onSelectAll = { vis ->
+                        val us = vis.map { it.uri.toString() }
+                        selectedUris =
+                            if (us.isNotEmpty() && us.all { it in selectedUris }) emptySet() else us.toSet()
+                    },
+                    onQueueAddAll = { ts -> queueAppendAll(ts) },
+                    onDeleteAll = { ts -> deleteTracks(ts) },
                     filterArtist = filterArtist,
                     filterLength = filterLength,
                     onOpenFilter = { openPage("filter", from = sourcePage) },
@@ -2605,11 +2675,12 @@ private fun App(
         )
     }
 
-    deletingAsk?.let { t ->
+    deletingAsk?.let { ts ->
         DeleteConfirmDialog(
-            video = t.isVideo,
+            video = ts.first().isVideo,
+            count = ts.size,
             onDismiss = { deletingAsk = null },
-            onConfirm = { confirmDelete(t) }
+            onConfirm = { confirmDelete(ts) }
         )
     }
 }
