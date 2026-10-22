@@ -602,6 +602,8 @@ private fun App(
     var histTab by remember { mutableIntStateOf(0) }
     // 从歌单列表页点进某一首歌单时，返回要回到它，而不是直接回「我的」
     var pageFrom by remember { mutableStateOf<String?>(null) }
+    /** 每一页自己的来路：只有一格 `pageFrom` 会被子页顶掉，见 [PageParents] */
+    val pageParents = remember { PageParents() }
     var sortMode by remember { mutableStateOf(ListSort.load(context)) }
     // 装扮：存档先同步读回来（三个整数，和排序那一档同一个走法），图另起一趟在 IO 上解
     remember { Skin.load(context) }
@@ -622,6 +624,8 @@ private fun App(
             ?.let { id -> playlists.firstOrNull { it.id == id } }
 
     fun openPage(target: String, from: String? = null) {
+        // 当前页自己的来路先存着，子页退回来的时候还给它（只留一格 pageFrom 会被子页顶掉）
+        pageParents.open(page, pageFrom)
         pageFrom = from
         page = target
     }
@@ -629,9 +633,12 @@ private fun App(
     fun leavePage() {
         // filter、search、歌手页点进去的那一页都是"从某一页开出去的整屏子页"：退出要回到那一页，
         // 而不是直接回主标签
-        page = if (page?.startsWith("pl:") == true || page?.startsWith("artist:") == true ||
-            page == "filter" || page == "search" || page == "artist-search"
-        ) pageFrom else null
+        val cur = page
+        val back = popTo(cur, pageFrom)
+        page = back
+        // 退回去的那一页，来路是它自己那一份，不是子页留下的那一格（那一格就是它自己，
+        // 不还原的话下一次返回等于回到自己 —— 他 10-22 点的返回失效就是这么来的）
+        pageFrom = pageParents.leave(cur, back)
     }
 
     LaunchedEffect(mediaGranted, scanTick) {
@@ -2060,8 +2067,10 @@ private fun App(
                     tracks = fl,
                     startArtist = filterArtist,
                     startLength = filterLength,
-                    onApply = { a, l -> filterArtist = a; filterLength = l; page = pageFrom },
-                    onCancel = { page = pageFrom }
+                    // 退这一页只走 leavePage：直接写 page = pageFrom 会把来路那一格留在子页写下的值上，
+                    // 和搜索页那一次是同一个病（他 10-22 点的返回失效）
+                    onApply = { a, l -> filterArtist = a; filterLength = l; leavePage() },
+                    onCancel = { leavePage() }
                 )
             } else if (page == "video-related") {
                 VideoRelatedPage(
