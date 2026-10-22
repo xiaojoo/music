@@ -67,23 +67,45 @@ import com.xiaojoo.lightplayer.data.Blacklisted
 import com.xiaojoo.lightplayer.data.VideoBlacklist
 import com.xiaojoo.lightplayer.data.VideoBlacklistRepository
 import com.xiaojoo.lightplayer.data.DownloadDest
+import com.xiaojoo.lightplayer.data.DownloadQueue
+import com.xiaojoo.lightplayer.data.MicCapture
+import com.xiaojoo.lightplayer.data.RecognizeStore
 import com.xiaojoo.lightplayer.data.OnlineDownload
+import com.xiaojoo.lightplayer.recognizer.AudioClip
+import com.xiaojoo.lightplayer.recognizer.OmniRecognizer
+import com.xiaojoo.lightplayer.recognizer.Recognition
+import com.xiaojoo.lightplayer.recognizer.RecognitionException
+import com.xiaojoo.lightplayer.recognizer.pcmDurationMs
+import com.xiaojoo.lightplayer.recognizer.wavMono16
 import com.xiaojoo.lightplayer.videosource.ApiSong
 import com.xiaojoo.lightplayer.videosource.ApiSource
+import com.xiaojoo.lightplayer.videosource.DownloadTarget
+import com.xiaojoo.lightplayer.videosource.MagnetFile
+import com.xiaojoo.lightplayer.videosource.MagnetLink
 import com.xiaojoo.lightplayer.videosource.MusicVideo
+import com.xiaojoo.lightplayer.videosource.defaultFileIndex
+import com.xiaojoo.lightplayer.videosource.downloadTarget
+import com.xiaojoo.lightplayer.videosource.headersForUrl
+import com.xiaojoo.lightplayer.videosource.magnetFileLabel
 import com.xiaojoo.lightplayer.videosource.Playable
 import com.xiaojoo.lightplayer.videosource.OnlineSort
 import com.xiaojoo.lightplayer.videosource.groupArtists
 import com.xiaojoo.lightplayer.videosource.Rendition
+import com.xiaojoo.lightplayer.videosource.pastedLink
+import com.xiaojoo.lightplayer.videosource.pastedMagnet
 import com.xiaojoo.lightplayer.videosource.ResolveOutcome
 import com.xiaojoo.lightplayer.videosource.SourceFailure
 import com.xiaojoo.lightplayer.videosource.SourceFailureException
+import com.xiaojoo.lightplayer.data.MagnetEngine
 import com.xiaojoo.lightplayer.data.Pinned
 import com.xiaojoo.lightplayer.data.PinnedRepository
 import com.xiaojoo.lightplayer.ui.AddToPlaylistDialog
 import com.xiaojoo.lightplayer.ui.ApiSearchPage
 import com.xiaojoo.lightplayer.ui.AppearancePage
 import com.xiaojoo.lightplayer.ui.DeleteConfirmDialog
+import com.xiaojoo.lightplayer.ui.DownloadPage
+import com.xiaojoo.lightplayer.ui.DownloadRemoveDialog
+import com.xiaojoo.lightplayer.ui.RecognizePage
 import com.xiaojoo.lightplayer.ui.PlayerArtPage
 import com.xiaojoo.lightplayer.ui.Skin
 import com.xiaojoo.lightplayer.ui.LyricStore
@@ -115,6 +137,7 @@ import com.xiaojoo.lightplayer.ui.MineScreen
 import com.xiaojoo.lightplayer.ui.PlaylistListPage
 import com.xiaojoo.lightplayer.ui.VideoFeed
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -551,6 +574,53 @@ private fun App(
      * 还看得到它"（他报的那一类）。收成一个名字，以后再加操作只许叫这一句。
      */
     fun refreshLibrary() { scanTick += 1 }
+    /**
+     * 「视频下载」那一整屏（首页那颗点进来）。
+     *
+     * 认地址、挑档、按下去这三步各留一份状态：问站点没回来时那颗「开始下载」是灰的
+     * （按下去只会拿到上一条的地址，那比按不动更坏）。[videoDownloads] 只记账这一趟，
+     * 进程结束就清 —— 队列不存盘，落盘那条由 [onSaved] 那一颗叫 [refreshLibrary] 去媒体库里读回来。
+     */
+    val magnetEngine = remember { MagnetEngine(context) }
+    val videoDownloads = remember { DownloadQueue(context, { refreshLibrary() }, magnetEngine) }
+    var dlUrl by remember { mutableStateOf("") }
+    var dlBusy by remember { mutableStateOf(false) }
+    var dlError by remember { mutableStateOf<String?>(null) }
+    var dlEntry by remember { mutableStateOf<MusicVideo?>(null) }
+    /** 这一路没有站点认这个域名：当成一条视频直链收下（和 [addUrl] 里 Unsupported 那一条同一个口径） */
+    var dlDirect by remember { mutableStateOf(false) }
+    var dlRends by remember { mutableStateOf<List<Rendition>>(emptyList()) }
+    var dlPick by remember { mutableStateOf<String?>(null) }
+    /** 磁力那一条读出来的文件表。空 = 还没读；读一次最长要等 [MagnetEngine.METADATA_TIMEOUT] 秒，所以绝不边打字边读 */
+    var dlMagnetFiles by remember { mutableStateOf<List<MagnetFile>>(emptyList()) }
+    var dlMagnetPick by remember { mutableStateOf(0) }
+    /**
+     * 认地址那一趟的序号。每按一次 ✕、每重新认一条都 +1：还在路上回来的结果要和自己这一趟的
+     * 序号对得上才许落进状态 —— 不然清完框，几秒后又会长回一张不属于它的卡片。
+     */
+    var dlAskSeq by remember { mutableStateOf(0) }
+    /** 长按了哪一行（那一行的 id）：不为空就摆出「移除这一条」那一框 */
+    var dlRemove by remember { mutableStateOf<DownloadQueue.Task?>(null) }
+    /**
+     * 「听歌识曲」那一整屏。三格设置存本机（[RecognizeStore]），跑一遍是四步：
+     * 收声 → 问模型要**词** → 拿词对曲库 → 对到的摆成能播能下的行。
+     * 状态一步一句，卡在哪一步看得境 —— 合成一句"识别中"会把三种完全不同的失败混成一件事。
+     */
+    val recognizeStore = remember { RecognizeStore(context) }
+    var recBase by remember { mutableStateOf(recognizeStore.baseUrl()) }
+    var recModel by remember { mutableStateOf(recognizeStore.model()) }
+    var recKey by remember { mutableStateOf(recognizeStore.key()) }
+    var recBusy by remember { mutableStateOf(false) }
+    var recStage by remember { mutableStateOf<String?>(null) }
+    var recError by remember { mutableStateOf<String?>(null) }
+    var recStats by remember { mutableStateOf<String?>(null) }
+    var recLyrics by remember { mutableStateOf<String?>(null) }
+    var recGuess by remember { mutableStateOf<String?>(null) }
+    var recHits by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
+    var micGranted by remember {
+        mutableStateOf(context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED)
+    }
     var barTrack by remember { mutableStateOf<Track?>(null) }
     // 队列面板从哪一颗键开的（null = 没开）。不取"播放器当前那条的类型"：进过视频页之后
     // 会话里装的就是整串视频，那时候点音乐页那列的队列键会弹出视频列表 —— 路由跟着入口走
@@ -560,7 +630,7 @@ private fun App(
     var history by remember { mutableStateOf(PlayHistory.list(context)) }
     // null | history | songs | videos | favorites | playlists | filter | search | video-related |
     // video-blacklist | artists | artist-search | artist:<歌手名> | pl:<歌单id> | local-search | appearance |
-    // player-art | music-source
+    // player-art | music-source | download | recognize
     var page by remember { mutableStateOf<String?>(null) }
 
     /* 通知上那两颗自定义按钮的落点（收藏 / 歌词）。服务和界面同进程，走 [NotificationCommands] 这座桥。
@@ -1278,6 +1348,290 @@ private fun App(
     }
 
     /**
+     * 输入框右边那颗 ✕：把这一屏回到"什么都没粘"的样子 —— 地址、认出来的条目/档、磁力的文件表、
+     * 那一句红字，一起清。
+     *
+     * 队列里那几条**不动**：那是已经收进去的任务，不是这一格的状态，"清除已完成"另有那一颗。
+     * 序号 +1 是为了把还在路上的那一趟作废：不清它的话，清完几秒后又会长回一张卡片 ——
+     * 磁力那一趟最长要等 [MagnetEngine.METADATA_TIMEOUT] 秒，等得起，也最容易撞上。
+     */
+    fun clearDlUrl() {
+        dlAskSeq++
+        dlUrl = ""
+        dlBusy = false
+        dlError = null
+        dlEntry = null
+        dlDirect = false
+        dlRends = emptyList()
+        dlPick = null
+        dlMagnetFiles = emptyList()
+        dlMagnetPick = 0
+    }
+
+    /**
+     * 读一条磁力里面有什么。这一步是阻塞的（引擎在里面等 DHT/tracker 报元数据，最长
+     * [MagnetEngine.METADATA_TIMEOUT] 秒），所以放 IO，也所以**绝不边打字边做** ——
+     * 只有那两颗按下去才问一次。
+     */
+    fun askMagnet(mag: MagnetLink) {
+        val hash = mag.hash
+        if (hash == null) {
+            dlError = "这条磁力没写全指纹（40 位十六进制或 32 位 base32）"
+            return
+        }
+        dlBusy = true
+        dlError = null
+        dlEntry = null
+        dlDirect = false
+        dlRends = emptyList()
+        dlPick = null
+        dlMagnetFiles = emptyList()
+        val mine = ++dlAskSeq
+        scope.launch {
+            val out = withContext(Dispatchers.IO) { runCatching { magnetEngine.metadata(mag.uri, hash) } }
+            if (mine != dlAskSeq) return@launch   // 框里已经换了东西：这一趟的结果不许落回来
+            val err = out.exceptionOrNull()
+            if (err == null) {
+                val fs = out.getOrThrow()
+                dlMagnetFiles = fs
+                dlMagnetPick = defaultFileIndex(fs)
+                if (fs.isEmpty()) dlError = "这条种子里没有可下的文件"
+            } else {
+                dlError = "读不出内容：${apiMessage(err)}"
+            }
+            dlBusy = false
+        }
+    }
+
+    /**
+     * 磁力那一条收进队列。任务号 = `指纹@文件下标`：一条种子挑第二个文件时该长出第二行，
+     * 但引擎那边落盘用的目录是**指纹**那一棵（同一份数据不重下两遍），所以号里带不带下标无所谓。
+     */
+    fun startMagnetDownload() {
+        val mag = pastedMagnet(dlUrl) ?: return
+        val hash = mag.hash ?: run { dlError = "这条磁力没写全指纹"; return }
+        val f = dlMagnetFiles.getOrNull(dlMagnetPick) ?: run { dlError = "先挑一个文件"; return }
+        val id = "$hash@${f.index}"
+        if (videoDownloads.holds(id)) {
+            dlError = "这一条已经在排着了"
+            return
+        }
+        videoDownloads.add(
+            id = id,
+            name = magnetFileLabel(f),
+            url = mag.uri,
+            // 磁力没有来路这一说：连的是 peer，不是那台签地址的服务器
+            headers = emptyMap(),
+            meta = "磁力 · ${f.name.substringAfterLast('/')}",
+            total = f.size,
+            dest = DownloadDest.Video,
+            magnet = f,
+        )
+        dlUrl = ""
+        dlEntry = null
+        dlDirect = false
+        dlRends = emptyList()
+        dlPick = null
+        dlMagnetFiles = emptyList()
+        dlMagnetPick = 0
+        dlError = null
+    }
+
+    /**
+     * 「视频下载」那一屏的加号那颗：认这一条地址是什么、能挑哪几档。
+     *
+     * 和在线那一栏的「粘贴地址」（[addUrl]）共用同一颗 [Online.entryFor]，区别只在认出来之后干什么 ——
+     * 那一栏认完就播，这一屏认完只把条目和几档摆出来，等那颗「开始下载」。
+     * 域名没有一路源认得时按**直链**收下（和 [addUrl] 里 `Unsupported` 那一条同一个口径）：
+     * 没有条目也没有档，粘进来的那一条地址本身就是要下的那一条。
+     */
+    fun askDownloadUrl() {
+        // 委托属性读进来先落成局部量：`dlEntry` 那几颗是 mutableStateOf 委托，不复制就 smart cast 不进去
+        if (dlUrl.isBlank() || dlBusy) return
+        // 粘的常是整段分享文案（抖音那条口令前后还带日期和随机码），先挑出链接再问站点
+        val raw = pastedLink(dlUrl)?.url
+        if (raw == null) {
+            // 没有 http 链接不等于"没找到链接"：磁力那一条是另一种地址，它不问站点，问 DHT
+            val mag = pastedMagnet(dlUrl)
+            if (mag == null) dlError = "没在这段话里找到链接" else askMagnet(mag)
+            return
+        }
+        dlBusy = true
+        dlError = null
+        dlEntry = null
+        dlDirect = false
+        dlRends = emptyList()
+        dlPick = null
+        val mine = ++dlAskSeq
+        scope.launch {
+            // qualities 那颗自己不抛（站点没报第二档就回一张空表），这一趟会抛的只有 entryFor
+            val out = withContext(Dispatchers.IO) {
+                try {
+                    val v = Online.entryFor(raw)
+                    Result.success(v to Online.qualities(v))
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+            }
+            // 框里换了东西或被 ✕ 清过：这一趟的结果不许落回来（引擎那边还在跑，随它跑完）
+            if (mine != dlAskSeq) return@launch
+            val err = out.exceptionOrNull()
+            when {
+                err is SourceFailureException && err.failure is SourceFailure.Unsupported -> dlDirect = true
+                err != null -> dlError = "解析失败：${apiMessage(err)}"
+                else -> {
+                    val (video, qs) = out.getOrThrow()
+                    dlEntry = video
+                    dlRends = qs
+                    // 只有一档不摆芯片，但那一档得记着：下载用的就是它那条地址，不再取第二次址
+                    dlPick = qs.firstOrNull()?.label
+                }
+            }
+            dlBusy = false
+        }
+    }
+
+    /**
+     * 那颗「开始下载」。地址按眼下挑的这一档现拿：问过档的那一条就在档里（站点签的是"这一条、这一刻"，
+     * 存着等它过期不如再问一次），没档可挑的才现取址一次。落盘排队走 [DownloadQueue]，这里只负责收一条进去。
+     */
+    fun startVideoDownload() {
+        // 这里要的也是挑出来的那一条链接：直链那一路拿它当下载地址，拿整段口令去开连接必挂
+        val raw = pastedLink(dlUrl)?.url
+        if (raw == null) {
+            startMagnetDownload()
+            return
+        }
+        val entry = dlEntry
+        val direct = dlDirect
+        if (raw.isNullOrBlank() || dlBusy) return
+        // 下哪个地址这一串分支抽到 :video-source 里去了（DownloadTarget），那边配了六条 JVM 测试
+        val target = downloadTarget(raw, dlRends, dlPick, direct)
+        val ready = target as? DownloadTarget.Ready
+        scope.launch {
+            val url = when (target) {
+                is DownloadTarget.Ready -> target.url
+                is DownloadTarget.NeedResolve -> {
+                    val v = entry ?: return@launch
+                    when (val out = withContext(Dispatchers.IO) { Online.resolve(v) }) {
+                        is ResolveOutcome.Ready -> out.playable.url
+                        is ResolveOutcome.Failed -> {
+                            dlError = "取址失败：${out.failure.message}"
+                            null
+                        }
+                        else -> {
+                            dlError = "源没接上：${v.sourceId}"
+                            null
+                        }
+                    }
+                }
+            } ?: return@launch
+            // id = 这一条**片子**的身份（源/号 + 挑的那一档），不是签名地址：
+            // 地址每次解析都变（deadline/trid/upsig），拿它当身份就既认不出重复、
+            // 也接不上上一次自己留下的 `.part` —— 跨会话的续传全靠这一格对上
+            val id = "%08x".format(((entry?.key ?: raw) + '@' + (ready?.label ?: '-')).hashCode())
+            if (videoDownloads.holds(id)) {
+                dlError = "这一条已经在排着了"
+                return@launch
+            }
+            videoDownloads.add(
+                id = id,
+                name = entry?.title?.takeIf { it.isNotBlank() }
+                    ?: raw.substringAfterLast('/').substringBefore('?').ifBlank { raw },
+                url = url,
+                // 头必须跟着地址走：B 站那台 CDN 不带来路就 403（和播放那一路同一份规则）
+                headers = headersForUrl(url),
+                meta = listOfNotNull(
+                    entry?.let { Online.sourceLabel(it.sourceId) },
+                    // 只有一档时不写那一格：没有可比的东西，写上去是假选择。
+                    // 拿 ready.label 而不是 dlPick：真用的是哪一个就写哪一个，残留的旧档名不算
+                    ready?.label?.takeIf { dlRends.size > 1 },
+                ).joinToString(" · ").ifBlank { null },
+                total = ready?.approxBytes?.takeIf { it > 0 } ?: -1L,
+                dest = DownloadDest.Video,
+            )
+            // 收进队列就把输入框交还回去：下一条要粘新地址，留着上一条会被当成还在问它
+            dlUrl = ""
+            dlEntry = null
+            dlDirect = false
+            dlRends = emptyList()
+            dlPick = null
+            dlError = null
+        }
+    }
+
+    /**
+     * 跑一遍识别。四步各自的账：
+     * 1) 麦克风收 6 秒 —— `AudioRecord` 是阻塞读，放 IO 线程，不然那 6 秒整个界面冻住；
+     * 2) 封成 WAV 问模型要**词**（不问它"这是什么歌"，理由写在 RecognizePage 上面那段）；
+     * 3) 拿转写出来的第一句像样的词去在线音乐那一路对；
+     * 4) 对到的摆成行：能播、能排队、能存盘，全走已有的那三颗，不另起一套。
+     */
+    fun runRecognize() {
+        if (recBusy) return
+        if (recBase.isBlank() || recModel.isBlank() || recKey.isBlank()) {
+            recError = "先把下面那三格填完"
+            return
+        }
+        recBusy = true
+        recError = null; recLyrics = null; recGuess = null; recStats = null
+        recHits = emptyList()
+        scope.launch {
+            recStage = "听 6 秒"
+            val sound = withContext(Dispatchers.IO) { runCatching { MicCapture.record(6) } }
+            val pcm = sound.getOrNull()
+            if (pcm == null) {
+                recError = "这台机不给 16k 单声道的录音口：${sound.exceptionOrNull()?.message}"
+                recBusy = false; recStage = null; return@launch
+            }
+            recStats = MicCapture.stats(pcm)
+            recStage = "问模型"
+            val asked = withContext(Dispatchers.IO) {
+                runCatching {
+                    OmniRecognizer(
+                        post = { url, body, headers -> Online.postJson(url, body, headers) },
+                        baseUrl = recBase, key = recKey, model = recModel,
+                    ).recognize(AudioClip(wavMono16(pcm, MicCapture.RATE), pcmDurationMs(pcm, MicCapture.RATE)))
+                }
+            }
+            val out = asked.getOrNull()
+            if (out == null) {
+                val e = asked.exceptionOrNull()
+                recError = "模型那一步不通：" + when {
+                    e is RecognitionException -> e.failure.message
+                    else -> e?.message ?: "不知道"
+                }
+                recBusy = false; recStage = null; return@launch
+            }
+            when (out) {
+                is Recognition.Guess -> {
+                    recGuess = out.title + if (out.artist.isBlank()) "" else " - ${out.artist}"
+                    recError = "它只报了个名、没转写出词 —— 这一条没对过曲库，不算认出来"
+                }
+                is Recognition.Lyrics -> {
+                    recLyrics = out.text
+                    out.guess?.let { recGuess = it.title + if (it.artist.isBlank()) "" else " - ${it.artist}" }
+                    recStage = "对曲库"
+                    val q = out.text.lineSequence().map { it.trim() }.firstOrNull { it.length >= 4 }
+                        ?: out.text.take(40)
+                    recHits = withContext(Dispatchers.IO) {
+                        runCatching { Online.searchMusic(q, 5) }.getOrDefault(emptyList())
+                    }
+                    if (recHits.isEmpty()) recError = "拿这句没对到歌：「$q」"
+                }
+            }
+            recBusy = false
+            recStage = null
+        }
+    }
+
+    /** 麦克风权限：给完就地接着跑，不用他再按一次那颗（不给也要说清是哪一步挡的） */
+    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { g ->
+        micGranted = g
+        if (g) runRecognize() else recError = "没给麦克风权限，这一路收不到声"
+    }
+
+    /**
      * 现换这一条的直链，拿到了再交出去。**每次点都现问**：站点给的是上游平台 CDN 的签名地址，
      * 会过点，存下第二次再用就是那条"直链过期之后再按回 403"。档位取接口报的第一档（它按高到低排）。
      *
@@ -1590,6 +1944,25 @@ private fun App(
         Online.setGone(goneSources + removedSources + goneMusic)
         (goneSources + removedSources).forEach { onlineLib.dropSource(it) }
         onlineItems = onlineLib.all()
+    }
+
+    /* 「视频下载」那一屏的自动认：粘进来的若是**整段分享文案**（链接前后还带着口令、标题、日期、
+       随机码，抖音那条就是这种），就不用他先手动把壳删掉再按＋，挑出链接直接去问站点。
+       整串就是一条链接的不自动问 —— 那种多半是一格一格手打的，在半截地址上自动开一趟只会红一条错误，
+       那一种仍然按＋。延迟 300ms 是让粘贴这一整块文本落地之后再问，也顺手把连续改字并成一次。 */
+    LaunchedEffect(dlUrl) {
+        if (dlBusy || pastedLink(dlUrl)?.wrapped != true) return@LaunchedEffect
+        delay(300)
+        askDownloadUrl()
+    }
+
+    // 认出磁力就把 BT 会话先起来（一次进程起一回）：等按下那颗再起，第一按的 60 秒
+    // 有一多半要花在 libtorrent 自己找节点上 —— 真机量过第一按 0 个节点、一分钟后 39 个
+    var dlBtWarm by remember { mutableStateOf(false) }
+    LaunchedEffect(dlUrl) {
+        if (dlBtWarm || pastedMagnet(dlUrl)?.valid != true) return@LaunchedEffect
+        dlBtWarm = true
+        withContext(Dispatchers.IO) { magnetEngine.warmUp() }
     }
 
     /**
@@ -2172,6 +2545,93 @@ private fun App(
                     onBack = { leavePage() },
                     bottomInset = !showBar,
                 )
+            } else if (page == "download") {
+                // 磁力不用问站点：粘进去这一刻就认得，认得就摆出去那一颗。
+                // 一段话里既有 http 又有磁力时让 http 赢 —— 那一条这个 app 真能下，磁力那一条只能交出去
+                val magnet = if (pastedLink(dlUrl) == null) pastedMagnet(dlUrl) else null
+                DownloadPage(
+                    url = dlUrl,
+                    onUrl = { dlUrl = it; dlError = null; dlMagnetFiles = emptyList() },
+                    busy = dlBusy,
+                    error = dlError,
+                    entry = dlEntry,
+                    direct = dlDirect,
+                    magnet = magnet,
+                    magnetFiles = dlMagnetFiles,
+                    magnetPick = dlMagnetPick,
+                    onPickFile = { dlMagnetPick = it },
+                    renditions = dlRends,
+                    picked = dlPick,
+                    onPick = { dlPick = it.label },
+                    sourceLabel = { id -> Online.sourceLabel(id) },
+                    // 认完才按得动：还在问站点就让它灰着，这时按下去拿的是上一条的地址
+                    canStart = (dlEntry != null || dlDirect || dlMagnetFiles.isNotEmpty()) && !dlBusy,
+                    tasks = videoDownloads.tasks.toList(),
+                    onAct = { t ->
+                        when (t.state) {
+                            DownloadQueue.State.Running, DownloadQueue.State.Waiting -> videoDownloads.pause(t.id)
+                            DownloadQueue.State.Paused -> videoDownloads.start(t.id)
+                            DownloadQueue.State.Done -> videoDownloads.remove(t.id)
+                        }
+                    },
+                    onRemoveAsk = { dlRemove = it },
+                    // ＋ 那一颗的规矩是"对这条地址做该做的事"：磁力那一条该做的是问 DHT 要内容，
+                    // ＋ 那一颗的规矩是"对这条地址做该做的事"：磁力那一条是去问 DHT/tracker 要内容，
+                    // 站点那些地址是认源 + 摊档
+                    onAsk = { if (magnet != null) askMagnet(magnet) else askDownloadUrl() },
+                    onClearUrl = { clearDlUrl() },
+                    onStart = { startVideoDownload() },
+                    onClear = { videoDownloads.clearFinished() },
+                    onBack = { leavePage() },
+                    bottomInset = !showBar,
+                )
+                // 长按那一行问的那一框。数现从队列里按 id 读回来 —— 长按到按确认之间那一行还在走，
+                // 拿按下那一刻的快照会说小已经下好的量
+                val gone = dlRemove
+                if (gone != null) {
+                    DownloadRemoveDialog(
+                        t = videoDownloads.tasks.firstOrNull { it.id == gone.id } ?: gone,
+                        onDismiss = { dlRemove = null },
+                        onConfirm = {
+                            videoDownloads.remove(gone.id)
+                            dlRemove = null
+                        },
+                    )
+                }
+            } else if (page == "recognize") {
+                RecognizePage(
+                    stage = recStage,
+                    busy = recBusy,
+                    error = recError,
+                    clipStats = recStats,
+                    lyrics = recLyrics,
+                    guess = recGuess,
+                    hits = recHits,
+                    playingId = musicOnlinePlayingId(),
+                    downloadingKey = musicOnlineDownloading,
+                    sourceLabel = { id -> Online.sourceLabel(id) },
+                    micGranted = micGranted,
+                    onRun = { runRecognize() },
+                    onAskMic = { askMic.launch(android.Manifest.permission.RECORD_AUDIO) },
+                    onPlay = { v -> playMusicOnline(v) },
+                    onQueue = { v -> queueMusicOnline(v) },
+                    onDownload = { v -> downloadMusicOnline(v) },
+                    baseUrl = recBase,
+                    onBaseUrl = { recBase = it },
+                    model = recModel,
+                    onModel = { recModel = it },
+                    key = recKey,
+                    onKey = { recKey = it },
+                    onSaveSettings = {
+                        recognizeStore.saveBaseUrl(recBase)
+                        recognizeStore.saveModel(recModel)
+                        recognizeStore.saveKey(recKey)
+                        recError = null
+                        android.widget.Toast.makeText(context, "已存到本机", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    onBack = { leavePage() },
+                    bottomInset = !showBar,
+                )
             } else if (page == "music-source") {
                 MusicSourcePage(
                     baseUrl = musicBaseUrl,
@@ -2353,8 +2813,9 @@ private fun App(
                     onArtists = { openPage("artists") },
                     onCharts = { openPage("history") },
                     onPlaylists = { openPage("playlists") },
-                    onFavorites = { openPage("favorites") },
-                    onVideos = { tab = AppTab.Video },
+                    // 「收藏」那一颗从首页挪走了，页面没搬：「我的」那一屏还有它那颗入口（下面 onOpenFavorites）
+                    onVideoDownload = { openPage("download") },
+                    onRecognize = { openPage("recognize") },
                     onOpenPlaylist = { p -> openPage("pl:" + p.id) },
                     onPlayList = { ts, i -> startPlaylist(ts, i) },
                     onToggleFavorite = { t ->

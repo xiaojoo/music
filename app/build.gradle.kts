@@ -49,6 +49,11 @@ dependencies {
 
     implementation(project(":ffmpeg-decoder"))
     implementation(project(":video-source"))
+    implementation(project(":recognizer"))
+
+    // 磁力那一路的引擎。Java 那一半 + 编好的 arm64 原生库（POM 上零传递依赖，量过）
+    implementation(libs.libtorrent4j.core)
+    implementation(libs.libtorrent4j.android.arm64)
 
     testImplementation("junit:junit:4.13.2")
     // android.jar 里的 org.json 是抛异常的 stub，测试类路径上放一份真实现才能验编解码

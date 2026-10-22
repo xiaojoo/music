@@ -9,6 +9,8 @@ activityCompose = "1.13.0"
 lifecycle = "2.11.0"
 coreKtx = "1.19.1"
 kotlinxCoroutines = "1.11.0"
+# 磁力那一路要的 BitTorrent 引擎（MIT）。arm64 那一个是编好的 .so，本机量过只有这一个 ABI 用得上
+libtorrent4j = "2.1.0-39"
 
 [libraries]
 androidx-annotation = { group = "androidx.annotation", name = "annotation", version = "1.6.0" }
@@ -26,6 +28,8 @@ media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", versi
 media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
 media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+libtorrent4j-core = { group = "org.libtorrent4j", name = "libtorrent4j", version.ref = "libtorrent4j" }
+libtorrent4j-android-arm64 = { group = "org.libtorrent4j", name = "libtorrent4j-android-arm64", version.ref = "libtorrent4j" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

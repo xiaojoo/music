@@ -1977,7 +1977,7 @@ fun NowPlayingBar(
 /** 输入类的浮层统一走底部抽屉：顶部两个圆角、能下拉收，不再用居中的模态框。trailing 是标题行右端那颗字按钮 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun InputSheet(
+internal fun InputSheet(
     title: String,
     onDismiss: () -> Unit,
     trailing: (@Composable () -> Unit)? = null,

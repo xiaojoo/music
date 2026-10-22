@@ -74,6 +74,19 @@ class DouyinWebView(
      *
      * 顺带记一条同一次量到的：这一页的 JS 在 hydrate 时抛 `Minified React error #425`/`#422`
      * （SSR 那份和客户端渲染对不上），所以正文永远停在「视频数据加载中」—— 和上面那条空报文是同一件事的两面。
+     *
+     * **2026-10-18 从电脑侧独立复量了一遍，卡点收窄成一处**（他粘一条抖音口令进来报"解析失败"，先分清是谁的账）：
+     * - 短链一跳就交出 19 位视频号：`v.douyin.com/xxxx/` → `www.iesdouyin.com/share/video/7697170036201520035/`，
+     *   桌面 UA 再跳一次落 `www.douyin.com/video/{同一条 id}` —— **地址这一层没坏**，我们开对了页；
+     * - 分享页那份 `window._ROUTER_DATA` 里只有上下文（`"video_layout":null`、ua/webId/host 那一坨），
+     *   整页 32,544 字里 `play_addr`/`url_list`/内部文件号的形状**一个都没有** —— 和 RENDER_DATA 那条同一个结论；
+     * - `aweme/v1/play/` 那颗端点是活的，只认内部文件号，两种 id 的对照：
+     *   `video_id=<19 位视频号>` → `200` + **0 字节**；`video_id=v0200f…` → **`302`** + 627 字节；
+     * - 那条不签名的 `web/api/v2/aweme/iteminfo/?item_ids=` 也回 **0 字节**；爬虫 UA 开分享页回的是
+     *   一行跳转壳（127 字节 `Redirecting to …/video/{id}`），不是验证码。
+     *   ⇒ 也就是说空报文**不在这颗手机内核的指纹上**（电脑 curl 读出同一个 0 字节）。剩下的唯一卡点是
+     *   "内部文件号只能从详情接口拿，而它匿名回空" —— 要跨过它就得算它那个签名参数，那是这个工程明令不做的
+     *   （见 [DouyinSource] 类注释"我们不算签名、也不仿它的请求"）。这一路因此挂着，界面上交的是上面那句实测原因。
      */
     override suspend fun load(url: String): DouyinDetail {
         var probes = 0
@@ -82,7 +95,7 @@ class DouyinWebView(
             "id",
             inject = DouyinSource.HOOK_JS,
             budgetMs = DETAIL_BUDGET_MS,
-            over = "抖音那条详情接口答的是空报文（站点风控），没给出文件 id",
+            over = "抖音的匿名详情接口回 0 字节，拿不到内部文件号",
         ) { web ->
             val hit = DouyinSource.parseRendered(web.ask(DouyinSource.RENDER_JS))
                 ?: DouyinSource.parseCaptured(web.ask(DouyinSource.CAP_JS))

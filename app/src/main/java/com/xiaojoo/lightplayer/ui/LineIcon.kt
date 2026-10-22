@@ -375,6 +375,18 @@ fun LineIcon(
                 drawLine(color, Offset(s * 0.22f, s * 0.80f), Offset(s * 0.78f, s * 0.80f), st, StrokeCap.Round)
             }
 
+            /* 听歌识曲：五根长短不一的竖笔（声波），中间那根最长，往两头对称收。
+               x 0.26..0.74、中心笔半高 0.24 —— 加上圆头各吃 st/2 = 0.0375，墨框落在
+               0.2225..0.7775 见方（宽和高同一个数），所以这一颗和左边「下载」那颗（0.22..0.78）
+               是同一种"墨大致 0.56 画框见方、中心压画框正中"的脾气，首页那一排五颗才排得齐。 */
+            IconKind.Recognize -> {
+                val half = floatArrayOf(0.10f, 0.17f, 0.24f, 0.17f, 0.10f)
+                for (i in 0..4) {
+                    val x = s * (0.26f + 0.12f * i)
+                    drawLine(color, Offset(x, s * (0.5f - half[i])), Offset(x, s * (0.5f + half[i])), st, StrokeCap.Round)
+                }
+            }
+
             /* 排序：icon_u5mmu4af81c/paixu.svg —— 左右两支箭头，左支朝下、倒钩朝左下，
                右支朝上、倒钩朝右下。原图是填充轮廓，中心线直接从路径读出来：笔宽 72、
                杆 x=432 / 596、杆长 246..770、倒钩从杆的端点 45° 伸 120、圆头收尾。
@@ -729,7 +741,7 @@ enum class IconKind {
     Home, MusicNote, Video, Person, Shirt, Add, Favorite, FavoriteLine, PlayAdd, PlayQueue, SquareAdd, Share, PinTop, Trash,
     Download, ArrowLeft, Search, PlaylistAdd, Sort, MultiSelect,
     Close, Drag, Speed, Check, Expand, Rotate, Copy, OpenLink, OrderSeq, LoopOne, Filter, More, Settings, Refresh, Photo,
-    SeekBack10, SeekForward10, Shrink, Volume, Sun
+    SeekBack10, SeekForward10, Shrink, Volume, Sun, Recognize
 }
 
 /**

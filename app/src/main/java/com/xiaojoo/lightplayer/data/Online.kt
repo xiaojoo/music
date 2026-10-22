@@ -19,6 +19,7 @@ import com.xiaojoo.lightplayer.videosource.NamedLyric
 import com.xiaojoo.lightplayer.videosource.NeteaseSource
 import com.xiaojoo.lightplayer.videosource.OnlineSort
 import com.xiaojoo.lightplayer.videosource.Playable
+import com.xiaojoo.lightplayer.videosource.headersForUrl
 import com.xiaojoo.lightplayer.videosource.Poster
 import com.xiaojoo.lightplayer.videosource.ResolveOutcome
 import com.xiaojoo.lightplayer.videosource.Rendition
@@ -66,6 +67,9 @@ object Online {
     /** 站点搜索词的上限：真报文里最长的那条标题 100+ 字，整串递过去只会带回一堆歌单 */
     private const val MAX_KEYWORD = 40
 
+    /** [expandShort] 最多跟几跳：抖音那条短链实测 1~2 跳，5 跳是防环的余量，不是给人等的 */
+    private const val SHORT_HOPS = 5
+
     private lateinit var app: Context
 
     /** 建源要 Context（抖音那一路得开一颗 WebView 借真内核拿文件 id），所以启动时先递一次 applicationContext */
@@ -98,6 +102,12 @@ object Online {
         c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
         c.readTextOrThrow()
     }
+
+    /**
+     * 给「听歌识曲」那一层用的 JSON POST。复用上面那一台：超时、状态码归类、读文本的规矩都在那儿，
+     * 不在别处再起第二台连接。
+     */
+    fun postJson(url: String, body: String, headers: Map<String, String>): String = post.post(url, body, headers)
 
     /** 状态码归类和读文本：GET/POST 两种问法共用，免得 403/412 那条规则在两处各漂一份 */
     private fun HttpURLConnection.readTextOrThrow(): String = try {
@@ -299,14 +309,15 @@ object Online {
     }
 
     /**
-     * 站点地址 → 条目：按注册域挑源，第一个认得的赢。
+     * 站点地址 → 条目：先把短链展开，再按注册域挑源，第一个认得的赢。
      * 真正的失败原因（风控、只给了 DASH）要如实带出去，别被"没有源认得"盖掉。
      */
     suspend fun entryFor(url: String): MusicVideo {
+        val full = expandShort(url)
         var real: SourceFailureException? = null
-        for (s in registry.sourcesForUrl(url)) {
+        for (s in registry.sourcesForUrl(full)) {
             try {
-                return s.entry(url)
+                return s.entry(full)
             } catch (e: SourceFailureException) {
                 if (e.failure !is SourceFailure.Unsupported && real == null) real = e
             }
@@ -319,15 +330,55 @@ object Online {
      * 摊不开（这页只装一条、或者源不认"一批"这件事）就如实把源的失败带出去。
      */
     suspend fun listFor(url: String): List<MusicVideo> {
+        val full = expandShort(url)
         var real: SourceFailureException? = null
-        for (s in registry.sourcesForUrl(url)) {
+        for (s in registry.sourcesForUrl(full)) {
             try {
-                return s.list(url)
+                return s.list(full)
             } catch (e: SourceFailureException) {
                 if (e.failure !is SourceFailure.Unsupported && real == null) real = e
             }
         }
         throw real ?: SourceFailureException(SourceFailure.Unsupported("没有源能把这个地址摊成一串"))
+    }
+
+    /**
+     * 短链展开：把 `b23.tv/xxxx`、`v.douyin.com/xxxx`、`v.kuaishou.com/xxxx` 这一类"分享出来只有一跳"
+     * 的地址，换成它真正指向的那一条。
+     *
+     * 为什么必须有这一颗：几家源的 `entry()` 都是**从地址里读 id**（B 站读 BV 号 ——
+     * `BiliSource.entry` 那句"地址里没有 BV 号"），而 App 上"复制链接"给的恰恰是短链，里面什么 id 都没有。
+     * 于是最常见的真实输入反而当场失败（2026-10-18 他一句"下载还是不行"量出来的：我先前只拿完整的
+     * `www.bilibili.com/video/BV…` 验过，那条不需要这一步）。
+     *
+     * 跟跳转不算"仿它的请求"：这就是浏览器里点一下那条链接本来会发生的事，我们只要它的落点。
+     * 只读 `Location`、不发正文；**拿不到落点就原样交回去** —— 这一层是加分项，不许因为它失败就把人挡掉。
+     */
+    private fun expandShort(url: String): String {
+        var at = url
+        repeat(SHORT_HOPS) {
+            val c = runCatching {
+                (URL(at).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 6_000
+                    readTimeout = 6_000
+                    instanceFollowRedirects = false
+                    requestMethod = "HEAD"
+                    headersForUrl(at).forEach { (k, v) -> setRequestProperty(k, v) }
+                }
+            }.getOrNull() ?: return at
+            val next = try {
+                val code = c.responseCode
+                if (code !in 300..399) return at                    // 200 直接落定，4xx/5xx 交回原地址让源自己说
+                c.getHeaderField("Location")?.let { URL(c.getURL(), it).toString() } ?: return at
+            } catch (e: Exception) {
+                return at
+            } finally {
+                c.disconnect()
+            }
+            if (next == at) return at
+            at = next
+        }
+        return at
     }
 
     fun mediaItem(video: MusicVideo, playable: Playable): MediaItem = MediaItem.Builder()

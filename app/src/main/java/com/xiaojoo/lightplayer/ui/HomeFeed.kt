@@ -79,8 +79,10 @@ fun HomeFeed(
     onArtists: () -> Unit,
     onCharts: () -> Unit,
     onPlaylists: () -> Unit,
-    onFavorites: () -> Unit,
-    onVideos: () -> Unit,
+    /** 那颗「视频下载」：进「视频下载」那一整屏 */
+    onVideoDownload: () -> Unit,
+    /** 那颗「听歌识曲」：给 null = 这一半还没接上，画一颗灰的、按不动的，不拿空跳转假装能用 */
+    onRecognize: (() -> Unit)?,
     onOpenPlaylist: (Playlist) -> Unit,
     onPlayList: (List<Track>, Int) -> Unit,
     onToggleFavorite: (Track) -> Unit,
@@ -124,15 +126,19 @@ fun HomeFeed(
         if (banner.isNotEmpty()) item(key = "banner") { Banner(videos = banner, onPlay = onPlayVideoPick) }
 
         item(key = "entries") {
+            /* 五格等宽，不用 SpaceBetween：SpaceBetween 分的是**格子之间**的缝，格子宽 = 标签墨宽 + 内衬，
+               所以标签从两个字变四个字（「收藏」47px → 「视频下载」101px）那一格就自己变宽，
+               图标中心跟着被推走 —— 真机量到五颗的墨中心 96.5/302.5/507.5/729.5/966.5，
+               间距 206/205/222/237，最后那两格比前面宽 32px = 11.6dp。
+               等宽之后每格 200.6px，五颗的墨中心落在一条等距线上，标签各自在格里居中。 */
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 18.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 18.dp)
             ) {
-                EntryIcon(IconKind.Person, "歌手", onArtists)
-                EntryIcon(IconKind.Sort, "排行", onCharts)
-                EntryIcon(IconKind.PlaylistAdd, "歌单", onPlaylists)
-                EntryIcon(IconKind.FavoriteLine, "收藏", onFavorites)
-                EntryIcon(IconKind.Video, "视频", onVideos)
+                EntryIcon(IconKind.Person, "歌手", onArtists, Modifier.weight(1f))
+                EntryIcon(IconKind.Sort, "排行", onCharts, Modifier.weight(1f))
+                EntryIcon(IconKind.PlaylistAdd, "歌单", onPlaylists, Modifier.weight(1f))
+                EntryIcon(IconKind.Download, "视频下载", onVideoDownload, Modifier.weight(1f))
+                EntryIcon(IconKind.Recognize, "听歌识曲", onRecognize, Modifier.weight(1f))
             }
         }
 
@@ -266,15 +272,28 @@ internal fun SearchPill(placeholder: String, sidePad: Dp, onClick: () -> Unit) {
     }
 }
 
-/** 五颗入口之一：绿色图形 + 下面一行名字（参考图那五颗就是光图形，没圆底） */
+/**
+ * 五颗入口之一：绿色图形 + 下面一行名字（参考图那五颗就是光图形，没圆底）。
+ *
+ * `onClick` 给 null 就是"这一半还没接上"那一颗：图形和字都退到次要那一档墨、按不动，
+ * 但**不消失也不挪位** —— 旁边四颗的栅格一寸不动（置灰不消失那条规矩）。
+ */
 @Composable
-private fun EntryIcon(kind: IconKind, label: String, onClick: () -> Unit) {
+private fun EntryIcon(kind: IconKind, label: String, onClick: (() -> Unit)?, modifier: Modifier = Modifier) {
+    val on = onClick != null
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.tap(onClick = onClick).padding(horizontal = 8.dp, vertical = 2.dp)
+        modifier = modifier
+            .tap(enabled = on) { onClick?.invoke() }
+            .padding(horizontal = 8.dp, vertical = 2.dp)
     ) {
-        LineIcon(kind, size = 26.dp, color = Tokens.Accent)
-        Text(label, color = Tokens.Ink, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp))
+        LineIcon(kind, size = 26.dp, color = if (on) Tokens.Accent else Tokens.InkFaint)
+        Text(
+            label,
+            color = if (on) Tokens.Ink else Tokens.InkFaint,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 5.dp)
+        )
     }
 }
 
