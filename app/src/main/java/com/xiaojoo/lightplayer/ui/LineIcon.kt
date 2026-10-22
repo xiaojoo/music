@@ -333,10 +333,22 @@ fun LineIcon(
                     topLeft = Offset(s * 0.5f - r, s * 0.5f - r), size = androidx.compose.ui.geometry.Size(r * 2f, r * 2f),
                     style = Stroke(width = st, cap = StrokeCap.Round)
                 )
-                val ex = s * 0.7220f
-                val ey = s * 0.3964f
-                drawLine(color, Offset(ex, ey), Offset(s * 0.6770f, s * 0.4743f), st, StrokeCap.Round)
-                drawLine(color, Offset(ex, ey), Offset(s * 0.6334f, s * 0.3808f), st, StrokeCap.Round)
+                /* 箭头：骑在弧末端上的实心三角。
+                   改前是两撇（各 0.09 画框），但它们的角平分线离弧末端的切线整整差 **90°**、两撇还一长一短
+                   不对称 ⇒ 看着像别着劲贴在弧上、指错了方向（他 10-22 圈出来那句"箭头错位"）。
+                   摆正之后仍然不行：19dp 画框上两撇的翅膀只张到 6px，比一支笔画（3.9px）宽不了多少，还是糊
+                   —— 和 OrderSeq 那支小三角同一条道理，小的直接画实心。
+                   弧末端在 335°（顺时针走到这里），切线 d = (0.4226, 0.9063)、朝圆外的法向 n = (0.9063, −0.4226)：
+                   顶点 = 弧端 + 0.095·d，底边中点 = 弧端 − 0.035·d，半宽 0.075 ⇒ 墨 7.1 x 7.8px、对称于切线。
+                   整颗墨外接框因此往右长出 0.30dp（真机 0.8px），弧自己那三档边界没动、视觉中心没挪。 */
+                drawPath(
+                    Path().apply {
+                        moveTo(s * 0.7621f, s * 0.4825f)
+                        lineTo(s * 0.7752f, s * 0.3330f)
+                        lineTo(s * 0.6392f, s * 0.3964f)
+                        close()
+                    }, color
+                )
             }
 
 
