@@ -127,6 +127,45 @@ import kotlin.math.roundToInt
 private val SheetPad = 12.dp
 
 /**
+ * 本地那一栏"还没出帧时那张底"：海报、模糊垫图、黑边，按 uri 跨组合存一份。
+ * 和在线那一栏的 FeedCovers 是同一族 —— 那边注释写得直白：缓存跨组合活着，第二次起第一帧就有底。
+ *
+ * 为什么要挪出 remember：底栏切走再切回来，整个 VideoFeed 是重新组合的，留在 remember 里的表跟着清零，
+ * 于是重进来那一格的海报和垫图同时是 null ⇒ 露出海报层里那层不透明黑（他 10-22 报的"闪黑一帧"）。
+ *
+ * 上限按体积算：垫图是 blurOf 量化过的小图，给 60 条；海报是从片子里解出来的一帧（按这一格要恢复到的位置解，不是永远第 0 帧）
+ * （720 宽，竖屏那条按 720x1280 算一张 3.5MB），只给 4 条 —— 接住那一帧本来就该由垫图来，
+ * 海报只是接得更清楚一点。黑边是四个 float，跟垫图同一档。
+ */
+private object FeedFrames {
+    private val posterMap = LinkedHashMap<String, ImageBitmap?>(0, 0.75f, true)
+    private val blurMap = LinkedHashMap<String, ImageBitmap>(0, 0.75f, true)
+    private val borderMap = LinkedHashMap<String, FloatArray>(0, 0.75f, true)
+
+    @Synchronized fun snapshotPoster(uri: String): ImageBitmap? = posterMap[uri]
+    @Synchronized fun snapshotBlur(uri: String): ImageBitmap? = blurMap[uri]
+
+    @Synchronized fun copyPosters(): Map<String, ImageBitmap?> = HashMap(posterMap)
+    @Synchronized fun copyBlurs(): Map<String, ImageBitmap> = HashMap(blurMap)
+    @Synchronized fun copyBorders(): Map<String, FloatArray> = HashMap(borderMap)
+
+    @Synchronized fun putPoster(uri: String, b: ImageBitmap?) {
+        posterMap[uri] = b
+        while (posterMap.size > 4) posterMap.remove(posterMap.keys.first())
+    }
+
+    @Synchronized fun putBlur(uri: String, b: ImageBitmap) {
+        blurMap[uri] = b
+        while (blurMap.size > 60) blurMap.remove(blurMap.keys.first())
+    }
+
+    @Synchronized fun putBorder(uri: String, f: FloatArray) {
+        borderMap[uri] = f
+        while (borderMap.size > 60) borderMap.remove(borderMap.keys.first())
+    }
+}
+
+/**
  * 本地视频竖滑全屏。
  * 一条片子占池里一个成员、一块自己的画面（PlayerPool 里三个实例）：
  * 眼前这一条出声，上下邻条提前解码好第一帧但不响。
@@ -351,12 +390,14 @@ fun VideoFeed(
            直接跳到垫图（同一把尺子 34.5 / 70.2 / 50.0）—— 他 10-18 点的"颜色的闪烁还是有"
            量的就是这个跳。改成淡过去，黑底常驻、垫图淡在它上面。 */
         val padA by animateFloatAsState(if (blackFill) 0f else 1f, tween(220), label = "feedPad")
-        // 海报按 uri 缓存，来回滑不重新解帧
-        val posters = remember { mutableMapOf<String, ImageBitmap?>() }
+        /* 三张表从 FeedFrames 起头（对象级、按 uri，切走再切回来还在），组合级这一份是它的副本。
+           原来只有组合级那一份：切 tab 那一窗整个 composable 重建、表跟着清零，重进来的那一格
+           海报和垫图同时是 null ⇒ 露出海报层里那层不透明黑。在线那一栏同一件事早改过（FeedCovers）。 */
+        val posters = remember { HashMap(FeedFrames.copyPosters()) }
         // 每条的模糊垫图，按 uri 缓存。用 state map 存：垫图一到位底下那层就要立刻重画
-        val blurs = remember { mutableStateMapOf<String, ImageBitmap>() }
+        val blurs = remember { mutableStateMapOf<String, ImageBitmap>().apply { putAll(FeedFrames.copyBlurs()) } }
         // 片源自带的编码黑边（归一化的内容框 l,t,r,b）；没有黑边的条目不落这里
-        val borders = remember { mutableStateMapOf<String, FloatArray>() }
+        val borders = remember { mutableStateMapOf<String, FloatArray>().apply { putAll(FeedFrames.copyBorders()) } }
         // 会话（通知栏、别的页）看到的那一个 Player = 当前成员；换成员走 MediaSession.setPlayer
         val scope = rememberCoroutineScope()
         /* 连播放完一条时，我们会把那个成员按停在它自己那一页的最后一帧 —— 那一下 pause 不是他按的，
@@ -509,6 +550,11 @@ fun VideoFeed(
                                 // 快到结尾的就当看完了，下次从头给，免得进来停在最后一帧
                                 if (p > 0 && (t.durationMs <= 0 || p < t.durationMs - 5000)) {
                                     s.member.seekTo(page, p)
+                                    /* seek 完顺手把这一格的进度写上：进度条读的是 s.posMs，
+                                       那一格要等 250ms 的轮询才回 2454ms 的话，进门那一窗就是
+                                       "从 0 闪一下跳到当前进度"（他 10-22 点的第二条）。 */
+                                    s.posMs = p
+                                    if (t.durationMs > 0) s.durMs = t.durationMs
                                 }
                             }
                     }
@@ -722,23 +768,46 @@ fun VideoFeed(
             // 这一页分到的那一格（没分到就只铺海报，不会串到别人的画面）
             val s = slots.firstOrNull { it.page == page }
             val poster by produceState<ImageBitmap?>(initialValue = posters[key], key1 = key) {
+                /* 换 key 那一下必须先进手把 value 换成这一条自己的（哪怕是 null）：produceState 换 key
+                   不回 initialValue，它留着上一张继续显示 —— 在线那一栏的注释把这叫
+                   "还看得到上一个视频的画面"的真身。这里原来写的是 snapshot(key)?.let { value = it }，
+                   没命中时等于不复位：翻到下一条，顶上仍是上一条的第 0 帧，而且下面那句
+                   `if (value == null)` 永不成立、这一格再也不会去解新的一条 = 他 10-22 报的"封面不跟着换"。 */
+                value = FeedFrames.snapshotPoster(key)
                 if (value == null) {
                     /* 走预览那台全进程共用的解帧机。原来这里每一页新开一台 MediaMetadataRetriever：
                        这条 4K HEVC 解一帧要 8 秒，快翻页时那些解不完的全排在 finalize 上 ——
                        预览那一路已经因此被 FinalizerWatchdogDaemon 打死过一次（见 FramePull 注释）。
                        海报是"就要第 0 格"，所以 latestOnly=false，不许被拖动的请求顶掉。 */
-                    val b = FramePull.frame(context, t.uri, 0L, 720, latestOnly = false)
+                    /* 解的是"这一条现在走到哪儿"的那一帧，不是永远的第 0 帧：切回来那一窗顶上就该
+                       是他离开时的那张画面（他 10-22 点的"封面不要一直是第一帧"）。格子的 posMs 由
+                       成员真值起头（见 FeedSlot 那对），所以第一次组合也拿得到；分不到格子的那种
+                       才退回 0 —— 那一种本来也不知道进度。 */
+                    /* 海报解的那一帧要和"这一格要恢复到的位置"是同一个数：格子上已经有进度就用它
+                       （成员真值，或上面恢复那一句写进去的），格子还没落位时退回存档，并照恢复那里
+                       同一道夹子（快到结尾的存档按开头算）—— 不然海报会比真画面差一整段，
+                       就是他 10-22 报的"封面一直是第一帧"。 */
+                    val at = (s?.posMs ?: 0L).takeIf { it > 0L }
+                        ?: PlayHistory.posOf(context, t.uri)
+                            .takeIf { it > 0L && (t.durationMs <= 0L || it < t.durationMs - 5000L) }
+                        ?: 0L
+                    val b = FramePull.frame(context, t.uri, at, 720, latestOnly = false)
                     posters[key] = b
-                    if (b != null) contentRectOf(b)?.let { borders[key] = it }
+                    FeedFrames.putPoster(key, b)
+                    if (b != null) contentRectOf(b)?.let { borders[key] = it; FeedFrames.putBorder(key, it) }
                     value = b
                 }
             }
             /* 垫图不能等第一帧：这条片子 MMR 解 0 帧要 8 秒，那 8 秒里信箱区就是黑的。
                MediaStore 扫描时已经缓存过缩略图，几十毫秒就有，拿它模糊后垫底足够了。 */
             val pbBlur by produceState<ImageBitmap?>(initialValue = blurs[key], key1 = key) {
+                value = FeedFrames.snapshotBlur(key)      // 同上：没命中也要复位，不然垫图也顶着上一条的
                 if (value == null) {
                     val b = withContext(Dispatchers.IO) { loadThumb(context, t, 64)?.let { blurOf(it) } }
-                    if (b != null) blurs[key] = b
+                    if (b != null) {
+                        blurs[key] = b
+                        FeedFrames.putBlur(key, b)
+                    }
                     value = b
                 }
             }
@@ -1059,9 +1128,19 @@ fun VideoFeed(
                     }
                     /* 这一页自己的进度 = 这一格自己那个成员的进度。整屏共用一份的时候，
                        滑进来的那一下会先画出上一页走了多远（实测 4.2%）再归零。
-                       邻条还没解码好的那一段时间，用曲库里已有的时长顶着。 */
-                    val own = if (s != null) s.posMs to s.durMs.coerceAtLeast(t.durationMs)
-                    else 0L to t.durationMs
+                       邻条还没解码好的那一段时间，用曲库里已有的时长顶着。
+                       但"格子还没派下来"和"刚 moveTo"这两窗不能按 0 画：线先落在 0，等落位+恢复
+                       再跳到他离开的那一秒 —— 他 10-22 报的"从别的 tab 点进来，进度条也从 0
+                       闪一下才跳到当前进度"就是这个跳（真机量到 0ms→84ms 那一跳）。
+                       兜底吃**恢复那里同一个源**：PlayHistory 的存档，夹子也照抄（快到结尾按开头），
+                       这样线第一帧就落在恢复要去的那一秒。 */
+                    val saved = remember(key) {
+                        PlayHistory.posOf(context, t.uri)
+                            .takeIf { it > 0L && (t.durationMs <= 0L || it < t.durationMs - 5000L) }
+                            ?: 0L
+                    }
+                    val own = (if (s != null && (s.posMs > 0L || s.durMs > 0L)) s.posMs else saved) to
+                        ((s?.durMs ?: 0L).coerceAtLeast(t.durationMs))
                     /* 时间不再预留格子：线是贴底画的，上面多一行字不会把线顶走，
                        信息行自己往上让即可。字号按参考图量：数字墨高 41px，25sp 渲出 42px。 */
                     if (scrubbing) {
@@ -1380,8 +1459,11 @@ private class FeedSlot(val member: ExoPlayer) {
        "宽高比 1:1"的兜底，画面被排成正方形（他报的"只占了原来的高度"就是这个）。 */
     var vidW by mutableIntStateOf(member.videoSize.width)
     var vidH by mutableIntStateOf(member.videoSize.height)
-    var posMs by mutableLongStateOf(0L)
-    var durMs by mutableLongStateOf(0L)
+    var posMs by mutableLongStateOf(member.currentPosition)
+    var durMs by mutableLongStateOf(member.duration.coerceAtLeast(0L))
+    /* 进度和时长跟上面那对宽高同一条道理：从 0 起步，那一格就得等 250ms 那趟轮询回来才跳到位 ——
+       他 10-22 报的"进度条也从 0 闪一下才到当前进度"量的就是这个跳。成员手里已经有这一条时
+       currentPosition 就是真值，直接拿它起头。 */
     // 上一次真正设给这块画面的宽高比：setter 会 requestLayout，值没变就别碰它
     var appliedRatio = 0f
 
