@@ -1,11 +1,34 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
 
+/* release 签名从 local.properties 读（那三行和 backup/ 都在 .gitignore 里，绝不入库）。
+   缺任何一行就直接失败并说清缺哪行 —— 静默出一个未签名的 release 包更难查。 */
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (!f.exists()) {
+        error("local.properties 不存在：release 签名需要 keystore.file / keystore.alias / keystore.password 三行")
+    }
+    f.inputStream().use { load(it) }
+}
+fun localProp(key: String): String =
+    localProps.getProperty(key) ?: error("local.properties 缺 $key（release 签名要用，别提交进仓库）")
+
 android {
     namespace = "com.xiaojoo.lightplayer"
     compileSdk = 37
+
+    signingConfigs {
+        create("release") {
+            storeFile = file(localProp("keystore.file"))
+            storePassword = localProp("keystore.password")
+            keyAlias = localProp("keystore.alias")
+            keyPassword = localProp("keystore.password")
+        }
+    }
 
     defaultConfig {
         applicationId = "com.xiaojoo.lightplayer"
@@ -18,6 +41,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
