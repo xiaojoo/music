@@ -18,8 +18,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -86,12 +89,34 @@ private fun DrawScope.drawVinyl(cover: ImageBitmap?, cardSide: Float) {
     }
     val labelR = r * 0.44f
     if (cover != null) {
-        val d = (labelR * 2).toInt()
-        drawImage(
-            image = cover,
-            dstSize = androidx.compose.ui.unit.IntSize(d, d),
-            dstOffset = androidx.compose.ui.unit.IntOffset((c.x - labelR).toInt(), (c.y - labelR).toInt())
-        )
+        /* 圆形：直径 = 原来那张方的边长，和没封面时那颗占位圆同一个圈 —— 只换蒙版不换尺寸。
+           蒙版在旋转那一层里面，所以封面跟着盘面一起转。
+           铺法和原来那张方的一致：整张封面拉到 2r×2r（不居中裁切），所以给 shader 配一个
+           按目标圈边长缩放的本地位图 —— BitmapShader 默认是 1 位图像素 : 1 画布像素。 */
+        val bmp = cover.asAndroidBitmap()
+        val side = labelR * 2f
+        val clip = android.graphics.Path().apply {
+            addCircle(labelR, labelR, labelR, android.graphics.Path.Direction.CW)
+        }
+        val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+            shader = android.graphics.BitmapShader(
+                bmp, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP
+            ).apply {
+                setLocalMatrix(
+                    android.graphics.Matrix().apply {
+                        setScale(side / bmp.width, side / bmp.height)
+                    }
+                )
+            }
+        }
+        drawIntoCanvas { cnv ->
+            val a = cnv.nativeCanvas
+            val saved = a.save()
+            a.translate(c.x - labelR, c.y - labelR)
+            a.clipPath(clip)
+            a.drawRect(0f, 0f, side, side, paint)
+            a.restoreToCount(saved)
+        }
     } else {
         drawCircle(color = Color(0xFFE3E7EA), radius = labelR, center = c)
     }

@@ -49,7 +49,7 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
                         artist = o.optJSONObject("owner")?.optString("name").orEmpty(),
                         durationMs = o.optLong("duration") * 1_000,
                         pageUrl = "https://www.bilibili.com/video/$bvid",
-                        artworkUrl = o.optString("pic").takeIf { it.isNotBlank() },
+                        artworkUrl = coverOf(o.optString("pic")),
                         // 播放数是从 stat.view 读的，歌手页那颗头像就是 owner.face
                         playCount = o.optJSONObject("stat")?.optLong("view") ?: 0,
                         artistFaceUrl = coverOf(o.optJSONObject("owner")?.optString("face").orEmpty()),
@@ -207,7 +207,7 @@ class BiliSource(private val fetch: Fetcher) : MusicVideoSource {
             artist = data.optJSONObject("owner")?.optString("name").orEmpty(),
             durationMs = data.optLong("duration") * 1_000,
             pageUrl = "https://www.bilibili.com/video/$bvid",
-            artworkUrl = data.optString("pic").takeIf { it.isNotBlank() },
+            artworkUrl = coverOf(data.optString("pic")),
             publishedAtMs = data.optLong("pubdate") * 1_000,
         )
     }

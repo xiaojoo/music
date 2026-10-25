@@ -3,6 +3,7 @@ package com.xiaojoo.lightplayer.data
 import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
+import android.provider.MediaStore
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -13,6 +14,9 @@ object PlayHistory {
     private const val PREF = "play_history"
     private const val KEY = "items"
     private const val MAX = 100
+
+    /** 媒体库那一行的地址前缀（只有这一族的行要问它还在不在） */
+    private const val MEDIA_ROW = "content://media/external/"
 
     fun record(context: Context, track: Track) {
         val item = JSONObject().apply {
@@ -80,7 +84,40 @@ object PlayHistory {
                 )
             )
         }
-        return out
+        return keepLive(context, out)
+    }
+
+    /**
+     * 媒体库里已经没有的那一行不列出来。历史是 JSON 存的，文件在别处删掉之后这一行还留着，
+     * 于是首页「最近播放」每次都拿一个不存在的 id 去要缩略图，抛一次 `FileNotFoundException`
+     * 才回占位（2026-10-26 真机日志：`No item at content://media/external/video/media/148745`）。
+     *
+     * 只判 MediaStore 那两栏的行，SAF 和在线直链不归它管。问一次 `_id IN (…)` 而不是逐行问：
+     * 历史最多 100 条，逐行问就是一百次跨进程调用。两栏都问不出来时原样交出去 ——
+     * 探针对不得，不能顺手把整张列表判死。
+     */
+    private fun keepLive(context: Context, rows: List<Track>): List<Track> {
+        val media = rows.filter { it.id > 0L && it.uri.toString().startsWith(MEDIA_ROW) }
+        if (media.isEmpty()) return rows
+        val live = HashSet<Long>()
+        var probed = false
+        for (video in booleanArrayOf(true, false)) {
+            val ids = media.filter { isVideoUri(it.uri.toString()) == video }.map { it.id }
+            if (ids.isEmpty()) continue
+            val c = runCatching {
+                context.contentResolver.query(
+                    if (video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    else MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    "${MediaStore.MediaColumns._ID} IN (${ids.joinToString(",")})",
+                    null, null
+                )
+            }.getOrNull() ?: continue
+            probed = true
+            c.use { while (it.moveToNext()) live.add(it.getLong(0)) }
+        }
+        if (!probed) return rows
+        return rows.filter { !it.uri.toString().startsWith(MEDIA_ROW) || it.id in live }
     }
 
     /** 记一条看到哪儿了（毫秒）。视频页下次进来要落回这条这个位置。 */

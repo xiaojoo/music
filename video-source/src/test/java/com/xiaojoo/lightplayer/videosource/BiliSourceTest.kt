@@ -46,6 +46,14 @@ class BiliSourceTest {
         assertEquals(1_791_774_000_000L, first.publishedAtMs)
         // 歌手页那颗圆头像吃的是 owner.face，同样要 https
         assertTrue("热门列表没读出 UP 主头像", first.artistFaceUrl?.startsWith("https://") == true)
+        /* 稿图那一张以前在这一路是裸的 http（`coverOf` 只加在 face 上）—— release 包没放开明文，
+           系统直接挡在连接那一步，首页横幅和「精选视频」整栏就是这个原因一张图都没有。
+           2026-10-26 真机日志：`封面连接失败 Cleartext HTTP traffic to i0.hdslb.com not permitted`。
+           这一格原来没人钉：face 钉了、pic 没钉，所以它一直红着都没人看见。 */
+        assertEquals(
+            "https://i0.hdslb.com/bfs/archive/0e346a6627c612df67657c50f85261f7d91f8a4d.jpg@400w_360h_1c.webp",
+            first.artworkUrl
+        )
         assertTrue(f.urls[0], f.urls[0].startsWith("https://api.bilibili.com/x/web-interface/popular?ps=20"))
     }
 

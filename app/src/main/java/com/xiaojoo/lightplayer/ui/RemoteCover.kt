@@ -26,11 +26,17 @@ private val coverCache = object : LruCache<String, Bitmap>(12 * 1024) {
 }
 
 /**
- * 同一张站点图另要一档尺寸：源那头给的是网格那一格的 400x360，首页横幅铺满 353dp 宽，
- * 拿 400 的图放大就是糊的。尾巴是站点图片服务认的那串参数，换个数字就行（实测 750x460 回 200）。
+ * 同一张站点图另要一档尺寸。那串 `@Nw_Mh_1c.webp` 是 **B 站图床认的语法**，别家不认：
+ * 网易云 126.net 吃它直接 404（2026-10-26 量：封面和头像带后缀都 404，去掉都 200），
+ * 快手/抖音的地址还带 query，拼在尾巴上会落进最后一个参数的值里（`…&bp=14944@750w…`）。
+ * 所以这一档只对 hdslb 生效，别家的地址原样交出去。
  */
-fun coverAt(url: String?, w: Int, h: Int): String? =
-    url?.substringBefore('@')?.plus("@${w}w_${h}h_1c.webp")
+fun coverAt(url: String?, w: Int, h: Int): String? {
+    val u = url?.takeIf { it.isNotBlank() } ?: return null
+    val host = runCatching { Uri.parse(u).host }.getOrNull() ?: return u
+    if (!host.endsWith("hdslb.com")) return u
+    return u.substringBefore('@') + "@${w}w_${h}h_1c.webp"
+}
 
 /** 站点封面地址 → 位图。取不到回 null，由调用方摆占位底色，不在这兜一张假图。 */
 @Composable
@@ -74,4 +80,8 @@ private fun fetchCover(url: String): ImageBitmap? = runCatching {
     } finally {
         c.disconnect()
     }
+    // 外层这一支原来一句都不打：非 IOException（比如 URL 那一步抛的东西）整条被 runCatching 咽掉，
+    // 于是"整栏没封面"在真机上查不到任何痕迹。补上，报异常类名和地址本身。
+}.onFailure {
+    android.util.Log.d("LightPlayer", "封面异常 ${it.javaClass.name} ${it.message?.take(160)} $url")
 }.getOrNull()
