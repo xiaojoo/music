@@ -34,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -48,6 +49,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -281,13 +283,15 @@ internal fun MusicRow(
         modifier = Modifier.fillMaxWidth().tap(onClick = onClick).padding(vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        var edge by remember { mutableIntStateOf(0) }
         Box(
             modifier = Modifier
                 .size(42.dp)
+                .onSizeChanged { edge = minOf(it.width, it.height) }
                 .clip(RoundedCornerShape(Tokens.Dimen.ThumbCorner))
                 .background(Tokens.Track)
         ) {
-            remoteCover(video.artworkUrl)?.let {
+            remoteCover(video.artworkUrl, edge)?.let {
                 Image(
                     bitmap = it, contentDescription = null,
                     modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
@@ -320,12 +324,15 @@ internal fun MusicRow(
 /** 封面框：底色占位 → 图 → 左下那一格播放数 */
 @Composable
 private fun CoverBox(url: String?, count: Long, modifier: Modifier) {
+    // 格子多大由传进来的 modifier 定，所以短边也从它身上量（三处调用点各是 305:275 / 16:9 / 116x65dp）
+    var edge by remember { mutableIntStateOf(0) }
     Box(
         modifier = modifier
+            .onSizeChanged { edge = minOf(it.width, it.height) }
             .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
             .background(Tokens.Track)
     ) {
-        remoteCover(url)?.let {
+        remoteCover(url, edge)?.let {
             Image(
                 bitmap = it, contentDescription = null,
                 modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop

@@ -27,12 +27,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -376,10 +380,12 @@ private fun PickedCard(title: String, meta: String?, cover: String?) {
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val bmp = remoteCover(cover)
+        var edge by remember { mutableIntStateOf(0) }
+        val bmp = remoteCover(cover, edge)
         Box(
             modifier = Modifier
                 .size(56.dp)
+                .onSizeChanged { edge = minOf(it.width, it.height) }
                 .clip(RoundedCornerShape(Tokens.Dimen.ThumbCorner))
                 .background(Tokens.Track),
             contentAlignment = Alignment.Center,

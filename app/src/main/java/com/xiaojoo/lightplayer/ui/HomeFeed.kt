@@ -33,6 +33,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -45,6 +46,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -359,16 +361,19 @@ private fun Banner(videos: List<MusicVideo>, onPlay: (MusicVideo) -> Unit) {
             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
         ) { i ->
             val v = videos[i]
+            // 盒子自己量短边给封面用：这一格多大就解多大，不拿原图往显存里塞
+            var edge by remember { mutableIntStateOf(0) }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     // 高给死：aspectRatio 在 pager 的一页里量到的宽不是视口宽（真机量到 1040x800，
                     // 比参考图的 373x216 胖了一档），不如直接钉
                     .height(216.dp)
+                    .onSizeChanged { edge = minOf(it.width, it.height) }
                     .background(Tokens.Track)
                     .tap { onPlay(v) }
             ) {
-                remoteCover(coverAt(v.artworkUrl, 750, 460))?.let {
+                remoteCover(coverAt(v.artworkUrl, 750, 460), edge)?.let {
                     Image(
                         bitmap = it, contentDescription = null,
                         modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
@@ -419,13 +424,15 @@ private fun PickCard(video: MusicVideo, onClick: () -> Unit) {
             .background(Tokens.Surface)
             .tap(onClick = onClick)
     ) {
+        var edge by remember { mutableIntStateOf(0) }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(PickCardArc)
+                .onSizeChanged { edge = minOf(it.width, it.height) }
                 .background(Tokens.Track)
         ) {
-            remoteCover(video.artworkUrl)?.let {
+            remoteCover(video.artworkUrl, edge)?.let {
                 Image(
                     bitmap = it, contentDescription = null,
                     modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop

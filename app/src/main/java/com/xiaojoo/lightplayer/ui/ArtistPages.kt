@@ -27,6 +27,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -38,6 +39,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -299,8 +301,15 @@ fun ArtistSongsPage(
             .fillMaxSize()
             .background(Tokens.Backdrop)
     ) {
-        Box(modifier = Modifier.fillMaxWidth().height(340.dp).background(Tokens.Track)) {
-            remoteCover(coverAt(artist?.faceUrl, 750, 750))?.let {
+        var heroEdge by remember { mutableIntStateOf(0) }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(340.dp)
+                .onSizeChanged { heroEdge = minOf(it.width, it.height) }
+                .background(Tokens.Track)
+        ) {
+            remoteCover(coverAt(artist?.faceUrl, 750, 750), heroEdge)?.let {
                 Image(bitmap = it, contentDescription = null, modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop)
             }
@@ -394,13 +403,15 @@ private fun SongRow(
             .padding(vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        var edge by remember { mutableIntStateOf(0) }
         Box(
             modifier = Modifier
                 .size(52.dp)
+                .onSizeChanged { edge = minOf(it.width, it.height) }
                 .clip(RoundedCornerShape(Tokens.Dimen.ThumbCorner))
                 .background(Tokens.Track)
         ) {
-            remoteCover(video.artworkUrl)?.let {
+            remoteCover(video.artworkUrl, edge)?.let {
                 Image(bitmap = it, contentDescription = null, modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop)
             }
@@ -491,11 +502,16 @@ private fun matches(a: Artist, row: Int, label: String): Boolean = when (row) {
 /** 圆头像：站点给了 face 就画图，没给就退回字母块（和曲库那些没内嵌封面的条目同一套占位） */
 @Composable
 private fun Face(url: String?, name: String) {
+    var edge by remember { mutableIntStateOf(0) }
     Box(
-        modifier = Modifier.size(55.dp).clip(CircleShape).background(Tokens.Track),
+        modifier = Modifier
+            .size(55.dp)
+            .onSizeChanged { edge = minOf(it.width, it.height) }
+            .clip(CircleShape)
+            .background(Tokens.Track),
         contentAlignment = Alignment.Center
     ) {
-        val bmp = remoteCover(coverAt(url, 160, 160))
+        val bmp = remoteCover(coverAt(url, 160, 160), edge)
         if (bmp != null) {
             Image(bitmap = bmp, contentDescription = null, modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop)
