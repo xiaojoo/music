@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 和 Tokens.ListBg(241,244,249) 同一档：窗口底。改了这边要改那边，两边不一致启动那一帧就会露出别的颜色。 -->
+    <color name="window_bg">#FFF1F4F9</color>
+</resources>

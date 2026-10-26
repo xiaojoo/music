@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  启动那一帧的窗口底：整块纯白铺满（含状态栏那一条，清单里把 statusBarColor 也置透明），
+  正中放我们那枚琴键三角。画布给 216dp 是因为 ic_launcher_foreground 的墨只占 108 画布的
+  30.6..77.9（宽 47.3 = 43.8%）—— 216dp 画布上墨约 94.6dp，直接给 96dp 画布就只有 42dp 的墨。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@android:color/white" />
+    <item
+        android:width="216dp"
+        android:height="216dp"
+        android:drawable="@drawable/ic_launcher_foreground"
+        android:gravity="center" />
+</layer-list>

@@ -1,4 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.LightPlayer" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+    <!--
+      启动那一帧的底色原来交给系统解析：真机量到 EMUI 给我们应用解析出来的是 #FF191C1E（近黑），
+      而界面自己第一帧 preDraw 在 onCreate 之后 243ms —— 于是点开图标先黑一下才变浅色界面（他 10-27 报的）。
+      现在窗口底钉成一张自己的画：纯白铺满整屏（含状态栏那一条）+ 正中的启动图标，
+      两条系统栏置透明免得在马上压一条别的颜色；系统栏图标按白底用暗字，
+      视频页那几屏自己在代码里翻回亮字，不受这里影响。
+    -->
+    <style name="Theme.LightPlayer" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@drawable/window_splash</item>
+        <item name="android:colorBackground">@color/window_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
 </resources>
