@@ -1,5 +1,14 @@
 package com.xiaojoo.lightplayer.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -43,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -154,7 +164,14 @@ fun HomeFeed(
             contentPadding = PaddingValues(bottom = 28.35.dp)
         ) {
 
-            if (banner.isNotEmpty()) item(key = "banner") { Banner(videos = banner, onPlay = onPlayVideoPick) }
+            /* 这一格**永远在场**：真横幅 / 骨架 / 零高三者换着画，但"第 0 格"这个位子不换。
+               原来写成两个 if 分支，冷启动第一帧列表里根本没有第 0 格（量到 首可见=entries index=0），
+               骨架插进来那一刻 LazyList 把已经看见的「五颗入口」钉在顶上、把横幅顶到视口**上面**
+               （首可见=entries index=1）—— 就是他报的"轮播图不在第一行，要滑一下才看到"。 */
+            item(key = "banner") {
+                if (banner.isNotEmpty()) Banner(videos = banner, onPlay = onPlayVideoPick)
+                else if (picksLoading) SkeletonBanner()
+            }
 
             item(key = "entries") {
                 /* 五格等宽，不用 SpaceBetween：SpaceBetween 分的是**格子之间**的缝，格子宽 = 标签墨宽 + 内衬，
@@ -207,6 +224,11 @@ fun HomeFeed(
                         }
                     }
                 }
+            }
+            // 一批都还没到：栏头照给（没有源名就不给那句说明），下面摆两张同尺寸骨架格
+            else if (picksLoading) {
+                item(key = "picks:sk:head") { SectionHead("精选视频", null, modifier = headPad) }
+                item(key = "picks:sk:row") { SkeletonPicks() }
             }
 
             if (hotRows.isNotEmpty()) {
@@ -373,12 +395,7 @@ private fun Banner(videos: List<MusicVideo>, onPlay: (MusicVideo) -> Unit) {
                     .background(Tokens.Track)
                     .tap { onPlay(v) }
             ) {
-                remoteCover(coverAt(v.artworkUrl, 750, 460), edge)?.let {
-                    Image(
-                        bitmap = it, contentDescription = null,
-                        modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
-                    )
-                }
+                CoverFace(coverAt(v.artworkUrl, 750, 460), edge)
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -432,12 +449,7 @@ private fun PickCard(video: MusicVideo, onClick: () -> Unit) {
                 .onSizeChanged { edge = minOf(it.width, it.height) }
                 .background(Tokens.Track)
         ) {
-            remoteCover(video.artworkUrl, edge)?.let {
-                Image(
-                    bitmap = it, contentDescription = null,
-                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
-                )
-            }
+            CoverFace(video.artworkUrl, edge)
         }
         Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
             // 单行，超出省略：两列/横滑的格子里两行标题会把卡片高度撑得参差不齐
@@ -690,6 +702,99 @@ object HotFilter {
 
 /** 下拉刷新时顶面空出来的那一行有多高：拽到阈值正好让出这一整行 */
 private val RefreshRow = 44.dp
+
+/**
+ * 骨架那一层：底色还是原来那块平灰（`Tokens.Track`），上面多一条从左扫到右的亮带（1.2s 一圈）。
+ * 图没解出来、或那一批数据还没到手时摆它 —— 一块不动的死灰看着像画坏了，会动的灰才像"在路上"。
+ * 圆角跟着所在那一格给：横幅/卡片那两格外面已经裁过圆角，里面这一层就给 0，不重复裁一道。
+ */
+@Composable
+internal fun SkeletonBox(modifier: Modifier = Modifier, corner: Dp = Tokens.Dimen.ThumbCorner) {
+    val sweep = rememberInfiniteTransition(label = "skeleton")
+    val p by sweep.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1200, easing = LinearEasing), RepeatMode.Restart),
+        label = "skeleton-sweep",
+    )
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(corner))
+            .drawBehind {
+                drawRect(Tokens.Track)
+                // 亮带宽 = 这一格的 60%，从"整个在左边外"扫到"整个在右边外"
+                val band = size.width * 0.6f
+                val x = -band + (size.width + 2f * band) * p
+                drawRect(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(Color.Transparent, Color.White.copy(alpha = 0.45f), Color.Transparent),
+                        startX = x, endX = x + band,
+                    )
+                )
+            }
+    )
+}
+
+/** 数据还没到时的横幅骨架：左右 10dp、高 216dp、圆角 CardCorner —— 和真横幅一格不差 */
+@Composable
+private fun SkeletonBanner() {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp)) {
+        SkeletonBox(modifier = Modifier.fillMaxWidth().height(216.dp), corner = Tokens.Dimen.CardCorner)
+    }
+}
+
+/**
+ * 「精选视频」的骨架：两张和 PickCard 同宽同图比的格（图区 + 两行字的位子），
+ * 给两张不是随手数的 —— 一屏正好露出 1.98 张（卡 173dp + 缝 9dp + 左右内衬 20dp）。
+ */
+@Composable
+private fun SkeletonPicks() {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = Tokens.Dimen.ScreenPad),
+        horizontalArrangement = Arrangement.spacedBy(9.dp)
+    ) {
+        repeat(2) {
+            Column(
+                modifier = Modifier
+                    .width(PickCardW)
+                    .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
+                    .background(Tokens.Surface)
+            ) {
+                SkeletonBox(modifier = Modifier.fillMaxWidth().aspectRatio(PickCardArc), corner = 0.dp)
+                Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+                    // 两行字的高度按真格子那两档给：标题 15sp 一行、说明 12sp 一行
+                    SkeletonBox(modifier = Modifier.fillMaxWidth().height(15.dp), corner = 3.dp)
+                    SkeletonBox(
+                        modifier = Modifier.padding(top = 6.dp).fillMaxWidth(0.55f).height(12.dp),
+                        corner = 3.dp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 封面淡入那一档多长：300ms，和主流图片库（Coil）的 crossfade 同一档 —— 再短就还是"啪"一下 */
+private val CoverFadeMillis = 300
+
+/**
+ * 封面从骨架上**长**出来，不是换上去：骨架一直铺在底下，图到手后用自己的 alpha 从 0 淡到 1。
+ * 淡到头骨架那一层就离场 —— 微光是无限动画，不能留在一个已经盖死的格子底下空转，
+ * 那样每一格每帧都要重绘一遍。
+ */
+@Composable
+private fun CoverFace(src: String?, edge: Int) {
+    val face = remoteCover(src, edge)
+    val a by animateFloatAsState(
+        targetValue = if (face == null) 0f else 1f,
+        animationSpec = tween(CoverFadeMillis, easing = FastOutSlowInEasing),
+        label = "cover-fade",
+    )
+    if (a < 1f) SkeletonBox(modifier = Modifier.fillMaxSize(), corner = 0.dp)
+    if (face != null) Image(
+        bitmap = face, contentDescription = null,
+        modifier = Modifier.fillMaxSize().alpha(a), contentScale = ContentScale.Crop
+    )
+}
 
 /**
  * 首页和「我的」共用的一层壳：搜索框钉在滚动区**外面**（跟着滚就找不到出口了），
