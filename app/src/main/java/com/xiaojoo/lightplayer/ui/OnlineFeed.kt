@@ -867,9 +867,10 @@ private fun loadCover(url: String): ImageBitmap? = runCatching {    val c = URL(
         ?.asImageBitmap()
 }.getOrNull()
 
-/** 三个点依次亮起来回滚：这一条还没拉到手时的占位，不给任何画面 */
+/** 三个点依次亮起来回滚：这一条还没拉到手时的占位，不给任何画面。
+ *  首页/「我的」下拉刷新那一行也吃这一颗（深底用默认白，浅底把 color 交进来），不再另画一份。 */
 @Composable
-private fun OnlineDots(modifier: Modifier = Modifier) {
+internal fun OnlineDots(modifier: Modifier = Modifier, color: Color = Color.White) {
     val t = rememberInfiniteTransition(label = "online-dots")
     Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         for (i in 0 until 3) {
@@ -886,7 +887,7 @@ private fun OnlineDots(modifier: Modifier = Modifier) {
                 modifier = Modifier
                     .size(9.dp)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = a)),
+                    .background(color.copy(alpha = a)),
             )
         }
     }

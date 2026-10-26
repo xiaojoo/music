@@ -543,7 +543,11 @@ fun MineScreen(
     /** 顶上那颗搜索框：点进去是只搜本机曲库的那一屏（音乐 + 视频两路一起） */
     onOpenSearch: () -> Unit,
     /** 卡片右端那颗「装扮」：换主题色 / 换背景色 / 铺一张本地图 */
-    onOpenAppearance: () -> Unit
+    /** 往下拽那一趟：重扫本机曲库，歌单 / 收藏 / 历史一起读回来 */
+    onRefresh: () -> Unit,
+    /** 扫描在路上：顶上那颗转环停在那里转 */
+    refreshing: Boolean,
+    onOpenAppearance: () -> Unit,
 ) {
     var showDialog by remember { mutableStateOf(false) }
     var expandLists by remember { mutableStateOf(false) }
@@ -571,196 +575,198 @@ fun MineScreen(
         )
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Tokens.Backdrop)
-            .statusBarsPadding()
+    PinnedSearchRefresh(
+        pill = { SearchPill("搜索音乐、视频", Tokens.Dimen.ScreenPad, onClick = onOpenSearch) },
+        refreshing = refreshing,
+        onRefresh = onRefresh,
     ) {
-        item { SearchPill("搜索音乐、视频", Tokens.Dimen.ScreenPad, onClick = onOpenSearch) }
-        // 这颗胶囊自带 10dp 下内衬，补 4dp 凑成这一页原来那条 14dp 的顶缝（卡片没挪窝）
-        item { Spacer(Modifier.height(4.dp)) }
-        item {
-            // 参考图这块是账号+会员+现金活动；本工程没有账号，同一块版面只放真统计，不照抄文案
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Tokens.Dimen.ScreenPad)
-                    .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
-                    .background(Tokens.CardBg)
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(Tokens.Track),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("本", color = Tokens.InkStrong, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-                }
-                Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
-                    Text("本机曲库", color = Tokens.InkStrong, fontSize = 17.sp, fontWeight = FontWeight.Medium)
-                    Row(modifier = Modifier.padding(top = 5.dp)) {
-                        StatChip("${songs.size} 首")
-                        StatChip("${videos.size} 个视频")
-                        StatChip(MediaLibrary.fmtSize(songs.sumOf { it.sizeBytes } + videos.sumOf { it.sizeBytes }))
-                    }
-                }
-                // 装扮那颗：图标在上、两个字在下，和下面那一行三格同一族（26dp 线描 + 13sp 标签 + 同一支墨）。
-                // 宽给满 IconHit 48dp：上下两截合起来正好 48dp 方，不然只有文字那一段按得着
-                Column(
-                    modifier = Modifier
-                        .width(Tokens.Dimen.IconHit)
-                        .tap(onClick = onOpenAppearance),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    LineIcon(IconKind.Shirt, size = 26.dp, color = Tokens.InkFaint)
-                    Text("装扮", color = Tokens.InkFaint, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
-                }
-            }
-        }
-
-        item { Spacer(Modifier.height(10.dp)) }
-        item {
-            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = Tokens.Dimen.ScreenPad)) {
-                // 29.8dp：心进了 InkFit（墨从占画框 0.5735 归一到 0.5），画框要乘 1.147
-                // 才保住它在这三格里原来那点大小
-                GridCell(Modifier.weight(1f), IconKind.Favorite, "收藏", "$favoriteCount",
-                    enabled = favoriteCount > 0, selected = false, glyph = 29.8.dp) { onOpenFavorites() }
-                GridCell(Modifier.weight(1f), IconKind.Download, "音乐", "${songs.size}",
-                    enabled = true, selected = false) { onOpenLibrary(false) }
-                GridCell(Modifier.weight(1f), IconKind.Video, "视频", "${videos.size}",
-                    enabled = true, selected = false) { onOpenLibrary(true) }
-            }
-        }
-
-        item {
-            Box(modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad)) {
-                SectionTitle("最近播放", history.isNotEmpty()) { onOpenHistory(null) }
-            }
-        }
-        item { Spacer(Modifier.height(2.dp)) }
-        item {
-            LazyRow(
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ScreenPad
-                )
-            ) {
-                if (playedSongs.isNotEmpty()) {
-                    item {
-                        HistoryCard(playedSongs.first(), "已播歌曲", "${playedSongs.size} 首") {
-                            // 这两格是入口不是播放键：进最近播放页，各自落在自己那一支页签上；
-                            // 要播整串去那一页顶上的「全部播放(N)」
-                            onOpenHistory(0)
-                        }
-                    }
-                }
-                if (playedVideos.isNotEmpty()) {
-                    item {
-                        HistoryCard(playedVideos.first(), "已播视频", "${playedVideos.size} 个") {
-                            onOpenHistory(1)
-                        }
-                    }
-                }
-                itemsIndexed(recent, key = { i, t -> "h$i-" + t.uri }) { i, t ->
-                    HistoryCard(
-                        coverOf = t,
-                        label = t.name,
-                        sub = t.artist?.takeIf { a -> a.isNotBlank() && a != "<unknown>" } ?: "未知歌手",
-                        onClick = { onPlayList(recent, i) }
-                    )
-                }
-            }
-        }
-
-        item { Spacer(Modifier.height(10.dp)) }
-        item {
-            Row(
-                modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                MineTab("自建歌单", playlists.size, listTab == 0) { listTab = 0 }
-                Spacer(Modifier.width(14.dp))
-                MineTab("收藏歌单", favLists.size, listTab == 1) { listTab = 1 }
-                Spacer(Modifier.weight(1f))
-                Box(
-                    modifier = Modifier
-                        .size(Tokens.Dimen.IconHit)
-                        .tap { showDialog = true },
-                    contentAlignment = Alignment.CenterEnd
-                ) {
-                    LineIcon(IconKind.PlaylistAdd, size = 18.dp, color = Tokens.InkFaint)
-                }
-                /* > 的命中盒按墨迹定宽：两颗的墨间隙 = 旗形那颗的右沿内缩 + (盒宽 - 11.475)，取 36dp 真机量到 76px，
-                   和列表行右端那三颗的白缝同一把数（心墨 35 + 加号墨 31 配两个 40dp 盒 → 实测 77px=28dp，见 RowIcon 注释）；
-                   37dp 会跳到 80px，76 是整数 dp 里最近的一档 */
-                Box(
-                    modifier = Modifier
-                        .width(36.dp)
-                        .height(Tokens.Dimen.IconHit)
-                        .tap(onClick = onOpenPlaylists),
-                    contentAlignment = Alignment.CenterEnd
-                ) {
-                    LineIcon(IconKind.ChevronRight, size = 18.dp, color = Tokens.InkFaint)
-                }
-            }
-        }
-        if (lists.isEmpty()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            // 这颗胶囊自带 10dp 下内衬，补 4dp 凑成这一页原来那条 14dp 的顶缝（卡片没挪窝）
+            item { Spacer(Modifier.height(4.dp)) }
             item {
-                Text(
-                    text = if (listTab == 0) "还没有歌单，点右上角 + 新建" else "还没有收藏的歌单，点歌单右边那颗心",
-                    color = Tokens.InkFaint,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad)
-                )
-            }
-        } else {
-            items(shown, key = { it.id }) { p ->
-                PlaylistRow(
-                    playlist = p,
-                    tracks = tracksOf(p),
-                    favorite = p.id in favoritePlaylistIds,
-                    onToggleFavorite = { onToggleFavoritePlaylist(p) },
-                    onClick = { onOpenPlaylist(p) },
-                    onLongClick = { top, h ->
-                        menuFor = p
-                        menuTop = top + h
-                    }
-                )
-                Spacer(Modifier.height(10.dp))
-            }
-            if (lists.size > COLLAPSED_LISTS) {
-                item {
+                // 参考图这块是账号+会员+现金活动；本工程没有账号，同一块版面只放真统计，不照抄文案
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Tokens.Dimen.ScreenPad)
+                        .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
+                        .background(Tokens.CardBg)
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .tap { expandLists = !expandLists }
-                            .padding(vertical = 8.dp),
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(Tokens.Track),
                         contentAlignment = Alignment.Center
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = if (expandLists) "收起全部歌单" else "展开全部歌单",
-                                color = Tokens.InkFaint,
-                                fontSize = 13.sp
-                            )
-                            LineIcon(
-                                IconKind.ChevronDown,
-                                size = 14.dp,
-                                color = Tokens.InkFaint,
-                                modifier = Modifier.padding(start = 4.dp)
-                            )
+                        Text("本", color = Tokens.InkStrong, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                    }
+                    Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+                        Text("本机曲库", color = Tokens.InkStrong, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+                        Row(modifier = Modifier.padding(top = 5.dp)) {
+                            StatChip("${songs.size} 首")
+                            StatChip("${videos.size} 个视频")
+                            StatChip(MediaLibrary.fmtSize(songs.sumOf { it.sizeBytes } + videos.sumOf { it.sizeBytes }))
+                        }
+                    }
+                    // 装扮那颗：图标在上、两个字在下，和下面那一行三格同一族（26dp 线描 + 13sp 标签 + 同一支墨）。
+                    // 宽给满 IconHit 48dp：上下两截合起来正好 48dp 方，不然只有文字那一段按得着
+                    Column(
+                        modifier = Modifier
+                            .width(Tokens.Dimen.IconHit)
+                            .tap(onClick = onOpenAppearance),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        LineIcon(IconKind.Shirt, size = 26.dp, color = Tokens.InkFaint)
+                        Text("装扮", color = Tokens.InkFaint, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+            }
+
+            item { Spacer(Modifier.height(10.dp)) }
+            item {
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = Tokens.Dimen.ScreenPad)) {
+                    // 29.8dp：心进了 InkFit（墨从占画框 0.5735 归一到 0.5），画框要乘 1.147
+                    // 才保住它在这三格里原来那点大小
+                    GridCell(Modifier.weight(1f), IconKind.Favorite, "收藏", "$favoriteCount",
+                        enabled = favoriteCount > 0, selected = false, glyph = 29.8.dp) { onOpenFavorites() }
+                    GridCell(Modifier.weight(1f), IconKind.Download, "音乐", "${songs.size}",
+                        enabled = true, selected = false) { onOpenLibrary(false) }
+                    GridCell(Modifier.weight(1f), IconKind.Video, "视频", "${videos.size}",
+                        enabled = true, selected = false) { onOpenLibrary(true) }
+                }
+            }
+
+            item {
+                Box(modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad)) {
+                    SectionTitle("最近播放", history.isNotEmpty()) { onOpenHistory(null) }
+                }
+            }
+            item { Spacer(Modifier.height(2.dp)) }
+            item {
+                LazyRow(
+                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ScreenPad
+                    )
+                ) {
+                    if (playedSongs.isNotEmpty()) {
+                        item {
+                            HistoryCard(playedSongs.first(), "已播歌曲", "${playedSongs.size} 首") {
+                                // 这两格是入口不是播放键：进最近播放页，各自落在自己那一支页签上；
+                                // 要播整串去那一页顶上的「全部播放(N)」
+                                onOpenHistory(0)
+                            }
+                        }
+                    }
+                    if (playedVideos.isNotEmpty()) {
+                        item {
+                            HistoryCard(playedVideos.first(), "已播视频", "${playedVideos.size} 个") {
+                                onOpenHistory(1)
+                            }
+                        }
+                    }
+                    itemsIndexed(recent, key = { i, t -> "h$i-" + t.uri }) { i, t ->
+                        HistoryCard(
+                            coverOf = t,
+                            label = t.name,
+                            sub = t.artist?.takeIf { a -> a.isNotBlank() && a != "<unknown>" } ?: "未知歌手",
+                            onClick = { onPlayList(recent, i) }
+                        )
+                    }
+                }
+            }
+
+            item { Spacer(Modifier.height(10.dp)) }
+            item {
+                Row(
+                    modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MineTab("自建歌单", playlists.size, listTab == 0) { listTab = 0 }
+                    Spacer(Modifier.width(14.dp))
+                    MineTab("收藏歌单", favLists.size, listTab == 1) { listTab = 1 }
+                    Spacer(Modifier.weight(1f))
+                    Box(
+                        modifier = Modifier
+                            .size(Tokens.Dimen.IconHit)
+                            .tap { showDialog = true },
+                        contentAlignment = Alignment.CenterEnd
+                    ) {
+                        LineIcon(IconKind.PlaylistAdd, size = 18.dp, color = Tokens.InkFaint)
+                    }
+                    /* > 的命中盒按墨迹定宽：两颗的墨间隙 = 旗形那颗的右沿内缩 + (盒宽 - 11.475)，取 36dp 真机量到 76px，
+                       和列表行右端那三颗的白缝同一把数（心墨 35 + 加号墨 31 配两个 40dp 盒 → 实测 77px=28dp，见 RowIcon 注释）；
+                       37dp 会跳到 80px，76 是整数 dp 里最近的一档 */
+                    Box(
+                        modifier = Modifier
+                            .width(36.dp)
+                            .height(Tokens.Dimen.IconHit)
+                            .tap(onClick = onOpenPlaylists),
+                        contentAlignment = Alignment.CenterEnd
+                    ) {
+                        LineIcon(IconKind.ChevronRight, size = 18.dp, color = Tokens.InkFaint)
+                    }
+                }
+            }
+            if (lists.isEmpty()) {
+                item {
+                    Text(
+                        text = if (listTab == 0) "还没有歌单，点右上角 + 新建" else "还没有收藏的歌单，点歌单右边那颗心",
+                        color = Tokens.InkFaint,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad)
+                    )
+                }
+            } else {
+                items(shown, key = { it.id }) { p ->
+                    PlaylistRow(
+                        playlist = p,
+                        tracks = tracksOf(p),
+                        favorite = p.id in favoritePlaylistIds,
+                        onToggleFavorite = { onToggleFavoritePlaylist(p) },
+                        onClick = { onOpenPlaylist(p) },
+                        onLongClick = { top, h ->
+                            menuFor = p
+                            menuTop = top + h
+                        }
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
+                if (lists.size > COLLAPSED_LISTS) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .tap { expandLists = !expandLists }
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = if (expandLists) "收起全部歌单" else "展开全部歌单",
+                                    color = Tokens.InkFaint,
+                                    fontSize = 13.sp
+                                )
+                                LineIcon(
+                                    IconKind.ChevronDown,
+                                    size = 14.dp,
+                                    color = Tokens.InkFaint,
+                                    modifier = Modifier.padding(start = 4.dp)
+                                )
+                            }
                         }
                     }
                 }
             }
+
+
+            item { Spacer(Modifier.height(24.dp)) }
         }
-
-
-        item { Spacer(Modifier.height(24.dp)) }
     }
 
     renaming?.let {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -27,6 +28,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -37,6 +40,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -109,6 +114,10 @@ fun HomeFeed(
     onDownloadPick: (MusicVideo) -> Unit,
     /** 栏头那颗「更多」：点开「热门音乐」那一整屏 */
     onMoreHot: () -> Unit,
+    /** 往下拽那一趟：旧数据原样摆着，重问第一批，到手才整面换掉 */
+    onRefresh: () -> Unit,
+    /** 数据在路上：顶上那颗转环停在那里转 */
+    refreshing: Boolean,
 ) {
     val banner = picks.take(5)
     val cards = picks.drop(5)
@@ -121,160 +130,169 @@ fun HomeFeed(
     // 栏头要和它下面那张卡左右对齐：卡片吃 ScreenPad，栏头就得自己补同一条内衬
     val headPad = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad).padding(bottom = 8.dp)
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Tokens.Backdrop)
-            .statusBarsPadding(),
-        /* 底部这条缝原来是照"和卡片间间隙一样"定的：真机量两张卡之间 156px = 56.7dp。
-           他 10-15 看了说这一档太高，只要它的一半 → **28.35dp**（78px）。
-           再往前那一版写 96dp，理由是"迷你条是浮层会压住最后一张卡" —— 那句不成立：
-           MainActivity 那列里迷你条和底栏是滚动区（`Box(weight 1f)`）的**兄弟行**，视口本来就停在它们上面，
-           96.8dp 全是空白（他 10-14 圈出来的就是这一截）。 */
-        contentPadding = PaddingValues(bottom = 28.35.dp)
+    /* 数据到手那一下把这一列拉回顶上。横幅那一格空的时候是零高，它长起来会把已经看见的东西顶出去，
+       而 LazyColumn 的滚动位置是按「当前第一格」保的 —— 华为那台量到正好停在横幅上面（横幅整个在视口外），
+       Redmi 那台量到的是对的：同一份代码两台各走一头，只能把落点钉死。 */
+    val listState = rememberLazyListState()
+    LaunchedEffect(banner.isEmpty()) { listState.scrollToItem(0) }
+
+    PinnedSearchRefresh(
+        pill = { SearchPill("搜索音乐", 10.dp, onClick = onSearch) },
+        refreshing = refreshing,
+        onRefresh = onRefresh,
     ) {
-        item(key = "search") { SearchPill("搜索音乐", 10.dp, onClick = onSearch) }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            /* 底部这条缝原来是照"和卡片间间隙一样"定的：真机量两张卡之间 156px = 56.7dp。
+               他 10-15 看了说这一档太高，只要它的一半 → **28.35dp**（78px）。
+               再往前那一版写 96dp，理由是"迷你条是浮层会压住最后一张卡" —— 那句不成立：
+               MainActivity 那列里迷你条和底栏是滚动区（`Box(weight 1f)`）的**兄弟行**，视口本来就停在它们上面，
+               96.8dp 全是空白（他 10-14 圈出来的就是这一截）。 */
+            contentPadding = PaddingValues(bottom = 28.35.dp)
+        ) {
 
-        if (banner.isNotEmpty()) item(key = "banner") { Banner(videos = banner, onPlay = onPlayVideoPick) }
+            if (banner.isNotEmpty()) item(key = "banner") { Banner(videos = banner, onPlay = onPlayVideoPick) }
 
-        item(key = "entries") {
-            /* 五格等宽，不用 SpaceBetween：SpaceBetween 分的是**格子之间**的缝，格子宽 = 标签墨宽 + 内衬，
-               所以标签从两个字变四个字（「收藏」47px → 「视频下载」101px）那一格就自己变宽，
-               图标中心跟着被推走 —— 真机量到五颗的墨中心 96.5/302.5/507.5/729.5/966.5，
-               间距 206/205/222/237，最后那两格比前面宽 32px = 11.6dp。
-               等宽之后每格 200.6px，五颗的墨中心落在一条等距线上，标签各自在格里居中。 */
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 18.dp)
-            ) {
-                EntryIcon(IconKind.Person, "歌手", onArtists, Modifier.weight(1f))
-                EntryIcon(IconKind.Sort, "排行", onCharts, Modifier.weight(1f))
-                EntryIcon(IconKind.PlaylistAdd, "歌单", onPlaylists, Modifier.weight(1f))
-                EntryIcon(IconKind.Download, "视频下载", onVideoDownload, Modifier.weight(1f))
-                EntryIcon(IconKind.Recognize, "听歌识曲", onRecognize, Modifier.weight(1f))
-            }
-        }
-
-        if (cards.isNotEmpty()) {
-            item(key = "picks:head") { SectionHead("精选视频", pickNote, modifier = headPad) }
-            item(key = "picks:row") {
-                /* 懒加载的触发：露到栏尾倒数第三格就要下一批。
-                   用 layoutInfo 而不是"哨兵项一进组合就发请求"——后者每接上一批都会让新的哨兵进组合，
-                   人停在栏尾就会一路把五批全要完；这里每接一批 totalItemsCount 变大，门槛自己往后退，
-                   要停下来等人才继续。 */
-                val pickState = rememberLazyListState()
-                LaunchedEffect(pickState, cards.size) {
-                    snapshotFlow {
-                        (pickState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1) to
-                            pickState.layoutInfo.totalItemsCount
-                    }.collect { (last, total) -> if (total > 3 && last >= total - 3) onPicksMore() }
-                }
-                LazyRow(
-                    state = pickState,
-                    modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = Tokens.Dimen.ScreenPad),
-                    horizontalArrangement = Arrangement.spacedBy(9.dp)
+            item(key = "entries") {
+                /* 五格等宽，不用 SpaceBetween：SpaceBetween 分的是**格子之间**的缝，格子宽 = 标签墨宽 + 内衬，
+                   所以标签从两个字变四个字（「收藏」47px → 「视频下载」101px）那一格就自己变宽，
+                   图标中心跟着被推走 —— 真机量到五颗的墨中心 96.5/302.5/507.5/729.5/966.5，
+                   间距 206/205/222/237，最后那两格比前面宽 32px = 11.6dp。
+                   等宽之后每格 200.6px，五颗的墨中心落在一条等距线上，标签各自在格里居中。 */
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 18.dp)
                 ) {
-                    items(cards, key = { "picks:" + it.key }) { v ->
-                        PickCard(video = v, onClick = { onPlayVideoPick(v) })
+                    EntryIcon(IconKind.Person, "歌手", onArtists, Modifier.weight(1f))
+                    EntryIcon(IconKind.Sort, "排行", onCharts, Modifier.weight(1f))
+                    EntryIcon(IconKind.PlaylistAdd, "歌单", onPlaylists, Modifier.weight(1f))
+                    EntryIcon(IconKind.Download, "视频下载", onVideoDownload, Modifier.weight(1f))
+                    EntryIcon(IconKind.Recognize, "听歌识曲", onRecognize, Modifier.weight(1f))
+                }
+            }
+
+            if (cards.isNotEmpty()) {
+                item(key = "picks:head") { SectionHead("精选视频", pickNote, modifier = headPad) }
+                item(key = "picks:row") {
+                    /* 懒加载的触发：露到栏尾倒数第三格就要下一批。
+                       用 layoutInfo 而不是"哨兵项一进组合就发请求"——后者每接上一批都会让新的哨兵进组合，
+                       人停在栏尾就会一路把五批全要完；这里每接一批 totalItemsCount 变大，门槛自己往后退，
+                       要停下来等人才继续。 */
+                    val pickState = rememberLazyListState()
+                    LaunchedEffect(pickState, cards.size) {
+                        snapshotFlow {
+                            (pickState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1) to
+                                pickState.layoutInfo.totalItemsCount
+                        }.collect { (last, total) -> if (total > 3 && last >= total - 3) onPicksMore() }
                     }
-                    /* 下一批在路上：栏尾右端露一颗转环（复用在线那一屏那共用的 SpinArc，不再画第二种加载样子）。
-                       高度取卡片图区那一档，让它落在图的竖直中心而不是整张卡（整张卡下面还有两行字）。
-                       到底了（`musicOnlinePickDone`）这一格就不再来 —— 没有下一次可等，转环就是骗人。 */
-                    if (picksLoading) item(key = "picks:more") {
-                        Box(
-                            modifier = Modifier.size(width = 44.dp, height = PickCardW / PickCardArc),
-                            contentAlignment = Alignment.Center,
-                        ) { SpinArc() }
+                    LazyRow(
+                        state = pickState,
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = Tokens.Dimen.ScreenPad),
+                        horizontalArrangement = Arrangement.spacedBy(9.dp)
+                    ) {
+                        items(cards, key = { "picks:" + it.key }) { v ->
+                            PickCard(video = v, onClick = { onPlayVideoPick(v) })
+                        }
+                        /* 下一批在路上：栏尾右端露一颗转环（复用在线那一屏那共用的 SpinArc，不再画第二种加载样子）。
+                           高度取卡片图区那一档，让它落在图的竖直中心而不是整张卡（整张卡下面还有两行字）。
+                           到底了（`musicOnlinePickDone`）这一格就不再来 —— 没有下一次可等，转环就是骗人。 */
+                        if (picksLoading) item(key = "picks:more") {
+                            Box(
+                                modifier = Modifier.size(width = 44.dp, height = PickCardW / PickCardArc),
+                                contentAlignment = Alignment.Center,
+                            ) { SpinArc() }
+                        }
                     }
                 }
             }
-        }
 
-        if (hotRows.isNotEmpty()) {
-            item(key = "hot:head") {
-                SectionHead(
-                    title = "热门音乐",
-                    note = "按发布时间",
-                    action = "更多",
-                    actionIcon = IconKind.ChevronRight,
-                    onAction = onMoreHot,
-                    modifier = headPad
-                )
+            if (hotRows.isNotEmpty()) {
+                item(key = "hot:head") {
+                    SectionHead(
+                        title = "热门音乐",
+                        note = "按发布时间",
+                        action = "更多",
+                        actionIcon = IconKind.ChevronRight,
+                        onAction = onMoreHot,
+                        modifier = headPad
+                    )
+                }
+                item(key = "hot:panel") {
+                    PanelCard {
+                        hotRows.forEach { v ->
+                            // 左内衬补 12.7dp。这一行右端那两颗的墨右沿本来就落在"离卡片右沿 12.7dp"
+                            // 那一条上（那是 MusicSourcePage 里 rightShift 那个常数保证的），而以前左边一格没给，
+                            // 封面直接贴在卡片左沿 —— 真机量到左缝 0px、右缝 36px(=13.1dp，含 1px 抗锯齿晕)。
+                            // 补成同一个数，这一行的左右两条缝才是同一根线（他 10-14 点的）。
+                            Box(modifier = Modifier.padding(start = 12.7.dp)) {
+                                MusicRow(
+                                    video = v,
+                                    playing = "online:" + v.key == playingId,
+                                    onClick = { onPlayPick(v) },
+                                    onQueue = { onQueuePick(v) },
+                                    onDownload = { onDownloadPick(v) },
+                                    downloading = downloadingKey == v.key,
+                                    // 第二行：歌手 · 时长 · 发布时间 · 源名。站点没给的那一格直接不写，
+                                    // 不拿"未知"占位；音质那一格列表里拿不到（网易云 6/6 空、B 站和快手列表不报），
+                                    // 所以这里不标 —— 它只在取址之后才存在，写在播放页和队列那一行
+                                    sub = listOfNotNull(
+                                        v.artist.takeIf { it.isNotBlank() },
+                                        MediaLibrary.fmtDuration(v.durationMs).takeIf { v.durationMs > 0 },
+                                        fmtPublished(v.publishedAtMs),
+                                        sourceLabel(v.sourceId),
+                                    ).joinToString(" · "),
+                                )
+                            }
+                        }
+                    }
+                }
             }
-            item(key = "hot:panel") {
-                PanelCard {
-                    hotRows.forEach { v ->
-                        // 左内衬补 12.7dp。这一行右端那两颗的墨右沿本来就落在"离卡片右沿 12.7dp"
-                        // 那一条上（那是 MusicSourcePage 里 rightShift 那个常数保证的），而以前左边一格没给，
-                        // 封面直接贴在卡片左沿 —— 真机量到左缝 0px、右缝 36px(=13.1dp，含 1px 抗锯齿晕)。
-                        // 补成同一个数，这一行的左右两条缝才是同一根线（他 10-14 点的）。
-                        Box(modifier = Modifier.padding(start = 12.7.dp)) {
-                            MusicRow(
-                                video = v,
-                                playing = "online:" + v.key == playingId,
-                                onClick = { onPlayPick(v) },
-                                onQueue = { onQueuePick(v) },
-                                onDownload = { onDownloadPick(v) },
-                                downloading = downloadingKey == v.key,
-                                // 第二行：歌手 · 时长 · 发布时间 · 源名。站点没给的那一格直接不写，
-                                // 不拿"未知"占位；音质那一格列表里拿不到（网易云 6/6 空、B 站和快手列表不报），
-                                // 所以这里不标 —— 它只在取址之后才存在，写在播放页和队列那一行
-                                sub = listOfNotNull(
-                                    v.artist.takeIf { it.isNotBlank() },
-                                    MediaLibrary.fmtDuration(v.durationMs).takeIf { v.durationMs > 0 },
-                                    fmtPublished(v.publishedAtMs),
-                                    sourceLabel(v.sourceId),
-                                ).joinToString(" · "),
+
+            if (histRows.isNotEmpty()) {
+                item(key = "hist:head") { SectionHead("最近播放", "按播放时间", modifier = headPad) }
+                item(key = "hist:panel") {
+                    PanelCard {
+                        histRows.forEachIndexed { i, t ->
+                            TrackRow(
+                                track = t,
+                                // 在线条目那一路存的是会过期的直链，收藏页按 MediaStore 解它解不回来：
+                                // 那颗心摆上去就是死控件，不摆
+                                showFavorite = !Online.isOnline(t),
+                                favorite = t.uri.toString() in favorites,
+                                onClick = { onPlayList(histRows, i) },
+                                onFavorite = { onToggleFavorite(t) },
                             )
                         }
                     }
                 }
             }
-        }
 
-        if (histRows.isNotEmpty()) {
-            item(key = "hist:head") { SectionHead("最近播放", "按播放时间", modifier = headPad) }
-            item(key = "hist:panel") {
-                PanelCard {
-                    histRows.forEachIndexed { i, t ->
-                        TrackRow(
-                            track = t,
-                            // 在线条目那一路存的是会过期的直链，收藏页按 MediaStore 解它解不回来：
-                            // 那颗心摆上去就是死控件，不摆
-                            showFavorite = !Online.isOnline(t),
-                            favorite = t.uri.toString() in favorites,
-                            onClick = { onPlayList(histRows, i) },
-                            onFavorite = { onToggleFavorite(t) },
-                        )
-                    }
+            if (playlists.isNotEmpty()) {
+                item(key = "pl:head") {
+                    SectionHead(
+                        title = "我的歌单",
+                        note = "${playlists.size} 单",
+                        action = "更多",
+                        actionIcon = IconKind.ChevronRight,
+                        onAction = onPlaylists,
+                        modifier = headPad
+                    )
                 }
-            }
-        }
-
-        if (playlists.isNotEmpty()) {
-            item(key = "pl:head") {
-                SectionHead(
-                    title = "我的歌单",
-                    note = "${playlists.size} 单",
-                    action = "更多",
-                    actionIcon = IconKind.ChevronRight,
-                    onAction = onPlaylists,
-                    modifier = headPad
-                )
-            }
-            item(key = "pl:panel") {
-                PanelCard {
-                    playlists.take(4).forEach { p ->
-                        val tracks = tracksOf(p)
-                        TrackRow(
-                            track = tracks.firstOrNull(),
-                            title = p.name,
-                            sub = "${p.uris.size} 首",
-                            favorite = false,
-                            showFavorite = false,
-                            onClick = { onOpenPlaylist(p) },
-                            onFavorite = {},
-                        )
+                item(key = "pl:panel") {
+                    PanelCard {
+                        playlists.take(4).forEach { p ->
+                            val tracks = tracksOf(p)
+                            TrackRow(
+                                track = tracks.firstOrNull(),
+                                title = p.name,
+                                sub = "${p.uris.size} 首",
+                                favorite = false,
+                                showFavorite = false,
+                                onClick = { onOpenPlaylist(p) },
+                                onFavorite = {},
+                            )
+                        }
                     }
                 }
             }
@@ -463,7 +481,9 @@ private fun TrackRow(
             .padding(vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CoverBox(track, side = 52.dp, badge = false)
+        /* 方图吃 42dp —— 和上面「热门音乐」那一栏同一档（MusicRow 的封面就是 42dp，圆角同为 ThumbCorner 3dp）。
+           原来是 52dp，两张卡的格子比上面那一栏大一号，三栏摆在一起看着是三套尺寸（他 10-26 点的）。 */
+        CoverBox(track, side = 42.dp, badge = false)
         Column(modifier = Modifier.weight(1f).padding(start = 11.dp)) {
             Text(
                 title, color = Tokens.InkStrong, fontSize = 15.sp, lineHeight = 20.sp,
@@ -659,4 +679,59 @@ object HotFilter {
                 else -> true
             }
         }
+}
+
+/** 下拉刷新时顶面空出来的那一行有多高：拽到阈值正好让出这一整行 */
+private val RefreshRow = 44.dp
+
+/**
+ * 首页和「我的」共用的一层壳：搜索框钉在滚动区**外面**（跟着滚就找不到出口了），
+ * 下面整块往下拽刷新 —— 拽多少就把整块往下让多少，顶面空出一行，行的正中是三个点
+ * （在线那一栏同一颗 OnlineDots，浅底换深墨）。内置那只带箭头的指示关掉不吃。
+ */
+@Composable
+internal fun PinnedSearchRefresh(
+    pill: @Composable () -> Unit,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
+    body: @Composable () -> Unit,
+) {
+    val state = rememberPullToRefreshState()
+    /* distanceFraction 是这一层唯一的变量：0 = 收着，1 = 到阈值（松手之后正在刷也停在 1）。
+       让出去多少、淡进来多少都从它算，不另记一套「拉了多远」。 */
+    val shown = state.distanceFraction.coerceIn(0f, 1f)
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Tokens.Backdrop)
+            .statusBarsPadding()
+    ) {
+        pill()
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                // 整块往下让位时多出来那一档从底上裁掉，不然末行会压到迷你条那一格上
+                .clipToBounds()
+        ) {
+            Box(modifier = Modifier.fillMaxSize().offset(y = RefreshRow * shown)) {
+                PullToRefreshBox(
+                    isRefreshing = refreshing,
+                    onRefresh = onRefresh,
+                    state = state,
+                    modifier = Modifier.fillMaxSize(),
+                    content = { body() },
+                    indicator = {},
+                )
+            }
+            if (shown > 0f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(RefreshRow)
+                        .alpha(shown),
+                    contentAlignment = Alignment.Center
+                ) { OnlineDots(color = Tokens.Ink) }
+            }
+        }
+    }
 }

@@ -527,6 +527,8 @@ private fun App(
     var musicOnlinePickPage by remember { mutableIntStateOf(0) }
     var musicOnlinePickBusy by remember { mutableStateOf(false) }
     var musicOnlinePickDone by remember { mutableStateOf(false) }
+    /** 这一趟刷新是不是**人拽出来的**：只在拽过之后亮那颗转环，冷启动那一批在路上时顶上不该有东西 */
+    var homeRefreshing by remember { mutableStateOf(false) }
     // 歌手页那颗 🔍 开的是整屏搜索页，词存在壳层：那一页挂着时列表页不在，词存在页里会跟着没
     var artistQuery by remember { mutableStateOf("") }
 
@@ -574,6 +576,10 @@ private fun App(
     var scanTick by remember { mutableIntStateOf(0) }
     /** 重扫完成的计数（顶栏那一格的转圈靠它收） */
     var libraryScan by remember { mutableIntStateOf(0) }
+    /** 这一趟扫描在不在跑：「我的」那一下下拉的转环停在它上面转 */
+    var libraryBusy by remember { mutableStateOf(false) }
+    /** 和首页那一格同一个道理：转环只认「人拽过」，第一趟冷扫不该在顶上挂一枚 */
+    var mineRefreshing by remember { mutableStateOf(false) }
     /**
      * 一切改动过媒体库的操作都从这里走一遍：删除、下载完、以及第一页那一下下拉。
      *
@@ -730,15 +736,21 @@ private fun App(
     }
 
     LaunchedEffect(mediaGranted, scanTick) {
-        if (!mediaGranted) {
-            audioTracks = emptyList()
-            videoTracks = emptyList()
-            return@LaunchedEffect
+        libraryBusy = true
+        try {
+            if (!mediaGranted) {
+                audioTracks = emptyList()
+                videoTracks = emptyList()
+                return@LaunchedEffect
+            }
+            val t0 = System.currentTimeMillis()
+            audioTracks = withContext(Dispatchers.IO) { MediaLibrary.load(context, video = false) }
+            videoTracks = withContext(Dispatchers.IO) { MediaLibrary.load(context, video = true) }
+            libraryScan += 1
+        } finally {
+            // 中途换了 scanTick 会被取消，取消也走这一支：转环不能因为一次取消就停不下来
+            libraryBusy = false
         }
-        val t0 = System.currentTimeMillis()
-        audioTracks = withContext(Dispatchers.IO) { MediaLibrary.load(context, video = false) }
-        videoTracks = withContext(Dispatchers.IO) { MediaLibrary.load(context, video = true) }
-        libraryScan += 1
     }
 
     LaunchedEffect(tab, nowPlaying) { history = PlayHistory.list(context) }
@@ -1344,15 +1356,18 @@ private fun App(
         if (musicOnlinePickBusy) return
         if (to == 1 && musicOnlinePickPage > 0) return     // 第一批问过的不重问
         if (to > 1 && musicOnlinePickDone) return          // 站点没有更新的一批了，别再撞
+        // 下拉刷新把 page 抹回 0 ⇒ 这一批是**重问的第一批**，到手换掉整面墙，不是往旧的后面接
+        val replace = musicOnlinePickPage == 0
         musicOnlinePickBusy = true
         scope.launch {
             val got = withContext(Dispatchers.IO) {
                 runCatching { Online.browse(MUSIC_ONLINE_PICKS, page = to) }.getOrDefault(emptyList())
             }
             musicOnlinePickBusy = false
-            val merged = (musicOnlinePicks + got).distinctBy { it.pageUrl }
+            val old = if (replace) emptyList() else musicOnlinePicks
+            val merged = (old + got).distinctBy { it.pageUrl }
             // 空手回来，或者一批全和已有的重了 = 到底了，别再排第二次
-            if (got.isEmpty() || merged.size == musicOnlinePicks.size) musicOnlinePickDone = true
+            if (got.isEmpty() || merged.size == old.size) musicOnlinePickDone = true
             musicOnlinePicks = merged.filter { !it.artworkUrl.isNullOrBlank() }
             musicOnlinePickPage = to
             Log.i("HomePicks", "第 $to 批到手 ${got.size} 条，精选一共 ${musicOnlinePicks.size} 条")
@@ -2143,6 +2158,44 @@ private fun App(
         }
     }
 
+    /**
+     * 首页那一屏往下拽：**旧的先摆着不动**，把「精选视频」的批次账抹回 0（page=0 就是"下一批是重问的第一批，
+     * 到手换掉整面墙"，见 [loadMusicPicks]），再问一次第一批 —— 所以拽这一下不会先把横幅和那一栏清空、
+     * 也不会把落点从轮播图上挪走（他 10-26 点的就是这个）。新第一批到手才整面换掉。
+     * 「热门音乐」是另一次拉取，它本来就是回来才写，跟着一起再问一遍。
+     */
+    fun refreshHome() {
+        homeRefreshing = true
+        if (musicOnlinePickBusy || musicHotBusy) return
+        musicOnlinePickPage = 0
+        musicOnlinePickDone = false
+        loadMusicPicks(next = false)
+        fetchMusicHot()
+    }
+
+    /**
+     * 「我的」那一屏往下拽：重扫本机曲库（和删除、下载完走的是同一颗 [refreshLibrary]），
+     * 再把三份账读回来 —— 歌单、心、历史都是本地那几份，不扫这一趟看不到别人刚丢进来的文件。
+     */
+    fun refreshMine() {
+        mineRefreshing = true
+        if (libraryBusy) return
+        playlists = repo.all()
+        favorites = favRepo.all()
+        favoritedPlaylists = favPlRepo.all()
+        history = PlayHistory.list(context)
+        refreshLibrary()
+    }
+
+    /* 转环收不停在「路上那几格」上：拽出来的那一趟结束了（路上的标记全落下来）才收回。
+       分开两份账是因为冷启动那一批本来就在路上 —— 拿它当"正在刷新"，首页一进来顶上就挂一枚。 */
+    LaunchedEffect(homeRefreshing, musicOnlinePickBusy, musicHotBusy) {
+        if (homeRefreshing && !musicOnlinePickBusy && !musicHotBusy) homeRefreshing = false
+    }
+    LaunchedEffect(mineRefreshing, libraryBusy) {
+        if (mineRefreshing && !libraryBusy) mineRefreshing = false
+    }
+
     /* 这三个入口没到过就不该花那一截流量（榜单那一路一次是 1.6MB 报文，见 HOT_MUSIC_PER_BOARD）。
        问过的不重问 —— 重拉只有一个入口：「在线音乐源」那一屏地址行右边那颗刷新。 */
     LaunchedEffect(tab, page) {
@@ -2881,6 +2934,8 @@ private fun App(
                     onQueuePick = { v -> queueMusicOnline(v) },
                     onDownloadPick = { v -> downloadMusicOnline(v) },
                     onMoreHot = { openPage("home-hot") },
+                    onRefresh = { refreshHome() },
+                    refreshing = homeRefreshing,
                 )
 
                 AppTab.Music -> PlayerScreen(
@@ -3012,7 +3067,9 @@ private fun App(
                     },
                     onOpenFavorites = { page = "favorites" },
                     onOpenSearch = { openPage("local-search") },
-                    onOpenAppearance = { openPage("appearance") }
+                    onOpenAppearance = { openPage("appearance") },
+                    onRefresh = { refreshMine() },
+                    refreshing = mineRefreshing
                 )
             }
             }
