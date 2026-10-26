@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 和 Tokens.ListBg(241,244,249) 同一档：窗口底。改了这边要改那边，两边不一致启动那一帧就会露出别的颜色。 -->
+    <!--
+      和 Tokens.ListBg(241,244,249) 同一档：窗口底 + 启动画那一层都吃它，界面自己第一帧也是这一档，
+      所以启动画 → 界面交接是零台阶。改了这边要改 Tokens 那边，两边不一致就会闪一下。
+    -->
     <color name="window_bg">#FFF1F4F9</color>
 </resources>
