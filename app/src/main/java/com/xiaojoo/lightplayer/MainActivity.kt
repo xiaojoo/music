@@ -132,6 +132,7 @@ import com.xiaojoo.lightplayer.ui.ArtistSearchPage
 import com.xiaojoo.lightplayer.ui.ArtistSongsPage
 import com.xiaojoo.lightplayer.ui.HomeFeed
 import com.xiaojoo.lightplayer.ui.HotMusicPage
+import com.xiaojoo.lightplayer.ui.ListSearchPage
 import com.xiaojoo.lightplayer.ui.LocalSearchPage
 import com.xiaojoo.lightplayer.ui.MineScreen
 import com.xiaojoo.lightplayer.ui.PlaylistListPage
@@ -2710,6 +2711,29 @@ private fun App(
                     },
                     isFavorite = { v -> v.pageUrl in favorites },
                 )
+            } else if (page == "search") {
+                /* 列表屏那支放大镜点进来的独立一屏（原来是复用列表组件的搜索态，看着像没换页）。
+                   标题/量词/集合全按"进来之前那一屏"算 —— sourcePage 就是那一屏，和列表页共用这组派生值。 */
+                ListSearchPage(
+                    title = pageTitle,
+                    unit = pageUnit,
+                    searchHint = "搜索" + pageTitle,
+                    tracks = pageList,
+                    query = searchQuery,
+                    onQuery = { searchQuery = it },
+                    thumbs = sourcePage == "videos" ||
+                        (sourcePage == "favorites" && favTab == 1) ||
+                        (sourcePage == "history" && histTab == 1),
+                    favorites = favorites,
+                    onToggleFavorite = { t ->
+                        favRepo.toggle(t.uri.toString())
+                        favorites = favRepo.all()
+                    },
+                    onQueueAdd = { t -> queueAppend(t) },
+                    onPlayList = { tracks, index -> startPlaylist(tracks, index) },
+                    onBack = { leavePage() },
+                    bottomInset = !showBar,
+                )
             } else if (page == "local-search") {
                 LocalSearchPage(
                     keyword = localSearchQuery,
@@ -2744,7 +2768,6 @@ private fun App(
                 TrackListPage(
                     title = pageTitle,
                     unit = pageUnit,
-                    searchHint = "搜索" + pageTitle,
                     sort = sortMode,
                     onSortChange = { m -> sortMode = m; ListSort.save(context, m) },
                     tracks = pageList,
@@ -2788,8 +2811,7 @@ private fun App(
                     filterLength = filterLength,
                     onOpenFilter = { openPage("filter", from = sourcePage) },
                     bottomInset = !showBar,
-                    // 搜索页和它的来源页共用这一组派生值：缩略图、页签、返回都按来源算
-                    search = if (page == "search") searchQuery to { searchQuery = it } else null,
+                    // 搜索已经单独一屏（ListSearchPage），列表页不再有"搜索态"这一档
                     onOpenSearch = {
                         // 换一页搜就换一个词：视频页搜到的字串留在音乐页上，看着就像"没有匹配"
                         if (searchFrom != sourcePage) { searchQuery = ""; searchFrom = sourcePage }

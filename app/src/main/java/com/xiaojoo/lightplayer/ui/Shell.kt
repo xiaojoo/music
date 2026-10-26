@@ -1077,7 +1077,6 @@ fun TrackListPage(
     title: String,
     /** 计数用的量词：音乐是"首"、视频是"个"，多选态那一行「共N首」用它 */
     unit: String,
-    searchHint: String,
     sort: SortMode,
     onSortChange: (SortMode) -> Unit,
     tracks: List<Track>,
@@ -1103,9 +1102,7 @@ fun TrackListPage(
     filterArtist: Set<String> = emptySet(),
     filterLength: Set<String> = emptySet(),
     onOpenFilter: () -> Unit = {},
-    // 搜索也是整屏页（和筛选同一套路）：给了 search 就把顶栏那条换成输入框，这一屏就是搜索结果。
-    // 词本身存在壳层，因为这一页挂的是同一个 TrackListPage，不放出去会跟着列表页串味
-    search: Pair<String, (String) -> Unit>? = null,
+    // 搜索不再这一页的一档状态：顶栏那支放大镜点出去是独立一屏 ListSearchPage（词存在壳层，见那里）
     onOpenSearch: () -> Unit = {},
     /* 多选态：只在「音乐」「视频」那两屏开（multiAllowed）。开关和已选集合都存在壳层 ——
        筛选、搜索是整屏页，打开它们的时候这一页不挂着，放在这里会丢。
@@ -1125,13 +1122,10 @@ fun TrackListPage(
     val clip = LocalClipboard.current
     val clipScope = rememberCoroutineScope()
     val ctx = LocalContext.current
-    val q = (search?.first ?: "").trim()
     val sorted = ListSort.apply(tracks, sort)
-    // 搜索和筛选是同一层：两个都在的时后取交集
+    // 搜索单独一屏去了（ListSearchPage），这一页只剩筛选那一层
     val matched = sorted.filter { t ->
-        (q.isEmpty() || t.name.contains(q, ignoreCase = true) ||
-            t.artist?.contains(q, ignoreCase = true) == true) &&
-            (filterArtist.isEmpty() || t.artist in filterArtist) &&
+        (filterArtist.isEmpty() || t.artist in filterArtist) &&
             (filterLength.isEmpty() || LengthBucket.of(t.durationMs) in filterLength)
     }
     // 置顶钉在这一页最前，按名单顺序（最新置顶的在最上）；剩下的仍走当前排序
@@ -1199,56 +1193,7 @@ fun TrackListPage(
             /* 带页签的那几页（收藏里的音乐/视频、音乐、视频）：顶上这一条本身就是页签，标题不再单摆一行 ——
                照他给的那张图：返回箭头 + 页签居中，选中黑、没选中灰，中间一根竖线，不带下划线。
                竖线两侧各 14dp 是让在页签的点击内衬里的：图上量的字到竖线正好 15dp。 */
-            /* 搜索态：顶栏这一条就是输入框（照他给的参考图：← + 词 + ✕，不套胶囊、不再摆放大镜）。
-               输入框挂在主窗口里而不是抽屉窗口里，所以键盘和框是同一次布局 —— 谁也不会压在谁上面。 */
-            if (search != null) {
-                val fr = remember { FocusRequester() }
-                val kbd = LocalSoftwareKeyboardController.current
-                LaunchedEffect(Unit) { fr.requestFocus() }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = Tokens.Dimen.searchTextStart(Tokens.Dimen.ScreenPad)),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(modifier = Modifier.weight(1f)) {
-                        if (q.isEmpty()) {
-                            Text(searchHint, color = Tokens.InkFaint, fontSize = 16.sp)
-                        }
-                        BasicTextField(
-                            value = search.first,
-                            onValueChange = { search.second(it) },
-                            singleLine = true,
-                            cursorBrush = SolidColor(Tokens.InkStrong),
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                color = Tokens.InkStrong,
-                                fontSize = 16.sp
-                            ),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            // 结果就在下面实时跟着变，键盘上那颗"搜索"用来把键盘收起来看全列表
-                            keyboardActions = KeyboardActions(onSearch = { kbd?.hide() }),
-                            modifier = Modifier.fillMaxWidth().focusRequester(fr)
-                        )
-                    }
-                    // ✕ 一直占位：有词先清词，词空了再退这一页（打字时文字不左右跳）
-                    // 位置照 Tokens 里 searchCloseShift 那一套：墨右沿离屏幕右 = 左缝 ×1.2（他 10-22 要"右边间隙大一点"）。
-                    // 命中盒那笔补法不变：贴右画的时候 48dp 盒的中心比墨的中心偏左 (48−19)/2 = 14.5dp，
-                    // 所以点在 ✕ 上不算、要往左一点才关得掉。整盒往右挪、字形往左挪同样多：墨一格没动，只有命中带跟着墨走。
-                    val hitSkew = (Tokens.Dimen.IconHit - 19.dp) / 2f
-                    Box(
-                        modifier = Modifier
-                            .size(Tokens.Dimen.IconHit)
-                            .offset(x = Tokens.Dimen.searchCloseShift(Tokens.Dimen.ScreenPad) + hitSkew)
-                            .tap { if (q.isEmpty()) onBack() else search.second("") },
-                        contentAlignment = Alignment.CenterEnd
-                    ) {
-                        LineIcon(
-                            IconKind.Close, size = 19.dp, color = Tokens.Ink,
-                            modifier = Modifier.offset(x = -hitSkew),
-                        )
-                    }
-                }
-            } else if (tabs == null || multi) {
+            if (tabs == null || multi) {
                 // 多选态标题写死「批量操作」；带页签的那几页也走这一支（多选态不摆页签）
                 Text(
                     if (multi) "批量操作" else title,
@@ -1302,7 +1247,7 @@ fun TrackListPage(
                         .tap(onClick = onToggleMulti),
                     contentAlignment = Alignment.CenterEnd
                 ) { Text("完成", color = Tokens.InkStrong, fontSize = 15.sp) }
-            } else if (search == null) {
+            } else {
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
@@ -1359,7 +1304,7 @@ fun TrackListPage(
                 // 多选那颗摆在筛选**左边**：筛选、排序一格没动，仍压住下面列表行那两条车道，
                 // 整簇只是往左多让出一条车道（它自己走同一只 39.5dp 的 RowIcon 盒）。
                 // 搜索态不摆：那一屏顶栏整条换成输入框，两个态叠在一起会分不清在选哪一批。
-                if (multiAllowed && search == null) {
+                if (multiAllowed) {
                     RowIcon(IconKind.MultiSelect, Tokens.Ink, onClick = onToggleMulti)
                 }
                 // 两颗并排：漏斗=筛选，上下箭头=排序。走和列表行同一只 RowIcon，所以这两颗正好落在
@@ -1451,12 +1396,8 @@ fun TrackListPage(
             }
         } else if (visible.isEmpty()) {
             Text(
-                text = when {
-                    filtered && q.isNotEmpty() -> "没有同时符合筛选和「$q」的条目"
-                    filtered -> "没有符合筛选的条目"
-                    q.isNotEmpty() -> "没有匹配「$q」的条目"
-                    else -> "这里还没有条目"
-                },
+                // 搜索单独一屏去了（ListSearchPage），这一页只剩筛选那一层，空态也就只有一句话
+                text = if (filtered) "没有符合筛选的条目" else "这里还没有条目",
                 color = Tokens.InkFaint,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad, vertical = 24.dp)
@@ -1471,7 +1412,7 @@ fun TrackListPage(
                     TrackLine(
                         track = t,
                         index = i,
-                        q = q,
+                        q = "",
                         thumbs = thumbs,
                         favorite = t.uri.toString() in favorites,
                         multi = multi,
