@@ -670,24 +670,26 @@ private fun OnlinePage(
             val availH = if (swapped) pageW else pageH
             val picW = if (availW / availH > a) availH * a else availW
             val picH = if (availW / availH > a) availH else availW / a
-            // 临时探针（量"筛选后闪过一帧画面撑满屏幕"）：把这一格每次重算用的四个数都写出来。
-            // 要看的是 vidW/vidH 有没有 0 的那几帧 —— 0 时比例兜底 0.75，
-            // 横屏片子会被塞进 1080×1440 那一格（TextureView 不做信箱，整幅拉满），就是他看到的那一帧。
+            /* 比例不可信那一窗：**表面照挂，但不露**（`trust` 交给 View 自己的 alpha）。
+               原来那一窗干脆不摆表面，结果把自己卡死 —— `onVideoSizeChanged` 要等表面挂上才报尺寸
+               （真机量到：新表面之后 177ms 才到 720x1280），而门又要等尺寸或封面比例之一
+               ⇒ 冷的一格里唯一能先到的通常是封面，于是"声音已经出来、画面没有、三个点还在转"；
+               那一条要是根本没封面，门就永远不开。
+               防拉伸那一帧的保护没拆：alpha=0 的那几帧整块藏住，和当初"宁可只给循环点"等效
+               （真机量到筛选瞬移那一窗有 46ms 是 `视频=0x0` 且封面没进组合，那一格按兜底算成
+               1080×1440，表面还挂着上一条 16:9 的最后一帧 ⇒ 整幅拉开 = 他报的"闪过一帧撑满屏幕"）。
+               不能用 Compose 的 graphicsLayer 藏：对 TextureView 无效，残影照旧。
+               只有当前页才摆这块：TextureView 一旦离开组合它那块表面就没了，新页进来是一枚全新表面。 */
+            val trust = own > 0f || shown[0] > 0f || FeedCovers.aspect(cover) != null
             if (current) {
+                // 临时探针（量"筛选后闪过一帧画面撑满屏幕"和"声音先出画面后出"那一窗）：
+                // 要看 vidW/vidH 有没有 0 的那几帧、那几帧里藏没藏（藏=1），以及新表面和尺寸的先后。
                 Log.i(
                     "PicBox", "成员#" + System.identityHashCode(player) +
                         " 视频=${vidW}x${vidH} 页=${pageW}x${pageH} 画面=${picW}x${picH}" +
-                        " a=$a ready=$ready 在放=$playing 「${track.name.take(10)}」",
+                        " a=$a ready=$ready 在放=$playing 藏=${if (trust) 0 else 1}" +
+                        " 「${track.name.take(10)}」",
                 )
-            }
-            // 只有当前页才摆这块画面。TextureView 一旦离开组合，它那块表面就没了，
-            // 上一条的最后一帧没有地方可以继续挂着；新页进来时是一枚全新的表面。
-            // （试过用 graphicsLayer 的 alpha 藏：对 TextureView 无效，残影照旧。）
-            /* 但这一条正好可以反过来用：**画面尺寸和封面比例两样都没到手时不摆这块表面**。
-               真机量到筛选瞬移那一窗有 46ms 是 `视频=0x0` 且封面还没进组合 —— 那一格按兜底算成
-               1080×1440，而表面身上还挂着上一条 16:9 的最后一帧，于是被整幅拉开 = 他报的
-               "闪过一帧把画面撑满屏幕"。宁可这 46ms 只给循环点，也不摆一张歪的。 */
-            if (current && (own > 0f || shown[0] > 0f || FeedCovers.aspect(cover) != null)) {
                 AndroidView(
                     factory = { c ->
                         /* 造出这块的当场就把它交给播放器。原来绑在 DisposableEffect 里，
@@ -697,7 +699,7 @@ private fun OnlinePage(
                             (player as? androidx.media3.exoplayer.ExoPlayer)?.setVideoTextureView(v)
                         }
                     },
-                    update = { },
+                    update = { v -> v.alpha = if (trust) 1f else 0f },
                     onRelease = { v ->
                         (player as? androidx.media3.exoplayer.ExoPlayer)?.clearVideoTextureView(v)
                     },

@@ -158,16 +158,19 @@ fun BottomBar(tab: AppTab, onSelect: (AppTab) -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center
             ) {
+                /* active 只换颜色：原来这一档选中时长到 22dp（真机量同一枚音符：
+                   未选中 38px 行盒 / 533 墨，选中 40px / 627 墨 = 大 17.6%），
+                   他说的那句"字体不要加大"量的就是这个 —— 标签那行字重在这台机上本来就
+                   渲染成同一张位图（Medium 与 Normal 的墨量逐位相同），看得见的大小变化只有图标。 */
                 LineIcon(
                     kind,
-                    size = if (selected) 22.dp else 20.dp,
+                    size = 20.dp,
                     color = if (selected) Tokens.Accent else Tokens.InkFaint
                 )
                 Text(
                     text = label,
                     color = if (selected) Tokens.Accent else Tokens.InkFaint,
                     fontSize = 11.sp,
-                    fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
                     modifier = Modifier.padding(top = 3.dp)
                 )
             }

@@ -21,16 +21,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +53,11 @@ import com.xiaojoo.lightplayer.videosource.MusicVideo
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/* 精选卡那一格的两个数：宽 173dp、图区按参考图的 475×530 竖构图。
+   栏尾那颗加载环的高度是从这里除出来的（不是另抄一个 193dp），免得改了卡片忘了改环。 */
+private val PickCardW = 173.dp
+private val PickCardArc = 475f / 530f
 
 /**
  * 首页那一屏：搜索条 → 五颗入口 → 大横幅 → 两列大卡 → 三张行列表卡。
@@ -93,6 +101,10 @@ fun HomeFeed(
      * 播在音频那台上就只有声没有画，迷你条也按"不像视频"把人送进音乐页（他 10-15 点的）。
      */
     onPlayVideoPick: (MusicVideo) -> Unit,
+    /** 「精选视频」滑到栏尾：要下一批（到了就摆，见 MainActivity.loadMusicPicks） */
+    onPicksMore: () -> Unit,
+    /** 下一批在路上：栏尾右端那颗转环亮着 */
+    picksLoading: Boolean,
     onQueuePick: (MusicVideo) -> Unit,
     onDownloadPick: (MusicVideo) -> Unit,
     /** 栏头那颗「更多」：点开「热门音乐」那一整屏 */
@@ -145,13 +157,34 @@ fun HomeFeed(
         if (cards.isNotEmpty()) {
             item(key = "picks:head") { SectionHead("精选视频", pickNote, modifier = headPad) }
             item(key = "picks:row") {
+                /* 懒加载的触发：露到栏尾倒数第三格就要下一批。
+                   用 layoutInfo 而不是"哨兵项一进组合就发请求"——后者每接上一批都会让新的哨兵进组合，
+                   人停在栏尾就会一路把五批全要完；这里每接一批 totalItemsCount 变大，门槛自己往后退，
+                   要停下来等人才继续。 */
+                val pickState = rememberLazyListState()
+                LaunchedEffect(pickState, cards.size) {
+                    snapshotFlow {
+                        (pickState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1) to
+                            pickState.layoutInfo.totalItemsCount
+                    }.collect { (last, total) -> if (total > 3 && last >= total - 3) onPicksMore() }
+                }
                 LazyRow(
+                    state = pickState,
                     modifier = Modifier.fillMaxWidth(),
                     contentPadding = PaddingValues(horizontal = Tokens.Dimen.ScreenPad),
                     horizontalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
                     items(cards, key = { "picks:" + it.key }) { v ->
                         PickCard(video = v, onClick = { onPlayVideoPick(v) })
+                    }
+                    /* 下一批在路上：栏尾右端露一颗转环（复用在线那一屏那共用的 SpinArc，不再画第二种加载样子）。
+                       高度取卡片图区那一档，让它落在图的竖直中心而不是整张卡（整张卡下面还有两行字）。
+                       到底了（`musicOnlinePickDone`）这一格就不再来 —— 没有下一次可等，转环就是骗人。 */
+                    if (picksLoading) item(key = "picks:more") {
+                        Box(
+                            modifier = Modifier.size(width = 44.dp, height = PickCardW / PickCardArc),
+                            contentAlignment = Alignment.Center,
+                        ) { SpinArc() }
                     }
                 }
             }
@@ -363,7 +396,7 @@ private fun Banner(videos: List<MusicVideo>, onPlay: (MusicVideo) -> Unit) {
 private fun PickCard(video: MusicVideo, onClick: () -> Unit) {
     Column(
         modifier = Modifier
-            .width(173.dp)
+            .width(PickCardW)
             .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
             .background(Tokens.Surface)
             .tap(onClick = onClick)
@@ -371,7 +404,7 @@ private fun PickCard(video: MusicVideo, onClick: () -> Unit) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(475f / 530f)
+                .aspectRatio(PickCardArc)
                 .background(Tokens.Track)
         ) {
             remoteCover(video.artworkUrl)?.let {

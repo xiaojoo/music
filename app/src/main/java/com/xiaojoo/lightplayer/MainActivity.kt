@@ -316,8 +316,8 @@ private class BarState(
     val timeline: Int get() = timelineS.intValue
 }
 
-/** 「精选视频」那一栏一次问多少条：热门一页 20 条，问 100 条 = 翻 5 页，之后换一批只在本地切窗，不再多问接口 */
-private const val MUSIC_ONLINE_PICKS = 100
+/** 「精选视频」一批问多少条：B 站热门一页就是 20 条，一批问一页，滑到栏尾再要下一批（见 [loadMusicPicks]） */
+private const val MUSIC_ONLINE_PICKS = 20
 
 /** 「这首歌的音乐」那一栏一次搜多少条：站点一页就是 30，判成音乐的大约剩四分之三 */
 private const val MUSIC_ONLINE_SONGS = 30
@@ -343,7 +343,8 @@ private fun App(
     val repo = remember { PlaylistRepository(context) }
     val controller = rememberPlaybackController()
 
-    var tab by remember { mutableStateOf(AppTab.Music) }
+    // 冷启动落在「首页」（原来落「音乐」）。底栏切走再回来仍跟着人走，不回到这一行。
+    var tab by remember { mutableStateOf(AppTab.Home) }
     // 队列只在下推那一刻用一次：播放页签反复进出都不该把当前歌从头再放
     var queueTracks by remember { mutableStateOf<List<Track>>(emptyList()) }
     var queueStart by remember { mutableIntStateOf(0) }
@@ -520,6 +521,11 @@ private fun App(
 
     val musicOnlineSettings = remember { OnlineSettings(context, "music_online") }
     var musicOnlinePicks by remember { mutableStateOf<List<MusicVideo>>(emptyList()) }
+    /* 精选视频懒加载的三格账：问到第几批（0 = 还没问过）、这一批在不在路上、站点还有没有下一批。
+       不另存"加载过"的布尔：page>0 就是加载过，两处主人迟早对不上。 */
+    var musicOnlinePickPage by remember { mutableIntStateOf(0) }
+    var musicOnlinePickBusy by remember { mutableStateOf(false) }
+    var musicOnlinePickDone by remember { mutableStateOf(false) }
     // 歌手页那颗 🔍 开的是整屏搜索页，词存在壳层：那一页挂着时列表页不在，词存在页里会跟着没
     var artistQuery by remember { mutableStateOf("") }
 
@@ -1029,8 +1035,10 @@ private fun App(
      * 在线那一栏播一条：走它自己那台实例，不碰视频那三台的队列。
      * 站点列表里那些条目存的是**页地址**，点下去才现解析成可播直链；
      * 自己加过的那些（online_items 里存的已经是解析后的直链）直接播，不再问接口。
+     *
+     * [resolved] 给首页那一路用：它已经现解析过一次（为了失败时能弹那一句），把结果带下来就不再问第二遍。
      */
-    fun playOnlineItem(t: Track, index: Int) {
+    fun playOnlineItem(t: Track, index: Int, resolved: MediaItem? = null) {
         val player = PlayerPool.ensureOnline(context).let { PlayerPool.onlineAt(index) }
         if (player == null) {
             android.widget.Toast.makeText(context, "播放器没建起来，再按一次", android.widget.Toast.LENGTH_SHORT).show()
@@ -1051,7 +1059,7 @@ private fun App(
                取址失败（23 秒后弹「解析失败」），于是左右两页从来没被问过，而闸门等的就是它们 ——
                整栏滑 20 下一格翻不动。先派活，再管眼前这条。 */
             preloadAround(index)
-            val item = onlineItemFor(t, announce = true)
+            val item = resolved ?: onlineItemFor(t, announce = true)
             Log.i("OnlinePlay", "第 $index 页 ${t.uri.lastPathSegment ?: "-"} 取址 ${if (item == null) "失败" else "到手"}")
             if (item == null) return@launch
             // 取到地址才算"这一条在放"：取址失败却把标记写上去，这一页会一直挂着「已暂停」，
@@ -1105,7 +1113,14 @@ private fun App(
                             page = null
                             tab = AppTab.Video
                         }
-                        playOnlineItem(t, 0)
+                        /* 递给播的那一颗必须是**这一栏自己的身份**（`onlineTrackOf` 的 uri 是页地址），
+                           不能递上面那个从播放直链造出来的 `t` —— 直链形状的 Track 走的是
+                           `online:url/<直链>` 那一支 mediaId，而栏内每一条是 `online:<源身份>`，
+                           两边对不上 ⇒ 进栏那一刻 `playOnlineAt` 的"这条已经在放"守不住，
+                           会把正在放的这条重新解析 + setMediaItem + prepare 一遍
+                           （真机量到 483ms 的 not-ready，中央三个点就叠在残留画面上转）。
+                           已经解析过的那份 `item` 用 [playOnlineItem] 的 resolved 带下去，不多问一次取址。 */
+                        playOnlineItem(onlineTrackOf(video), 0, item)
                     }
                 }
                 is ResolveOutcome.Failed ->
@@ -1318,22 +1333,34 @@ private fun App(
         PlayerPool.audioPlayer()?.currentMediaItem?.mediaId?.takeIf { it.startsWith(Online.ID_PREFIX) }
 
     /**
-     * B 站热门问一次 100 条（5 页）：在线那一屏的「精选视频」和首页的横幅 + 两列卡吃的都是这一份。
-     * 换一批、翻页都只在本地切窗，不再多问接口。没有封面的条目不收进来 —— 那些格子摆出来就是灰板子。
+     * 「精选视频」懒加载：**一批一页，到了就摆**，滑到栏尾再要下一批。
+     * 原来一次问 100 条（内部翻 5 页），全回来才出第一格 —— 真机量到冷启动到那一栏出现 5.30 / 5.50 秒。
+     * 横幅和两列卡吃同一份 [musicOnlinePicks]，所以横幅的圆点会从 1 个长到 5 个（他点的就是跟着长）。
+     * 没有封面的条目不收进来 —— 那些格子摆出来就是灰板子。
      */
-    fun fetchMusicOnlinePicks() {
-        if (musicOnlinePicks.isNotEmpty()) return
+    fun loadMusicPicks(next: Boolean) {
+        val to = if (next) musicOnlinePickPage + 1 else 1
+        if (musicOnlinePickBusy) return
+        if (to == 1 && musicOnlinePickPage > 0) return     // 第一批问过的不重问
+        if (to > 1 && musicOnlinePickDone) return          // 站点没有更新的一批了，别再撞
+        musicOnlinePickBusy = true
         scope.launch {
-            musicOnlinePicks = withContext(Dispatchers.IO) {
-                runCatching { Online.browse(MUSIC_ONLINE_PICKS) }
-                    .getOrDefault(emptyList()).filter { !it.artworkUrl.isNullOrBlank() }
+            val got = withContext(Dispatchers.IO) {
+                runCatching { Online.browse(MUSIC_ONLINE_PICKS, page = to) }.getOrDefault(emptyList())
             }
+            musicOnlinePickBusy = false
+            val merged = (musicOnlinePicks + got).distinctBy { it.pageUrl }
+            // 空手回来，或者一批全和已有的重了 = 到底了，别再排第二次
+            if (got.isEmpty() || merged.size == musicOnlinePicks.size) musicOnlinePickDone = true
+            musicOnlinePicks = merged.filter { !it.artworkUrl.isNullOrBlank() }
+            musicOnlinePickPage = to
+            Log.i("HomePicks", "第 $to 批到手 ${got.size} 条，精选一共 ${musicOnlinePicks.size} 条")
         }
     }
 
-    // 首页那两块（横幅 + 两列卡）要有内容，就得在落到首页那一格时问一次；问过的不重问。
+    // 首页那两块（横幅 + 两列卡）要有内容，就得在落到首页那一格时问第一批；问过的不重问。
     // 这一批是"冲着看来的"那几路（B 站热门、快手推荐流），歌手那一屏不再吃它 —— 音乐这一路只问网易云。
-    LaunchedEffect(tab) { if (tab == AppTab.Home) fetchMusicOnlinePicks() }
+    LaunchedEffect(tab) { if (tab == AppTab.Home) loadMusicPicks(next = false) }
 
     /* 开机把设置里那一栏递进源（地址是「在线音乐源」那一屏改的，改完要立刻生效）。
        以前这里还带一次"把存着的那条歌单摊开"，那一栏撤了之后就没有落点了，这一句只留设地址。 */
@@ -2827,6 +2854,8 @@ private fun App(
                     onPlayPick = { v -> playMusicOnline(v) },
                     // 横幅和「精选视频」那两列走视频那一路，且**留在首页**：起播之后由迷你条带过去
                     onPlayVideoPick = { v -> playOnline(v, open = false) },
+                    onPicksMore = { loadMusicPicks(next = true) },
+                    picksLoading = musicOnlinePickBusy && !musicOnlinePickDone,
                     onQueuePick = { v -> queueMusicOnline(v) },
                     onDownloadPick = { v -> downloadMusicOnline(v) },
                     onMoreHot = { openPage("home-hot") },
