@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -24,6 +26,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -37,12 +42,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -159,34 +169,65 @@ private fun statusLine(artists: List<Artist>, hits: Int, busy: Boolean, filtered
 }
 
 /**
- * 点 🔍 进去的那一整屏：顶栏就是输入框（← + 词 + ✕），下面直接摆命中的人。
- * 和在线 MV 那一页、本地搜索页同一套规矩 —— 搜索是"页面"不是浮层，所以底栏整条让位；
- * ✕ 在词空的时候当返回，不空就只清词（和那两页同一只手势）。
+ * 点放大镜进去的那一整屏：顶栏（← + 词 + ✕）→ 发丝线 → 一行两颗范围芯片 → 两段结果。
+ *
+ * 2026-10-27 他点名这一屏照「我的」那一屏 [LocalSearchPage] 同一族做。改前它是"顶栏 + 一行 13sp 的
+ * 「N 位可选」+ 下面直接铺全部人"，没有发丝线、没有范围芯片、空词也把整表摊开、命中的字不染绿。
+ * 现在五笔一起并过去：48dp 定高栏 / [Hairline] / [FilterChip] 当范围 / [FilterHead] 当段标题 /
+ * 空态正中那一句。描绿由每一行自己带（[matchInk]）。
+ *
+ * 两颗芯片是**范围**，默认都开：「歌」搜这一批里的一首首，点一行就地起播 —— 在线那一路没有"整段
+ * 现取址再起播"的入口，所以队列就是点的那一首，不像本机那一屏能把整段排进队列；「歌手」搜人名，
+ * 点一行进他的海报详情页。芯片上那个数：有词是"这一词命中几条"，没词是"这一路一共有几条可搜"
+ * （空屏摆个 0 是假数，同 [LocalSearchPage] 那一条道理）。
+ *
+ * 搜的还是**已经取回来的那批在线内容**，不是本机曲库 —— 本机那一串在 [LocalSearchPage]，两屏别混。
  */
 @Composable
 fun ArtistSearchPage(
     artists: List<Artist>,
+    songs: List<MusicVideo>,
     query: String,
     onQuery: (String) -> Unit,
     onBack: () -> Unit,
     onOpen: (Artist) -> Unit,
+    onPlay: (MusicVideo) -> Unit,
+    onQueue: (MusicVideo) -> Unit,
+    onToggleFavorite: (MusicVideo) -> Unit,
+    isFavorite: (MusicVideo) -> Boolean,
+    /** 迷你条没露出来的时候，导航条那一段由这一屏自己留（和别的子页同一个开关） */
+    bottomInset: Boolean,
 ) {
+    var songOn by remember { mutableStateOf(true) }
+    var artistOn by remember { mutableStateOf(true) }
+    // 进来就能打字：和「我的」那一屏、列表屏那一屏同一套（要点一下才出键盘的搜索页等于没做完）
+    val fr = remember { FocusRequester() }
+    val kbd = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) { fr.requestFocus() }
+
     val q = query.trim()
-    val shown = if (q.isEmpty()) artists else artists.filter { it.name.contains(q, ignoreCase = true) }
-    // 进来就能打字：和在线 MV 那一页、本地搜索页同一套（要点一下才出键盘的搜索页等于没做完）
-    val fr = remember { androidx.compose.ui.focus.FocusRequester() }
-    val kbd = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-    androidx.compose.runtime.LaunchedEffect(Unit) { fr.requestFocus() }
+    // 和另外三屏同一个匹配：歌名或歌手含这个词就算，不分大小写；人名那一档同理只看名字
+    val hitSongs = if (q.isEmpty()) emptyList() else songs.filter {
+        it.title.contains(q, ignoreCase = true) || it.artist.contains(q, ignoreCase = true)
+    }
+    val hitArtists = if (q.isEmpty()) emptyList() else
+        artists.filter { it.name.contains(q, ignoreCase = true) }
+    val sList = if (songOn) hitSongs else emptyList()
+    val aList = if (artistOn) hitArtists else emptyList()
+    val cSong = if (q.isEmpty()) songs.size else hitSongs.size
+    val cArtist = if (q.isEmpty()) artists.size else hitArtists.size
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Tokens.Backdrop)
             .statusBarsPadding()
+            .then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .height(48.dp)
                 .padding(horizontal = Tokens.Dimen.ScreenPad)
         ) {
             Box(
@@ -197,30 +238,28 @@ fun ArtistSearchPage(
                 contentAlignment = Alignment.CenterStart
             ) { LineIcon(IconKind.ArrowLeft, size = 22.dp, color = Tokens.InkStrong) }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = Tokens.Dimen.searchTextStart(Tokens.Dimen.ScreenPad)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = Tokens.Dimen.searchTextStart(Tokens.Dimen.ScreenPad)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(modifier = Modifier.weight(1f)) {
-                    if (query.isEmpty()) Text("搜歌手名", color = Tokens.InkFaint, fontSize = 16.sp)
+                    if (query.isEmpty()) Text("搜歌名或歌手", color = Tokens.InkFaint, fontSize = 16.sp)
                     BasicTextField(
                         value = query,
                         onValueChange = onQuery,
                         singleLine = true,
                         cursorBrush = SolidColor(Tokens.InkStrong),
-                        textStyle = androidx.compose.ui.text.TextStyle(
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
                             color = Tokens.InkStrong, fontSize = 16.sp
                         ),
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                            imeAction = androidx.compose.ui.text.input.ImeAction.Search,
-                            autoCorrect = false,
-                        ),
-                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                            onSearch = { kbd?.hide() }
-                        ),
-                        modifier = Modifier.fillMaxWidth().focusRequester(fr)
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        // 这一批是现成的，边打字边出结果；键盘上那颗「搜索」只用来收起键盘看全结果
+                        keyboardActions = KeyboardActions(onSearch = { kbd?.hide() }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(fr),
                     )
                 }
-                // ✕ 和另外四屏同一套几何（这一屏改前没补 offset）；盒和墨中心那 14.5dp 的补法见 ApiSearchPage 那段注释
+                // ✕ 的位置和命中盒补法跟另外四屏同一套，见 Tokens 里 searchCloseShift 那段
                 val hitSkew = (Tokens.Dimen.IconHit - 19.dp) / 2f
                 Box(
                     modifier = Modifier
@@ -236,14 +275,51 @@ fun ArtistSearchPage(
                 }
             }
         }
-        Text(
-            text = if (q.isEmpty()) "${artists.size} 位可选" else "命中 ${shown.size} / ${artists.size} 位",
-            color = Tokens.InkFaint, fontSize = 13.sp,
-            modifier = Modifier.padding(start = Tokens.Dimen.ScreenPad, top = 6.dp, bottom = 2.dp)
-        )
-        LazyColumn(modifier = Modifier.fillMaxWidth()) {
-            items(shown, key = { it.name }) { a -> ArtistRow(a, onOpen) }
-            item { Spacer(modifier = Modifier.height(20.dp)) }
+        Hairline()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Tokens.Dimen.ScreenPad, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip("歌", cSong, songOn) { songOn = !songOn }
+            FilterChip("歌手", cArtist, artistOn) { artistOn = !artistOn }
+        }
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            when {
+                q.isEmpty() -> Text(
+                    "输入歌名或歌手", color = Tokens.InkFaint, fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                !songOn && !artistOn -> Text(
+                    "先选「歌」或「歌手」", color = Tokens.InkFaint, fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                sList.isEmpty() && aList.isEmpty() -> Text(
+                    "没有匹配「$q」的条目", color = Tokens.InkFaint, fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 12.dp)
+                ) {
+                    if (sList.isNotEmpty()) {
+                        item(key = "s:head") { FilterHead("歌") }
+                        itemsIndexed(sList, key = { _, v -> "s-" + v.key }) { _, v ->
+                            SongRow(
+                                video = v, favorite = isFavorite(v), q = q, showArtist = true,
+                                onClick = { onPlay(v) }, onQueue = { onQueue(v) },
+                                onFavorite = { onToggleFavorite(v) },
+                            )
+                        }
+                    }
+                    if (aList.isNotEmpty()) {
+                        item(key = "a:head") { FilterHead("歌手") }
+                        items(aList, key = { "a-" + it.name }) { a -> ArtistRow(a, onOpen, q) }
+                    }
+                }
+            }
         }
     }
 }
@@ -256,7 +332,7 @@ private val BlockGap = 10.dp
 private val ArtistRowPadV = 5.dp
 
 @Composable
-private fun ArtistRow(a: Artist, onOpen: (Artist) -> Unit) {
+private fun ArtistRow(a: Artist, onOpen: (Artist) -> Unit, q: String = "") {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -268,7 +344,7 @@ private fun ArtistRow(a: Artist, onOpen: (Artist) -> Unit) {
         // 图与名的缝 = 图和屏幕左沿的缝，同一个数（行的水平内衬 ScreenPad）
         Spacer(modifier = Modifier.width(Tokens.Dimen.ScreenPad))
         Text(
-            a.name, color = Tokens.InkStrong, fontSize = 15.sp, maxLines = 1,
+            matchInk(a.name, q), color = Tokens.InkStrong, fontSize = 15.sp, maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
         )
         Text("${a.items.size} 首", color = Tokens.InkFaint, fontSize = 13.sp)
@@ -457,6 +533,10 @@ fun ArtistSongsPage(
 private fun SongRow(
     video: MusicVideo,
     favorite: Boolean,
+    /** 搜索词：命中那一段描绿；一位歌手名下那一屏没有词，走默认的原样 */
+    q: String = "",
+    /** 搜索结果跨好几位歌手，第二行要把人名写出来；名下那一屏身后大标题已经是他，不重复写 */
+    showArtist: Boolean = false,
     onClick: () -> Unit,
     onQueue: () -> Unit,
     onFavorite: () -> Unit,
@@ -488,14 +568,23 @@ private fun SongRow(
         }
         Column(modifier = Modifier.weight(1f).padding(start = 11.dp)) {
             Text(
-                video.title, color = Tokens.InkStrong, fontSize = 15.sp, lineHeight = 20.sp,
+                matchInk(video.title, q), color = Tokens.InkStrong, fontSize = 15.sp, lineHeight = 20.sp,
                 maxLines = 2, overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = listOfNotNull(
-                    MediaLibrary.fmtDuration(video.durationMs).takeIf { video.durationMs > 0 },
-                    if (video.playCount > 0) fmtPlayCount(video.playCount) else null,
-                ).joinToString(" · "),
+                // 逐段 append，不用 joinToString：那样等于走 AnnotatedString.toString()，
+                // 描绿那一段的样式会静默掉，只剩纯文字
+                text = buildAnnotatedString {
+                    val bits = buildList<AnnotatedString> {
+                        if (showArtist && video.artist.isNotBlank()) add(matchInk(video.artist, q))
+                        if (video.durationMs > 0) add(AnnotatedString(MediaLibrary.fmtDuration(video.durationMs)))
+                        if (video.playCount > 0) add(AnnotatedString(fmtPlayCount(video.playCount)))
+                    }
+                    bits.forEachIndexed { i, b ->
+                        if (i > 0) append(" · ")
+                        append(b)
+                    }
+                },
                 color = Tokens.InkFaint, fontSize = 12.sp,
                 modifier = Modifier.padding(top = 3.dp)
             )

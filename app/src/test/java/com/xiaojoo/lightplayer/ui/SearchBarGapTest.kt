@@ -22,13 +22,14 @@ class SearchBarGapTest {
     // 命中盒 48dp、字形 CenterEnd：盒往右补 hitSkew、字形往左回 hitSkew（五屏调用处都这么写）
     private val hitSkew = (48.dp - 19.dp) / 2f
 
-    /** 四屏吃 ScreenPad，歌手那一屏跟它的列表页在 15 的网格上 */
-    private val pads = listOf(20.dp, 15.dp)
+    /** 五屏（列表屏搜索、本机整屏、接口整屏、相关视频、搜歌手）全部吃 ScreenPad。
+        原来这里还按 15.dp 断一遍，那是给一个不存在的调用方锁数：`git grep search\w*\(15` 从
+        1e72a27（写下那句话的那个提交）起只有这个测试自己在传 15，没有一处搜索框用过。 */
+    private val pads = listOf(20.dp)
 
     @Test
     fun 参照缝是屏幕左沿到箭头墨左沿() {
         eq(24.015.dp, Tokens.Dimen.searchBackGap(20.dp))   // 真机 66px
-        eq(19.015.dp, Tokens.Dimen.searchBackGap(15.dp))   // 真机 52px
     }
 
     @Test
@@ -38,7 +39,6 @@ class SearchBarGapTest {
             eq(Tokens.Dimen.searchBackGap(pad), Tokens.Dimen.searchTextStart(pad) - backInkR)
         }
         eq(41.12.dp, Tokens.Dimen.searchTextStart(20.dp))  // 改前这里写的是 IconHit=48，那一笔是 30.895
-        eq(36.12.dp, Tokens.Dimen.searchTextStart(15.dp))
     }
 
     @Test

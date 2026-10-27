@@ -2430,6 +2430,12 @@ private fun App(
         groupArtists(musicHot + musicOnlineMusic + musicOnlineVideo)
     }
 
+    /* 歌手页那颗放大镜进去以后「歌」那一段搜的就是这一串：和数歌手吃同一批，按 key 去重
+       （同一首能在四张榜和「按当前这首歌搜回来的那几支」里各出现一次）。 */
+    val onlineSongs = remember(musicHot, musicOnlineMusic, musicOnlineVideo) {
+        (musicHot + musicOnlineMusic + musicOnlineVideo).distinctBy { it.key }
+    }
+
     /** 一屏四栏：音乐那两栏来自网易云那一批，视频那两栏来自 B 站那一批（各自前 3 张最火、第 4 条往后相关） */
     val musicOnlineSplit = remember(musicOnlineMusic, musicOnlineVideo) {
         Online.zonesOf(musicOnlineMusic, musicOnlineVideo)
@@ -2743,10 +2749,20 @@ private fun App(
             } else if (page == "artist-search") {
                 ArtistSearchPage(
                     artists = onlineArtists,
+                    songs = onlineSongs,
                     query = artistQuery,
                     onQuery = { artistQuery = it },
                     onBack = { leavePage() },
                     onOpen = { a -> openPage("artist:" + a.name, from = "artists") },
+                    onPlay = { v -> playMusicOnline(v) },
+                    onQueue = { v -> queueMusicOnline(v) },
+                    // 和名下那一屏同一颗：在线条目按**页地址**收藏（直链带有效期，存地址两天就解不开）
+                    onToggleFavorite = { v ->
+                        favRepo.toggle(v.pageUrl)
+                        favorites = favRepo.all()
+                    },
+                    isFavorite = { v -> v.pageUrl in favorites },
+                    bottomInset = !showBar,
                 )
             } else if (page?.startsWith("artist:") == true) {
                 // page 是委托属性，智能转换用不上，只能自己拆一次
