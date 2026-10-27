@@ -119,29 +119,25 @@ class ChuiziSource(
     }
 
     /**
-     * 站点那一屏「歌曲下载」的三颗，**照它 HTML 里那三颗原样摆**（10-28 真读 `/song/3egtgk55c4`：
-     * 三颗 `href` 是 `/media/download/{号}?quality=128kbps|320kbps|flac`，名字写着
-     * 「下载 MP3 128kbps / 下载 MP3 320kbps / 下载 FLAC 无损」）。
+     * 就一行。站点那一屏「歌曲下载」摆的是三颗（128kbps / 320kbps / FLAC 无损，`href` 走
+     * `/media/download/{号}?quality=…`），10-28 真把三颗各下一整首比过：**同一个文件** ——
+     * 都 10,110,173 字节、sha256 逐位相同（`15e157ee…`），ffprobe 三行读数一样
+     * （codec=**mp3**、320.2kbps、48kHz、252.59s），「FLAC 无损」那颗的头是 `ID3` 不是 `fLaC`。
+     * 五首歌都是这一种形状（10,105,965 / 4,182,640 / 3,656,060 / 5,311,225 / 10,137,644，
+     * 每首三档自己相等）。上一轮按"照站点原样摆三行"做过，他看到这三行存出来是同一串之后
+     * 点的改：「改成一行吧，没必要列三个一样的」。
      *
-     * 每一档各探一字节（`Range: bytes=0-0`）拿站点自己报的总字节数填右端那一格。
-     * 10-27 我只量了**播放**那条（`/media/play`）就下结论"三档同一串、没得挑"，把站点那三颗抹了 ——
-     * 换成 download 那条复量五首歌：三档**还是逐位同一串**（10,105,965 / 4,182,640 / 3,656,060 /
-     * 5,311,225 / 10,137,644，同一首三档的前 4KB sha1 相同），只有 `Content-Disposition` 的文件名
-     * 跟着请求的后缀变。所以这三行现在会长着同一个数；站点哪天真分档，那一格自己就分开了，这边不改。
-     *
-     * 没给探针（JVM 测试那一路）就三行都摆、数那一格留空；给了探针而某一档问不通（号失效站点回 502）
-     * 就不摆那一档 —— 摆一颗按不动的是死控件。
+     * 地址取 `quality=$QUALITY` 那一条（三颗既然同串，取哪颗都一样，跟播放那一路同一个值）；
+     * 字节数还是各探一字节拿站点自己报的 `Content-Range` —— 那一格写的是站点的数，不是这边估的。
+     * 没给探针（JVM 测试那一路）就摆那一行、数留空；给了探针而它问不通（号失效站点回 502）
+     * 就回空串 —— 界面上那一行走现换址那一条，失败由那一句说。
      */
     override suspend fun qualities(video: MusicVideo): List<Rendition> {
         val sid = video.remoteId.takeIf { it.isNotBlank() } ?: return emptyList()
-        return TIER_TABS.mapNotNull { (label, q) ->
-            val url = "$base/media/download/${enc(sid)}?quality=$q"
-            val p = probe?.let { runCatching { it.probe(url, headers()) }.getOrNull() }
-            when {
-                probe != null && p == null -> null
-                else -> Rendition(label, Playable(url = url), p?.totalBytes ?: 0L)
-            }
-        }
+        val url = "$base/media/download/${enc(sid)}?quality=$QUALITY"
+        val p = probe?.let { runCatching { it.probe(url, headers()) }.getOrNull() }
+        if (probe != null && p == null) return emptyList()
+        return listOf(Rendition("默认音质", Playable(url = url), p?.totalBytes ?: 0L))
     }
 
     override suspend fun resolve(video: MusicVideo): Playable {
@@ -213,12 +209,6 @@ class ChuiziSource(
     private companion object {
         const val DEFAULT_BASE = "https://chuizi.org"
 
-        /** 站点「歌曲下载」那三颗：（界面上那一行的名字, 它 href 里 `quality=` 那一格的原值） */
-        val TIER_TABS = listOf(
-            "MP3 128kbps" to "128kbps",
-            "MP3 320kbps" to "320kbps",
-            "FLAC 无损" to "flac",
-        )
 
         /** 实测 100 给满 100 条、500 回错误，所以截在这一格 */
         const val MAX_LIMIT = 100

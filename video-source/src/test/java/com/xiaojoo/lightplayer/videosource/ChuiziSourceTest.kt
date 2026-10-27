@@ -134,41 +134,28 @@ class ChuiziSourceTest {
 
     /** 三档回的是同一串字节（实测都 4,768,365、flac 档开头还是 `ID3`），所以只回一条 = 界面不出选择器 */
     @Test
-    fun `档位三行照站点那三颗`() = runBlocking {
-        val s = ChuiziSource(Recording(router()))
-        val qs = s.qualities(s.search("夹具", 30)[0])
-        // 没给探针 = 问不动字节数：三行照样摆（站点那三颗都在），数那一格留空
-        assertEquals(listOf("MP3 128kbps", "MP3 320kbps", "FLAC 无损"), qs.map { it.label })
-        assertEquals(
-            listOf(
-                "https://chuizi.org/media/download/cz0001?quality=128kbps",
-                "https://chuizi.org/media/download/cz0001?quality=320kbps",
-                "https://chuizi.org/media/download/cz0001?quality=flac",
-            ),
-            qs.map { it.playable.url },
-        )
-        assertEquals("站点不报字节数就别填一个估的", listOf(0L, 0L, 0L), qs.map { it.approxBytes })
-    }
-
-    @Test
-    fun `档位那一问各档报自己真回传的字节数`() = runBlocking {
+    fun `档位只摆一行 —— 站点那三颗实测是同一串`() = runBlocking {
         val p = RecordingProbe(total = 10_105_965L)
         val qs = ChuiziSource(Recording(router()), p).qualities(s0())
-        assertEquals(3, qs.size)
-        assertEquals(listOf(10_105_965L, 10_105_965L, 10_105_965L), qs.map { it.approxBytes })
-        // 三档是三条不同的 href，各探一次，不是一次探完复用
-        assertEquals(3, p.urls.size)
-        assertTrue(p.urls.toString(), p.urls.all { it.contains("/media/download/cz0001?quality=") })
+        assertEquals(listOf("默认音质"), qs.map { it.label })
+        assertEquals("https://chuizi.org/media/download/cz0001?quality=320kbps", qs[0].playable.url)
+        assertEquals("数取站点 Content-Range 报的那一格", 10_105_965L, qs[0].approxBytes)
+        assertEquals("三档同串，只探那一条", 1, p.urls.size)
     }
 
     @Test
-    fun `坏掉的那一档不摆，其余照摆`() = runBlocking {
-        val p = RecordingProbe(
-            total = 4_182_640L,
-            failUrl = "https://chuizi.org/media/download/cz0001?quality=flac",
-        )
+    fun `没给探针也摆那一行，数留空`() = runBlocking {
+        val qs = ChuiziSource(Recording(router())).qualities(s0())
+        assertEquals(1, qs.size)
+        assertEquals("站点不报字节数就别填一个估的", 0L, qs[0].approxBytes)
+    }
+
+    @Test
+    fun `那一档问不通就不摆，交回现换址那一条说原因`() = runBlocking {
+        val p = RecordingProbe(failUrl = "https://chuizi.org/media/download/cz0001?quality=320kbps")
         val qs = ChuiziSource(Recording(router()), p).qualities(s0())
-        assertEquals("按不动的那一颗不摆（摆上去是死控件）", listOf("MP3 128kbps", "MP3 320kbps"), qs.map { it.label })
+        assertTrue("号失效那一档不该摆一颗按得动却没东西的行", qs.isEmpty())
+        assertEquals(1, p.urls.size)
     }
 
     private suspend fun s0() = ChuiziSource(Recording(router())).search("夹具", 30)[0]

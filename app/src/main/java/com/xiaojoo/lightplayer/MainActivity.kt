@@ -575,7 +575,7 @@ private fun App(
     /**
      * 存盘按下去之后等挑档的那一条：（哪首歌, 那几档, 站点是不是只给了一档）。null = 没在等。
      * 10-28 起**每一颗存盘都弹**（他点名的）：只给一串的弹那一串，一档都没问出来的弹一行
-     * 「站点给的那一串」，点它走的还是原来那颗直接存的路（现换址，失败由那一句说）。
+     * 「默认音质」，点它走的还是原来那颗直接存的路（现换址，失败由那一句说）。
      */
     var musicQualityAsk by remember {
         mutableStateOf<Triple<MusicVideo, List<Rendition>, Boolean>?>(null)
@@ -1951,7 +1951,7 @@ private fun App(
      *
      * 先问一句这一路给得出几档（和在线视频那颗 `downloadOnline` 同一条走法），**问完一律弹**：
      * 网易云实测问哪一档回哪一档；锤子音乐那三档 quality 回的是同一串字节，就弹那一串；
-     * 一档都没问出来（会员歌两档都回没址）也弹一行「站点给的那一串」，点它现换址。
+     * 一档都没问出来（会员歌两档都回没址）也弹一行「默认音质」，点它现换址。
      */
     fun downloadMusicOnline(v: MusicVideo) {
         if (musicOnlineDownloading != null || musicQualityAsk != null) return
@@ -1968,7 +1968,7 @@ private fun App(
             if (ask != null && ask.first === v) {
                 musicQualityAsk = Triple(
                     v,
-                    if (qs.isEmpty()) listOf(Rendition("站点给的那一串", Playable(url = ""), 0L)) else qs,
+                    if (qs.isEmpty()) listOf(Rendition("默认音质", Playable(url = ""), 0L)) else qs,
                     qs.size == 1,
                 )
             }
