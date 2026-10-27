@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -39,8 +40,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiaojoo.lightplayer.videosource.MusicVideo
 
-/** 源列表里的一行。[sub] 那一行小灰字写的是这一路的网址（他点的：显示成网址）。 */
-data class SourceRow(val id: String, val name: String, val sub: String, val enabled: Boolean = true)
+/**
+ * 源列表里的一行。[sub] 那一行小灰字写的是这一路的网址（他点的：显示成网址）。
+ *
+ * [hasDefaultList] = 这一路能不能没有关键词地给出一批。锤子音乐不能（空词实测回 400），
+ * 所以这一屏预览那批里永远数不出它几首 —— 那个 0 是假数，芯片上干脆不写数。
+ */
+data class SourceRow(
+    val id: String,
+    val name: String,
+    val sub: String,
+    val enabled: Boolean = true,
+    val hasDefaultList: Boolean = true,
+)
 
 /** 这一屏底下那份预览摆多少首。整批给首页「热门音乐」那一栏，这一屏只要证明"这一路问得通" */
 private const val PREVIEW = 30
@@ -86,7 +98,8 @@ internal fun RightIcon(
  * （那颗加号的可见右沿落在设备 x=1019，离屏右 60px）。这一屏没有折叠箭头可以对，
  * 但两张屏是同一个设置入口的两半，右沿不同一条就看得出是两套东西。
  *
- * 这一屏只有网易云那一路。B 站那一路在「视频地址源」那一屏配，两份名单不共用（他 10-14 点的）；
+ * 这一屏列的是音乐那一路（网易云 + 锤子音乐）。B 站那一路在「视频地址源」那一屏配，两份名单不共用（他 10-14 点的）；
+ * 地址源那一行的芯片和它**共用同一只** [SourceChip]（三态：点一下禁用、点 X 才进待确认删除，他 10-27 点名要齐）；
  * 也不再摊歌单 —— 那一栏撤了，它的地址行跟着撤（留一行没有落点的输入框就是死控件）。
  *
  * 预览那几行右端是两颗（存盘 / 加入播放列表）：**对齐基准还是队列那颗的墨右沿**，
@@ -97,7 +110,9 @@ fun MusicSourcePage(
     baseUrl: String,
     onBaseUrl: (String) -> Unit,
     sources: List<SourceRow>,
-    /** 芯片上那颗红「确认删除」按下去才调这一句：名单是单向的，没有恢复的入口 */
+    /** 点芯片本身：禁用 <-> 重新启用（和「视频地址源」那一屏同一态度，他 10-27 点名要的） */
+    onToggleSource: (String) -> Unit,
+    /** 点灰的那颗上的 X 再按红字：**删掉这一路**，芯片从此不再出现 */
     onDelete: (String) -> Unit,
     /** 那四张榜正在问：方形按钮按不动，但不消失 */
     busy: Boolean,
@@ -214,11 +229,11 @@ fun MusicSourcePage(
                 sources.forEach { r ->
                     SourceChip(
                         row = r,
-                        count = pool.count { it.sourceId == r.id },
+                        count = if (r.hasDefaultList) pool.count { it.sourceId == r.id } else null,
                         confirmDelete = pendingDelete == r.id,
-                        // 视频那一屏有三颗，点别处就收回；这一屏只有网易云一颗，没有"别处"可点，
-                        // 所以再按同一颗就是收回 —— 不然出了红字只剩"删"和"退出这一屏"两条路
-                        onAskDelete = { pendingDelete = if (pendingDelete == r.id) null else r.id },
+                        // 点芯片本身只禁用/恢复，不动已经取回来的那些；换颗的时候把红字收回（和视频那一屏同一句）
+                        onToggle = { pendingDelete = null; onToggleSource(r.id) },
+                        onAskDelete = { pendingDelete = r.id },
                         onDelete = { pendingDelete = null; onDelete(r.id) },
                     )
                 }
@@ -259,53 +274,76 @@ internal fun Hairline() {
 }
 
 /**
- * 地址源那一行的一颗：名字 + 这一屏预览里它贡献了几首 + 右端一枚勾。
- * **点一下进"待确认删除"**（那一格换成红底白字），再按才真删。
- * 高度钉死 36dp：换成那三个字不许把这一行撑高（和「视频地址源」那一屏同一条件）。
+ * 地址源那一行的一颗芯片，**两张屏共用这一只**（「视频地址源」三家、「在线音乐源」两家）。
+ * 三态都在同一颗上，不另开控件：
+ * - 启用：卡底深字，右边一枚勾；
+ * - 点一下 = 禁用：变灰、勾换成 X；
+ * - 点 X = 进入待确认：那一格换成红底白字「确认删除」（红按他 10-14 给的参考图取样 #962323），再按才真删；
+ * - 灰的那颗再点一下 = 恢复。
  *
- * 为什么不做视频那一屏的三态（点一下先禁用、X 才删）：视频那一路有三家，禁用一家还有别家顶上；
- * 音乐这一路只有网易云一家，"禁用"它就是整条音乐在线没了 —— 和删掉是同一件事，
- * 多一步只会让人以为还能救。所以这一颗只有"删"这一个动作，但要按两下。
+ * **整颗定高 36dp**：出勾、出 X、换成「确认删除」都不许把这一行撑高（他点名的那条）。
+ * 宽度可以长（那三个字比一枚图标宽），高度不行。
+ *
+ * [count] 给 null 就只写名字不写数：锤子音乐那一路没有默认列表（空词实测回 400），
+ * 「在线音乐源」这一屏的预览里它一条都不贡献，摆个 0 是假话。
  */
 @Composable
-private fun SourceChip(
+internal fun SourceChip(
     row: SourceRow,
-    count: Int,
+    count: Int?,
     confirmDelete: Boolean,
+    onToggle: () -> Unit,
     onAskDelete: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val off = !row.enabled
     Box(
         modifier = Modifier
             .height(36.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Tokens.CardBg)
-            .tap(onClick = onAskDelete)
+            .background(if (off) Tokens.Divider else Tokens.CardSolid)
+            .tap(onClick = onToggle)
             .padding(start = 14.dp, end = if (confirmDelete) 6.dp else 2.dp),
         contentAlignment = Alignment.Center,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(row.name, color = Tokens.InkStrong, fontSize = 14.sp, maxLines = 1)
-            Spacer(Modifier.width(5.dp))
-            Text("$count", color = Tokens.InkFaint, fontSize = 12.sp)
+            Text(
+                row.name,
+                color = if (off) Tokens.Ink else Tokens.InkStrong,
+                fontSize = 14.sp,
+                maxLines = 1,
+                modifier = Modifier.widthIn(max = 180.dp)
+            )
+            if (count != null) {
+                Spacer(Modifier.width(5.dp))
+                Text("$count", color = if (off) Tokens.Ink else Tokens.InkFaint, fontSize = 12.sp)
+            }
             Spacer(Modifier.width(3.dp))
-            if (confirmDelete) {
-                Box(
+            // 勾和 X 住同一个 28dp 的槽：X 那枚 12dp 的墨居中，左右各空 8dp，所以计数到墨
+            // 是 3 + 8 = 11dp；勾以前是裸的 12dp 图标，那一段就只有 3dp —— 两颗一比较就看出
+            // 左边间隙不一样。他点的是"照 X 那一份"，于是勾也搬进同一只槽里。
+            when {
+                confirmDelete -> Box(
                     modifier = Modifier
                         .height(24.dp)
                         .clip(RoundedCornerShape(6.dp))
-                        // 那颗红照「视频地址源」那一屏同一支：参考图上取样 (150,35,35)
-                        .background(Color(0xFF962323))
+                        .background(DeleteRed)
                         .tap(onClick = onDelete)
                         .padding(horizontal = 8.dp),
                     contentAlignment = Alignment.Center,
                 ) { Text("确认删除", color = Color.White, fontSize = 12.sp, maxLines = 1) }
-            } else {
-                // 勾住在一个 28dp 的槽里：和视频那一屏那颗同一份，两颗一比较才看得出左边间隙一样
-                Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
-                    LineIcon(IconKind.Check, size = 12.dp, color = Tokens.Accent)
-                }
+                off -> Box(
+                    modifier = Modifier.size(28.dp).tap(onClick = onAskDelete),
+                    contentAlignment = Alignment.Center,
+                ) { LineIcon(IconKind.Close, size = 12.dp, color = Tokens.Ink) }
+                else -> Box(
+                    modifier = Modifier.size(28.dp),
+                    contentAlignment = Alignment.Center,
+                ) { LineIcon(IconKind.Check, size = 12.dp, color = Tokens.Accent) }
             }
         }
     }
 }
+
+/** 他给的那张参考图上那颗红：取样 (150,35,35) */
+internal val DeleteRed = Color(0xFF962323)

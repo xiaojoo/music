@@ -146,6 +146,64 @@ class NeteaseSourceTest {
         }
     }
 
+    /**
+     * 档位那一问的报文：形状照 2026-10-14 真抓回来的 ne_url.json（顶层 code + `data[0]` 的 url/br/size/code），
+     * 字节数是那一次量到的真数（`海屿你` 问 320000 回 11,839,725、问 128000 回 4,735,917）。
+     * **直链那一段是编的**：真的那一串带签名和到期时间，不再往公开仓库里塞第二条。
+     */
+    private fun urlJson(br: Int, size: Long, code: Int = 200) =
+        if (code == 200)
+            """{"code":200,"data":[{"url":"http://m801.music.126.net/clips/$br.mp3","br":$br,"size":$size,"code":200}]}"""
+        else
+            """{"code":200,"data":[{"id":3315061679,"url":null,"br":$br,"size":0,"code":$code}]}"""
+
+    @Test
+    fun `档位两档各问一次，按站点报的字节从大到小排`() = runBlocking {
+        val f = Recording { url ->
+            when {
+                url.contains("br=320000") -> urlJson(320_000, 11_839_725)
+                url.contains("br=128000") -> urlJson(128_000, 4_735_917)
+                else -> throw AssertionError("档位那一问了没准备过的地址：$url")
+            }
+        }
+        val qs = NeteaseSource(f).qualities(song("3315061679"))
+
+        // 两档不是从一份报文里读出来的：`br` 换着各问一次，各自带回自己的 size
+        assertEquals(f.urls.toString(), 2, f.urls.size)
+        assertTrue(f.urls.toString(), f.urls.all { it.contains("/api/song/enhance/player/url?ids=[3315061679]") })
+        assertEquals("320kbps", qs[0].label)
+        assertEquals(11_839_725L, qs[0].approxBytes)
+        assertEquals("128kbps", qs[1].label)
+        assertEquals(4_735_917L, qs[1].approxBytes)
+        // 界面右端那一格写的是这个数，站点给的是 http、我们的应用禁明文
+        assertTrue(qs[0].playable.url, qs[0].playable.url.startsWith("https://m801.music.126.net/"))
+    }
+
+    @Test
+    fun `档位拿不到的那一档不摆，全拿不到回空串`() = runBlocking {
+        // 320 那档要会员（顶层 code 仍是 200，这一条自己 code=404、url=null）：只摆真播得了的那一条
+        val one = Recording { url ->
+            if (url.contains("br=320000")) urlJson(320_000, 0, 404) else urlJson(128_000, 4_735_917)
+        }
+        val qs = NeteaseSource(one).qualities(song("3315061679"))
+        assertEquals(1, qs.size)
+        assertEquals("128kbps", qs[0].label)
+
+        // 两档都拿不到 → 空串。界面那边据此不弹选择器（弹一张两行都按不动的是死控件），失败由 resolve 说
+        val none = Recording { urlJson(320_000, 0, 404) }
+        assertTrue(NeteaseSource(none).qualities(song("3315061679")).isEmpty())
+
+        // MV 不吃这一路：它那份档位表在 `/api/mv/detail` 的 brs 里，这边一次都不该问
+        val mv = Recording { throw AssertionError("MV 不该走单曲的档位接口") }
+        assertTrue(NeteaseSource(mv).qualities(mvItem()).isEmpty())
+        assertEquals(0, mv.urls.size)
+
+        // 条目没有歌曲号：同理不去问
+        val noId = Recording { throw AssertionError("没有号就不该问接口") }
+        assertTrue(NeteaseSource(noId).qualities(song("没有号")).isEmpty())
+        assertEquals(0, noId.urls.size)
+    }
+
     @Test
     fun `顶层 code 不是 200 就不往下读`() = runBlocking {
         val f = Recording { """{"code":404,"message":"接口未找到！"}""" }

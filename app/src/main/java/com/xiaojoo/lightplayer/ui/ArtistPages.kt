@@ -55,6 +55,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.IntOffset
@@ -195,6 +196,10 @@ fun ArtistSearchPage(
     onQueue: (MusicVideo) -> Unit,
     onToggleFavorite: (MusicVideo) -> Unit,
     isFavorite: (MusicVideo) -> Boolean,
+    /** 存盘那颗（他 10-27 点名的）：按下去走的是播放页那两栏同一颗 downloadMusicOnline */
+    onDownload: (MusicVideo) -> Unit,
+    /** 正在下的那一条：行上那颗从按下到落盘这一段换主色 */
+    downloadingKey: String?,
     /** 迷你条没露出来的时候，导航条那一段由这一屏自己留（和别的子页同一个开关） */
     bottomInset: Boolean,
 ) {
@@ -309,6 +314,7 @@ fun ArtistSearchPage(
                         itemsIndexed(sList, key = { _, v -> "s-" + v.key }) { _, v ->
                             SongRow(
                                 video = v, favorite = isFavorite(v), q = q, showArtist = true,
+                                onDownload = { onDownload(v) }, downloading = downloadingKey == v.key,
                                 onClick = { onPlay(v) }, onQueue = { onQueue(v) },
                                 onFavorite = { onToggleFavorite(v) },
                             )
@@ -537,6 +543,13 @@ private fun SongRow(
     q: String = "",
     /** 搜索结果跨好几位歌手，第二行要把人名写出来；名下那一屏身后大标题已经是他，不重复写 */
     showArtist: Boolean = false,
+    /**
+     * 存盘那颗（他 10-27 点名要那颗的屏给：歌手页那两芯片搜出来那一屏）。
+     * null = 这一屏不给存（一位歌手名下那一屏就是这种）—— 不摆，摆一颗按不动的是死控件。
+     */
+    onDownload: (() -> Unit)? = null,
+    /** 正在下那一条：那颗从按下到落盘这一段换主色（行上没别的地方放进度环） */
+    downloading: Boolean = false,
     onClick: () -> Unit,
     onQueue: () -> Unit,
     onFavorite: () -> Unit,
@@ -594,6 +607,14 @@ private fun SongRow(
             if (favorite) Tokens.Accent else Tokens.InkFaint,
             onClick = { onFavorite() }
         )
+        if (onDownload != null) {
+            /* 画框 19.14dp 和在线那一族同一份（Download 的墨是高>宽，管长边的是高，
+               那笔账见 MusicOnlinePage 里那颗的注释）。它往左长：右端那条墨右沿基准是队列那颗。 */
+            RowIcon(
+                IconKind.Download, if (downloading) Tokens.Accent else Tokens.InkFaint,
+                size = 19.14.dp, onClick = onDownload,
+            )
+        }
         // 闭合三角形 + 一枚加号压在它的下斜边上（挖口见 LineIcon 该分支）
         RowIcon(IconKind.PlayQueue, Tokens.InkFaint, onClick = onQueue)
     }

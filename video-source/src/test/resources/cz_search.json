@@ -1,0 +1,5 @@
+{"data": {"items": [
+  {"id": "cz0001", "slug": "夹具歌-1-夹具歌手-a", "title": "夹具歌 1", "artistNames": ["夹具歌手 A"], "durationSec": 119, "coverUrl": "http://p2.music.126.net/FAKEFAKEFAKE0000000000==/109951172501913537.jpg", "albumTitle": "夹具专辑", "platforms": ["netease"], "qualities": ["128kbps", "320kbps", "flac"], "createdAt": "2026-05-04T03:13:24Z", "updatedAt": "2026-05-20T05:40:19Z"},
+  {"id": "cz0002", "slug": "夹具歌-2-夹具歌手-b-夹具歌手-c", "title": "夹具歌 2", "artistNames": ["夹具歌手 B", "夹具歌手 C"], "durationSec": 205, "coverUrl": "https://y.gtimg.cn/music/photo_new/T002R300x300M000FAKE00000.jpg", "platforms": ["kugou", "qq"], "qualities": ["128kbps", "320kbps"], "createdAt": "2026-05-06T11:00:00Z", "updatedAt": "2026-05-06T11:00:00Z"},
+  {"id": "cz0003", "slug": "什么都没给的一条", "title": "夹具歌 3", "artistNames": [], "durationSec": 0, "coverUrl": "", "platforms": ["netease"], "qualities": ["320kbps"], "createdAt": "站点没报时间", "updatedAt": ""}
+], "nextCursor": "eyJ2IjoxLCJzIjoiMTgiLCJpZCI6ImN6MDAwMyJ9"}}

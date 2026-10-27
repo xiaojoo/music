@@ -237,6 +237,34 @@ class NeteaseSource(
         )
     }
 
+    /**
+     * 单曲能挑的两档：`br` 问哪一档就回哪一档（10-14 复量：`海屿你` 问 320000 回
+     * `br=320000` + 11,839,725 字节，问 128000 回 4,735,917，`明知故犯` 两档同样跟着变）。
+     * **两档各问一次接口**，字节数取站点自己在 `data[0].size` 那一格报的数 —— 不在这边按码率乘时长估
+     * （估出来的和站点报的对不上就不该写"多少"，界面上那一格是给人比大小的）。
+     *
+     * 只摆这两档：`flac` 要走另一支接口（`.../player/url/v1` 的 `level`），这台机上没验过它给不给
+     * 免费歌的 lossless 地址，摆一颗点开出东西的选择就是死控件。两档都拿不到地址（真 VIP 那一族）
+     * 就回空串 —— 不弹一张两行都按不动的选择器，失败由 [resolve] 那一句说。
+     */
+    override suspend fun qualities(video: MusicVideo): List<Rendition> {
+        if (video.mv) return emptyList()     // MV 那一份是 brs 那张表，这一路的选择器只管单曲
+        val sid = video.remoteId.toLongOrNull() ?: return emptyList()
+        return BR_TABS.mapNotNull { (label, br) ->
+            runCatching { urlTab(sid, br) }.getOrNull()
+                ?.let { (url, size) -> Rendition(label, Playable(url = secure(url) ?: url), size) }
+        }.sortedByDescending { it.approxBytes }
+    }
+
+    /** 问一档：（可播地址, 站点报的字节数）；这一条拿不到地址就 null（顶层 code 不算，看这一条自己的） */
+    private fun urlTab(sid: Long, br: String): Pair<String, Long>? {
+        val data = fetch.get("$base/api/song/enhance/player/url?ids=[$sid]&br=$br", headers())
+            .requireOk().optJSONArray("data")?.optJSONObject(0) ?: return null
+        val url = data.optString("url")
+        if (url.isBlank() || url == "null" || data.optInt("code") != 200) return null
+        return url to data.optLong("size")
+    }
+
     override suspend fun resolve(video: MusicVideo): Playable {
         if (video.mv) return mvPlayable(video)
         val sid = video.remoteId.toLongOrNull()
@@ -473,5 +501,8 @@ class NeteaseSource(
      * 早先记的「免费歌问 320k 也只回 128k」是错的，播放器报出来的 320 kbps 和接口那个 size 对得上。
      */
         const val BITRATE = "320000"
+
+        /** 选择器上那两档：界面上写的名字 + 问站点时带的那个 `br`（从高到低，回空的那档不摆） */
+        val BR_TABS = listOf("320kbps" to "320000", "128kbps" to "128000")
     }
 }

@@ -67,7 +67,13 @@ object OnlineDownload {
             throw SourceFailureException(SourceFailure.Unsupported("这条不是网络地址，本来就是本机文件"))
         }
         val conn = redirect(start, dest)
-        val mime = conn.contentType?.substringBefore(';')?.trim()?.lowercase()
+        var mime = conn.contentType?.substringBefore(';')?.trim()?.lowercase()
+        // 有的站点把音频报成 `application/octet-stream`（锤子音乐那颗「FLAC 无损」就是，而它回的字节
+        // 其实是个带 ID3 头的 mp3）：先嗅头 12 个字节，嗅得出一族真音频就按**嗅到的那一族**收下 ——
+        // 扩展名跟着真字节走（.mp3），不跟着站点写的文件名走（.flac），不然存出去的是个放不动的假无损
+        val head = if (dest.family == "audio" && mime != null && !mime.startsWith(dest.family + "/"))
+            sniffHead(conn) else ByteArray(0)
+        sniffAudio(head)?.let { mime = "${dest.family}/$it" }
         if (mime != null && !mime.startsWith(dest.family + "/")) {
             conn.disconnect()
             // m3u8 清单、DASH 的 mpd 都是"一串分片的目录"，顺着它下要先实现切片合并，这一版不做
@@ -97,7 +103,9 @@ object OnlineDownload {
         ) ?: throw SourceFailureException(SourceFailure.Network("系统没给这条新文件让位"))
 
         try {
-            conn.inputStream.use { input ->
+            (if (head.isEmpty()) conn.inputStream else java.io.SequenceInputStream(
+                java.io.ByteArrayInputStream(head), java.io.BufferedInputStream(conn.inputStream)
+            )).use { input ->
                 val out = context.contentResolver.openOutputStream(row, "w")
                     ?: throw SourceFailureException(SourceFailure.Network("写不进去"))
                 out.use { o ->
@@ -247,6 +255,38 @@ private val AudioExt = mapOf(
 )
 
 /** 扩展名只从已知类型映射，其余一律回该族那个兜底格式：拿 mime 的子类型直接当扩展名会写出 "x-matroska" 这种没人认的尾巴 */
+/**
+ * 嗅头几个字节认这一族音频，认出的是**子类型**（`mpeg`/`flac`/`ogg`），嗅不出回 null。
+ * 顶层函数不是随手放的：这样它能在 JVM 自检里直接喂字节喂出答案，不用起 Android 那套。
+ */
+internal fun sniffAudio(head: ByteArray): String? {
+    fun tag(n: Int, s: String) = head.size >= n && s.indices.all { head[it] == s[it].code.toByte() }
+    return when {
+        tag(3, "ID3") -> "mpeg"                     // mp3 的标签块
+        tag(4, "fLaC") -> "flac"                    // 真无损的头
+        tag(4, "OggS") -> "ogg"
+        head.size >= 2 && head[0] == 0xFF.toByte() && head[1].toInt() and 0xE0 == 0xE0 -> "mpeg"
+        else -> null                                // 没有 RIFF/WAVE：那一条要判 12 个字节的两段，
+    }                                               // 而我们只嗅得出"是不是音频"这一件事，不补
+}
+
+/** 从连接上取走前 12 个字节（取不到就回短的一截 / 空串）：调用方要把它们接回正文前面再写盘 */
+private fun sniffHead(conn: java.net.HttpURLConnection): ByteArray {
+    val b = ByteArray(12)
+    return try {
+        val s = conn.inputStream
+        var n = 0
+        while (n < b.size) {
+            val r = s.read(b, n, b.size - n)
+            if (r < 0) break
+            n += r
+        }
+        if (n == b.size) b else b.copyOf(n)
+    } catch (e: Exception) {
+        ByteArray(0)
+    }
+}
+
 private fun downloadExt(mime: String?, url: String, dest: DownloadDest): String =
     dest.exts[mime]
         ?: url.substringBefore('#').substringBefore('?')

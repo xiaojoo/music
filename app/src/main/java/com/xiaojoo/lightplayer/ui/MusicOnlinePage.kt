@@ -278,9 +278,19 @@ internal fun MusicRow(
     downloading: Boolean = false,
     /** 第二行写什么：在线那两屏默认只有歌手，首页那一栏要挤进 时长·发布时间·源名 */
     sub: String? = null,
+    /**
+     * 左右内衬。**这一族自己不带内衬**（源页那一屏由外层给），所以和本地曲库那一族并排的那一屏
+     * 要在调用点递进来（`TrackLine` 走的是同一对 ScreenPad / ColEndPad）。
+     * 递进来的内衬加在 `tap` **之后** —— 按下那一条仍然是整幅，只是内容往里缩，和本地那一族一致。
+     */
+    pad: Modifier = Modifier,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().tap(onClick = onClick).padding(vertical = 5.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .tap(onClick = onClick)
+            .then(pad)
+            .padding(vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         var edge by remember { mutableIntStateOf(0) }

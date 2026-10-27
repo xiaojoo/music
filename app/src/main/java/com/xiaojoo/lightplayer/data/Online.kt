@@ -10,6 +10,7 @@ import com.xiaojoo.lightplayer.videosource.ApiQuality
 import com.xiaojoo.lightplayer.videosource.ApiSong
 import com.xiaojoo.lightplayer.videosource.ApiSource
 import com.xiaojoo.lightplayer.videosource.BiliSource
+import com.xiaojoo.lightplayer.videosource.ChuiziSource
 import com.xiaojoo.lightplayer.videosource.CustomApiSource
 import com.xiaojoo.lightplayer.videosource.DouyinSource
 import com.xiaojoo.lightplayer.videosource.Fetcher
@@ -21,6 +22,8 @@ import com.xiaojoo.lightplayer.videosource.OnlineSort
 import com.xiaojoo.lightplayer.videosource.Playable
 import com.xiaojoo.lightplayer.videosource.headersForUrl
 import com.xiaojoo.lightplayer.videosource.Poster
+import com.xiaojoo.lightplayer.videosource.Probe
+import com.xiaojoo.lightplayer.videosource.Prober
 import com.xiaojoo.lightplayer.videosource.ResolveOutcome
 import com.xiaojoo.lightplayer.videosource.Rendition
 import com.xiaojoo.lightplayer.videosource.RetryPolicy
@@ -148,6 +151,46 @@ object Online {
      */
     private val kuaishou = KuaishouSource(post)
 
+    /**
+     * 一字节探针：`Range: bytes=0-0` 问一句「这地址此刻给不给货」，不下载正文。
+     * 复用上面那两台的超时和状态码归类口径（403/412 算被挡，其它非 2xx 算站点没给）。
+     */
+    private val probeRange = Prober { url, hs ->
+        val c = URL(url).openConnection() as HttpURLConnection
+        try {
+            c.connectTimeout = 8_000
+            c.readTimeout = 8_000
+            c.instanceFollowRedirects = true
+            c.setRequestProperty("Range", "bytes=0-0")
+            hs.forEach { (k, v) -> c.setRequestProperty(k, v) }
+            val code = c.responseCode
+            if (code !in 200..299) {
+                throw SourceFailureException(
+                    if (code == 403 || code == 412) SourceFailure.Auth("HTTP $code")
+                    else SourceFailure.Network("HTTP $code")
+                )
+            }
+            // 带 Range 的那一枪回 206，正文只有 1 字节，整条的字节数在 Content-Range 的斜杠后面；
+            // 站点不理 Range 就回 200 + 整条长度，所以那一格也要读
+            val total = c.getHeaderField("Content-Range")?.substringAfterLast('/')?.toLongOrNull()
+                ?: c.contentLengthLong.takeIf { it > 1 } ?: 0L
+            Probe(total, c.contentType?.substringBefore(';')?.trim()?.lowercase())
+        } catch (e: java.io.IOException) {
+            throw SourceFailureException(SourceFailure.Network(e.message ?: "连接失败"))
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    /**
+     * 锤子音乐：搜一首歌 → 一条自带音频的 mp3（裸 GET、不要 cookie，见 [ChuiziSource] 那段量录）。
+     *
+     * 它**不跟 [musicBase] 走**：那一句是"换一台网易云镜像"，改它的人不该顺手把这一路也换掉。
+     * 这一路 2026-10-27 是他点名开的例外（站里那批是它自己转码托管的母带，不是 302 回原平台），
+     * 去掉它只要在「在线音乐源」那一屏把芯片按两下，不用改代码。
+     */
+    private val chuizi = ChuiziSource(http, probeRange)
+
     /** 在线音乐源那一路的默认地址：设置抽屉里那一栏空着就回到它 */
     const val MUSIC_DEFAULT_BASE = "https://music.163.com"
 
@@ -228,7 +271,7 @@ object Online {
     val registry: SourceRegistry
         get() = registryCache
             ?: SourceRegistry(
-                listOf(bili, douyin, kuaishou, NeteaseSource(http, musicBase))
+                listOf(bili, douyin, kuaishou, NeteaseSource(http, musicBase), chuizi)
                     .filterNot { blocked(it.id) },
             ).also { registryCache = it }
 
@@ -394,13 +437,35 @@ object Online {
         .build()
 
     /**
-     * 「最火的音乐 / 相关音乐」那两栏问的那一路：只问在线音乐源（网易云），**保留它自己给的那个顺序**。
+     * 「最火的音乐 / 相关音乐」那两栏问的那一路：问在线音乐源那几路，**每一路自己给的顺序原样保留**。
+     *
+     * 两家各分 [limit] 的一半（15 + 15，奇数给网易云多一条）：那一屏的行数是按 [limit] 调过的
+     * （`MUSIC_ONLINE_SONGS` = 30 行，真机量过），多一路不该把同屏别的内容顶没。
      *
      * 不走 [search] 那套跨源归并：它按 relevance 重排，会把站点排好的"最像这一首的"打散。
-     * 失败原样抛出去，让那一栏能说出为什么，而不是写"没搜到"。
+     * 网易云那一句的失败照旧原样抛出去（那一栏要能说出为什么，而不是写"没搜到"）；
+     * 锤子音乐那一句只吞 `SourceFailureException`（真被取消要往上抛，别拿它当"这一路没内容"）。
      */
-    suspend fun searchMusic(query: String, limit: Int): List<MusicVideo> =
-        if (blocked("netease")) emptyList() else musicSource().search(query, limit)
+    suspend fun searchMusic(query: String, limit: Int): List<MusicVideo> {
+        val netease = if (blocked("netease")) emptyList()
+            else musicSource().search(query, limit - limit / 2)
+        val more = if (blocked("chuizi")) emptyList() else try {
+            chuizi.search(query, limit / 2)
+        } catch (e: SourceFailureException) {
+            // 后加的这一路挂了不带走整批：网易云那一句原来就能出结果
+            emptyList()
+        }
+        return netease + more
+    }
+
+    /**
+     * 只问锤子音乐那一路（「我的」那一屏第三颗芯片按下去才用）。
+     *
+     * 被禁用/删掉的时候回空，不替它去别家捞一批顶上（和 [searchMvs] 同一条规矩）。
+     * 这一路没有默认列表（空词实测回 400），空词直接回空，不发那一句。
+     */
+    suspend fun searchChuizi(query: String, limit: Int): List<MusicVideo> =
+        if (blocked("chuizi")) emptyList() else chuizi.search(query, limit)
 
     /**
      * 「自定义接口」搜索那一屏那一面单独的墙。它**不在上面那个 registry 里** ——

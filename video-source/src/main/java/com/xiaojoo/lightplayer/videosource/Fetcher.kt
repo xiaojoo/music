@@ -20,6 +20,25 @@ fun interface Poster {
 }
 
 /**
+ * 只问一句「这个地址此刻给不给货」，不下载正文（实现方带 `Range: bytes=0-0` 去问）。
+ *
+ * 为什么单独开第三台、不并进 [Fetcher]：`Fetcher` 是函数式接口，多一个抽象方法就把 app 侧那几处
+ * lambda 构造和模块里全部测试替身一起打断（[Poster] 当年同一个理由）。也不能拿 `Fetcher.get` 凑 ——
+ * 它回的是整段正文，探一条 4.7MB 的 mp3 就等于把它下下来了。
+ *
+ * 要它的是这种源：地址是按号拼出来的、站点没有「这条还在不在」的口，号失效只能真去取才知道
+ * （锤子音乐 2026-10-27 华为真机量到一条回 502，播放器直接进 ERROR 态而界面一个字不说）。
+ */
+/** 探那一句顺带回的两格（都是这一枪本来就收到的头，不另问一次）：这一条真有多少字节
+ *  （站点没报 `Content-Range`/`Content-Length` 就 0）、它报的 Content-Type（没给 null）。 */
+data class Probe(val totalBytes: Long, val mime: String?)
+
+fun interface Prober {
+    /** 探不到就抛 SourceFailureException，消息里带上站点回的那一码 */
+    fun probe(url: String, headers: Map<String, String>): Probe
+}
+
+/**
  * 播一条远端地址时要带的请求头。视频本体是 ExoPlayer 去取的，不是源取的，
  * 所以这条规则得放在引擎侧、按主机名判 —— 很多站点的 CDN 只认自家来路。
  */

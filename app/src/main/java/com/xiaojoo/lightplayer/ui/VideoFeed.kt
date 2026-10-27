@@ -1865,6 +1865,8 @@ private fun VideoTopTab(label: String, selected: Boolean, busy: Boolean, onClick
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun QualitySheet(
+    /** 那一格的名字：画面那一路是「清晰度」，在线音乐那一路是「音质」（同一层不另画一份） */
+    title: String = "清晰度",
     renditions: List<Rendition>,
     onPick: (Rendition) -> Unit,
     onDismiss: () -> Unit,
@@ -1887,24 +1889,42 @@ internal fun QualitySheet(
                     .padding(horizontal = Tokens.Dimen.ScreenPad)
             ) {
                 Text(
-                    "清晰度",
+                    title,
                     color = Tokens.InkStrong,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.align(Alignment.CenterStart)
                 )
+                /* ✕ 那颗往右补 11.63dp：`RightIcon` 自己那笔 `rightShift` 是把它对齐到「在线音乐源」
+                   那一列的墨右沿线（离屏 32.7dp），这一层不要那条线 —— 他要的是 ✕ 的右缝和「音质」的
+                   左缝同一个数。真机量的：补之前 ✕ 墨右沿落在设备 x990（右缝 89px），「音质」墨左沿
+                   在 x57（左缝 57px）；补 11.63dp(32px) 之后墨右沿到 x1022 = 1080−1−57，两缝 Δ0。 */
                 RightIcon(
                     IconKind.Close, inkDp = 13.50f, canvas = 22.dp, enabled = true,
-                    modifier = Modifier.align(Alignment.CenterEnd),
+                    modifier = Modifier.offset(x = 11.63.dp).align(Alignment.CenterEnd),
                     onClick = onDismiss,
                 )
             }
             Hairline()
+            /* 档位还没问回来（`downloadMusicOnline` 先把这一层顶出来、行递一串空的）：那一块摆
+               已有的三个点 [OnlineDots]，墨用 `Tokens.Ink` —— 这一层的底是浅灰的 ListBg，和首页
+               下拉刷新那一行同一颗、同一个墨。高 96dp = 两行：网易云那一路就是两档，最常见那一路
+               不跳；锤子三档会往下长一行。 */
+            if (renditions.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(96.dp),
+                    contentAlignment = Alignment.Center
+                ) { OnlineDots(color = Tokens.Ink) }
+            }
             renditions.forEachIndexed { i, r ->
                 if (i > 0) Hairline()
                 Row(
-                    // tap 写在内衬外面：整行都是命中区，不是只有字那一段（和 MusicRow 同一句）
-                    modifier = Modifier.fillMaxWidth().height(60.5.dp)
+                    /* tap 写在内衬外面：整行都是命中区，不是只有字那一段（和 MusicRow 同一句）。
+                       行高原来是 60.5dp —— 那是从「在线音乐源」那一屏的行搬来的数（视频那一路的
+                       「清晰度」也吃它）。10-28 他说这一层的选项上下间隙小一点，收到**这一层标题行
+                       同一个数 48dp**，不另编一个：标题那一格 48、选项每一行 48，一层里两个数。
+                       连带：视频那一路的「清晰度」同一张抽屉，一起变矮。 */
+                    modifier = Modifier.fillMaxWidth().height(48.dp)
                         .tap(onClick = { onPick(r) })
                         .padding(horizontal = Tokens.Dimen.ScreenPad),
                     verticalAlignment = Alignment.CenterVertically

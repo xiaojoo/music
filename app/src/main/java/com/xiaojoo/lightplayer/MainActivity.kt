@@ -77,6 +77,7 @@ import com.xiaojoo.lightplayer.recognizer.Recognition
 import com.xiaojoo.lightplayer.recognizer.RecognitionException
 import com.xiaojoo.lightplayer.recognizer.pcmDurationMs
 import com.xiaojoo.lightplayer.recognizer.wavMono16
+import com.xiaojoo.lightplayer.videosource.ApiQuality
 import com.xiaojoo.lightplayer.videosource.ApiSong
 import com.xiaojoo.lightplayer.videosource.ApiSource
 import com.xiaojoo.lightplayer.videosource.DownloadTarget
@@ -571,6 +572,16 @@ private fun App(
     /** 在线音乐那两屏（源页的热歌 + 播放页右滑第三页）正在存盘的那一条的 key。
      *  两屏共用一颗：一次只让一条在下，免得同一个歌名两次写到同一个文件上打架 */
     var musicOnlineDownloading by remember { mutableStateOf<String?>(null) }
+    /**
+     * 存盘按下去之后等挑档的那一条：（哪首歌, 那几档, 站点是不是只给了一档）。null = 没在等。
+     * 10-28 起**每一颗存盘都弹**（他点名的）：只给一串的弹那一串，一档都没问出来的弹一行
+     * 「站点给的那一串」，点它走的还是原来那颗直接存的路（现换址，失败由那一句说）。
+     */
+    var musicQualityAsk by remember {
+        mutableStateOf<Triple<MusicVideo, List<Rendition>, Boolean>?>(null)
+    }
+    /** 「API 站」那一屏的存盘：等挑档的那一条。档位是接口在 `minfo` 里报的那几张表，不是这边编的 */
+    var apiQualityAsk by remember { mutableStateOf<ApiSong?>(null) }
     var pinned by remember { mutableStateOf(pinRepo.all()) }
     // 删完文件要重扫一遍曲库：不扫的话那一行还留在列表里，点它是报错不是播放
     var scanTick by remember { mutableIntStateOf(0) }
@@ -1680,9 +1691,9 @@ private fun App(
      *
      * 换不到就弹一句再返回，不静默 return —— 静默 return 在真机上和"这颗没做"分不开。
      */
-    fun withApiLink(s: ApiSong, then: (Playable) -> Unit) {
+    fun withApiLink(s: ApiSong, q: ApiQuality? = null, then: (Playable) -> Unit) {
         scope.launch {
-            val q = s.qualities.firstOrNull()
+            val q = q ?: s.qualities.firstOrNull()
             if (q == null) {
                 apiToast("接口没报这一条的档位")
                 return@launch
@@ -1750,11 +1761,43 @@ private fun App(
         }
     }
 
-    /** 存的就是刚才现换回来的那一条直链，不重新取址、不换档位、不转码（和在线那两路同一颗下载） */
+    /** 选择器上那一行的名字：接口报的码率 + 容器，两格都是站点自己写的，这边不换算 */
+    fun apiLabelOf(q: ApiQuality) = "${q.bitrate}·${q.format}"
+
+    /**
+     * 「API 站」那一屏的存盘：先弹「音质」把接口在 `minfo` 里报的那几档摊出来（10-28 起每一颗存盘
+     * 都问一句音质，这一路本来就带档位表，原来那颗是闷声取第一档）。一档都没报就不弹，直接说没报。
+     */
+
     fun downloadApiSong(s: ApiSong) {
-        if (apiDownloading != null) return
+        if (apiDownloading != null || apiQualityAsk != null) return
+        if (s.qualities.isEmpty()) {
+            apiToast("接口没报这一条的档位")
+            return
+        }
+        apiQualityAsk = s
+    }
+
+    /** 接口报的字节数是"28.67MB"这种写好的串，换回字节才喂得进选择器右端那一格；认不出来就 0（那一格留空） */
+    fun apiBytesOf(text: String): Long {
+        val cut = text.indexOfLast { it.isDigit() }
+        if (cut < 0) return 0L
+        val num = text.take(cut + 1).toDoubleOrNull() ?: return 0L
+        when (text.substring(cut + 1).trim().uppercase().removeSuffix("B")) {
+            "G" -> return (num * 1_000_000_000).toLong()
+            "M" -> return (num * 1_000_000).toLong()
+            "K" -> return (num * 1_000).toLong()
+            else -> return 0L
+        }
+    }
+
+    /** 选择器上点了接口那一档：拿这一档去换址再存（原来那颗固定取接口报的第一档） */
+    fun downloadApiSongAt(s: ApiSong, r: Rendition) {
+        apiQualityAsk = null
+        val hit = s.qualities.indexOfFirst { apiLabelOf(it) == r.label }
+        val q = s.qualities[if (hit >= 0) hit else 0]
         apiDownloading = s.key
-        withApiLink(s) { p ->
+        withApiLink(s, q) { p ->
             scope.launch {
                 val v = s.asMusicVideo()
                 val t = Track(
@@ -1825,18 +1868,16 @@ private fun App(
     }
 
     /**
-     * 把在线音乐的一首存成 `音乐/LightPlayer`。存的还是**播放用的那一条直链**：
-     * 先 resolve（和点它播放同一颗），Ready 了才下 —— 所以这一颗能存到的范围正好等于耳朵能听到的范围，
-     * 网易云判成会员歌的那一些在 resolve 就抛「这首在网易云要会员」，界面如实写出来，不另找路子。
-     *
-     * 一次只让一条在下：两屏（源页的热歌、播放页的相关音乐）共用这一颗状态。
-     * 下完 bump scanTick —— 文件进了公共目录就是媒体库里的一条，「本地」那一栏不重扫不知道它存在。
+     * 真去存那一首。[picked] = null 表示还要现 resolve 一次（和点它播放同一颗）；
+     * [oneTier] 只给存完那一句用（这一路只给一档，没得挑）。
      */
-    fun downloadMusicOnline(v: MusicVideo) {
+    fun saveMusicOnline(v: MusicVideo, picked: Playable?, oneTier: Boolean) {
         if (musicOnlineDownloading != null) return
         musicOnlineDownloading = v.key
         scope.launch {
-            when (val out = withContext(Dispatchers.IO) { Online.resolve(v) }) {
+            val out = picked?.let { ResolveOutcome.Ready(it, 1) }
+                ?: withContext(Dispatchers.IO) { Online.resolve(v) }
+            when (out) {
                 is ResolveOutcome.Ready -> {
                     val t = Track(
                         id = 0L, uri = Uri.parse(out.playable.url), name = v.title,
@@ -1867,14 +1908,19 @@ private fun App(
                             base == null -> "读不回那首歌的名字"
                             asked?.exceptionOrNull() != null ->
                                 "没问到：${asked.exceptionOrNull()?.message ?: asked.exceptionOrNull()}"
+                            // 歌词接口目前只有网易云那一路有（`Online.musicLyric` 按 sourceId 筛）：
+                            // 别的路要说"这一路没问"，不能把它写成"网易云没给"
+                            lyric == null && v.sourceId != "netease" -> "歌词只问网易云那一路，这一路没问"
                             lyric == null -> "网易云没给这首的歌词"
                             inTree == null && inDocs == null -> "两个落点都写不进（歌词文件夹、Documents）"
                             else -> null
                         }
+                        // 站点只给一串的那一路（锤子音乐）没弹选择器，就在这一句里写清"没得挑"
+                        val tier = if (oneTier) "（这一路只给一档）" else ""
                         android.widget.Toast.makeText(context, when {
-                            why != null -> "歌已存到 ${DownloadDest.Music.label}，歌词没存下：$why"
-                            inTree != null -> "已存到 ${DownloadDest.Music.label}，歌词同名放在歌旁边那一格"
-                            else -> "已存到 ${DownloadDest.Music.label}，歌词同名放在 Documents/LightPlayer"
+                            why != null -> "歌已存到 ${DownloadDest.Music.label}$tier，歌词没存下：$why"
+                            inTree != null -> "已存到 ${DownloadDest.Music.label}$tier，歌词同名放在歌旁边那一格"
+                            else -> "已存到 ${DownloadDest.Music.label}$tier，歌词同名放在 Documents/LightPlayer"
                         }, android.widget.Toast.LENGTH_SHORT).show()
                         refreshLibrary()
                     } catch (e: SourceFailureException) {
@@ -1891,6 +1937,52 @@ private fun App(
             }
             musicOnlineDownloading = null
         }
+    }
+
+
+    /**
+     * 把在线音乐的一首存成 `音乐/LightPlayer`。存的还是**播放用的那一条直链**：
+     * 先 resolve（和点它播放同一颗），Ready 了才下 —— 所以这一颗能存到的范围正好等于耳朵能听到的范围，
+     * 网易云判成会员歌的那一些在 resolve 就抛「这首在网易云要会员」，界面如实写出来，不另找路子。
+     *
+     * 一次只让一条在下：几屏（源页的热歌、播放页那两栏、歌手页那两芯片搜出来那一屏、
+     * 「我的」那一屏的在线那一段）共用这一颗状态。下完 bump scanTick —— 文件进了公共目录
+     * 就是媒体库里的一条，「本地」那一栏不重扫不知道它存在。
+     *
+     * 先问一句这一路给得出几档（和在线视频那颗 `downloadOnline` 同一条走法），**问完一律弹**：
+     * 网易云实测问哪一档回哪一档；锤子音乐那三档 quality 回的是同一串字节，就弹那一串；
+     * 一档都没问出来（会员歌两档都回没址）也弹一行「站点给的那一串」，点它现换址。
+     */
+    fun downloadMusicOnline(v: MusicVideo) {
+        if (musicOnlineDownloading != null || musicQualityAsk != null) return
+        // 抽屉**先展开**（行递一串空的，那一块自己转三个点），档位问回来再填进去 ——
+        // 10-28 他要的就是这个次序：按下去立刻有东西出来，不是等接口两三秒才蹦出一层
+        musicQualityAsk = Triple(v, emptyList(), false)
+        scope.launch {
+            // 问档挂了不带走这一颗：退回"按播放那一档直接存"，失败由存那一句说
+            val qs = withContext(Dispatchers.IO) {
+                runCatching { Online.qualities(v) }.getOrDefault(emptyList())
+            }
+            val ask = musicQualityAsk
+            // 期间他可能已经把这一层关掉了（点 ✕ / 点外面）：那就别再把空抽屉顶回来
+            if (ask != null && ask.first === v) {
+                musicQualityAsk = Triple(
+                    v,
+                    if (qs.isEmpty()) listOf(Rendition("站点给的那一串", Playable(url = ""), 0L)) else qs,
+                    qs.size == 1,
+                )
+            }
+        }
+    }
+
+    /**
+     * 选择器上点了一档：那一档的地址在问档那一次就拿到了，不再 resolve 第二次（视频那颗同一句）。
+     * 地址是空串 = 这一路一档都没给出来的那一行 → 交回现换址那条路。
+     */
+    fun downloadMusicOnlineAt(v: MusicVideo, r: Rendition, oneTier: Boolean) {
+        musicQualityAsk = null
+        val picked = r.playable.url.takeIf { it.isNotBlank() }
+        saveMusicOnline(v, picked?.let { Playable(url = it) }, oneTier)
     }
 
     /**
@@ -1971,20 +2063,26 @@ private fun App(
     }
 
     /**
-     * 删掉的源。两份名单，各管一张屏（他 10-14 点的：视频源和音乐源是两个配置，别混）——
-     * `goneSources` 是「视频地址源」那一屏那三路，`goneMusic` 是「在线音乐源」那一屏那一路，
-     * 各存各的文件（`online` / `music_online`），删一处不会把另一路的行也带走。
-     * 没有「恢复」—— 名单是单向的（他点的）。
+     * 不再问的源：**两张屏各两份名单**（他 10-14 点的：视频源和音乐源是两个配置，别混）——
+     * `goneSources` / `goneMusic` = 禁用（芯片还在，灰的，再点一下就恢复），
+     * `removedSources` / `removedMusic` = 删除（芯片整个没了，单向的，没有恢复的入口）。
+     * 各存各的文件（`online` / `music_online`），一张屏上动手不会带走另一屏的行。
+     * 「在线音乐源」那一屏从 2026-10-27 起也走这三态（他点名要和视频那屏一样），
+     * 以前那一份只有"删"，是因为音乐只有网易云一家；现在有两家，禁用一家真能另一家顶上。
      */
     var goneSources by remember { mutableStateOf(onlineSettings.goneSources()) }
     var goneMusic by remember { mutableStateOf(musicOnlineSettings.goneSources()) }
-    /** 从选项卡名单里删掉的那几路（芯片整个没了）。和上面那份并起来才是"注册表不再问"的那一批 */
+    /** 从选项卡名单里删掉的那几路（芯片整个没了）。和上面那些并起来才是"注册表不再问"的那一批 */
     var removedSources by remember { mutableStateOf(onlineSettings.removedSources()) }
+    var removedMusic by remember { mutableStateOf(musicOnlineSettings.removedSources()) }
+
+    /** 四份并起来才是注册表不再问的那一批：两张屏各一份禁用、一份删除 */
+    fun pushGone() = Online.setGone(goneSources + removedSources + goneMusic + removedMusic)
     /* 开机先按删除名单收一次尾：老版本删一路的时候不会带走它的存量条目，那些条目留在在线栏里
        永远换不到地址、还把翻页闸门锁死（他这次的"删了一个 b 站就一直报 B 站问题"就是这条）。
        现在起删一路会当场带走，这一句只负责把之前留下的那批清干净。 */
     LaunchedEffect(Unit) {
-        Online.setGone(goneSources + removedSources + goneMusic)
+        pushGone()
         (goneSources + removedSources).forEach { onlineLib.dropSource(it) }
         onlineItems = onlineLib.all()
     }
@@ -2024,7 +2122,7 @@ private fun App(
         val nextGone = goneSources + id
         goneSources = nextGone
         onlineSettings.saveGoneSources(nextGone)
-        Online.setGone(nextGone + nextRemoved + goneMusic)
+        pushGone()
         onlineLib.dropSource(id)
         onlineItems = onlineLib.all()
         loadOnlineFeed()
@@ -2038,20 +2136,36 @@ private fun App(
         val next = if (id in goneSources) goneSources - id else goneSources + id
         goneSources = next
         onlineSettings.saveGoneSources(next)
-        Online.setGone(next + removedSources + goneMusic)
+        pushGone()
         loadOnlineFeed()
     }
 
     /**
-     * 「在线音乐源」那一屏那颗 ✕：只动音乐那一路的名单。
-     * 视频那三路的名单（`goneSources`）一个字不碰 —— 以前两张屏共用一份，在音乐页删掉 B 站
-     * 会把视频那栏的 B 站一起干掉，这就是他说的"混在一起"。
+     * 「在线音乐源」那颗芯片上的 X：**删掉这一路**。和视频那一屏同一个写法——
+     * 删除名单和禁用名单一起写，注册表从此不再问它，芯片也不再出现。
+     *
+     * 视频那三路的名单（`goneSources` / `removedSources`）一个字不碰 —— 以前两张屏共用一份，
+     * 在音乐页删掉 B 站会把视频那栏的 B 站一起干掉，这就是他说的"混在一起"。
      */
     fun deleteMusicSource(id: String) {
-        val next = goneMusic + id
+        val nextRemoved = removedMusic + id
+        removedMusic = nextRemoved
+        musicOnlineSettings.saveRemovedSources(nextRemoved)
+        val nextGone = goneMusic + id
+        goneMusic = nextGone
+        musicOnlineSettings.saveGoneSources(nextGone)
+        pushGone()
+        // 那两栏是按当前这首歌的词问的，清掉这一格才会重新问一遍（否则删了一路、栏里还挥不去它的条目）
+        musicOnlineKeyword = ""
+    }
+
+    /** 点「在线音乐源」那颗芯片本身：禁用 <-> 恢复。只改"还问不问这一路"，不动已经取回来的那些 */
+    fun toggleMusicSource(id: String) {
+        val next = if (id in goneMusic) goneMusic - id else goneMusic + id
         goneMusic = next
         musicOnlineSettings.saveGoneSources(next)
-        Online.setGone(next + goneSources)
+        pushGone()
+        musicOnlineKeyword = ""
     }
 
     /** 那两路两张屏都要列（它们既出「相关视频」，也是视频那一栏能粘地址的对象）：网址只写一处 */
@@ -2060,12 +2174,14 @@ private fun App(
 
     /**
      * 「在线音乐源」那一屏只列音乐那一路（他 10-14 点的）：B 站和抖音归「视频地址源」那一屏，
-     * 这里不再列它们，也不共用它们的删除名单。
+     * 这里不再列它们，也不共用它们的删除名单。三态（禁用 / 删除）走的是同一只 [SourceChip]。
      * 那一行小灰字写的是这一路现在问的哪台（他点的：显示成网址）—— 改过镜像就看得见改成了什么。
      */
     fun sourceRows(): List<SourceRow> = listOf(
         SourceRow("netease", "网易云", musicBaseUrl.trim().ifBlank { Online.MUSIC_DEFAULT_BASE } + "/"),
-    ).filterNot { it.id in goneMusic }
+        // 这一路没有默认列表（空词实测回 400），预览那批里它一条都不贡献 —— 芯片上不写那个 0
+        SourceRow("chuizi", "锤子音乐", "https://chuizi.org/", hasDefaultList = false),
+    ).filterNot { it.id in removedMusic }.map { it.copy(enabled = it.id !in goneMusic) }
 
     /**
      * 「视频地址源」那一屏的芯片名单：能往在线那一栏加地址的三路。
@@ -2731,6 +2847,7 @@ private fun App(
                     pool = musicHot,
                     playingId = musicOnlinePlayingId(),
                     onPlay = { v -> playMusicOnline(v) },
+                    onToggleSource = { id -> toggleMusicSource(id) },
                     onDelete = { id -> deleteMusicSource(id) },
                     onQueue = { v -> queueMusicOnline(v) },
                     onDownload = { v -> downloadMusicOnline(v) },
@@ -2762,6 +2879,8 @@ private fun App(
                         favorites = favRepo.all()
                     },
                     isFavorite = { v -> v.pageUrl in favorites },
+                    onDownload = { v -> downloadMusicOnline(v) },
+                    downloadingKey = musicOnlineDownloading,
                     bottomInset = !showBar,
                 )
             } else if (page?.startsWith("artist:") == true) {
@@ -2816,6 +2935,20 @@ private fun App(
                         favorites = favRepo.all()
                     },
                     onQueueAdd = { t -> queueAppend(t) },
+                    // 第三颗范围芯片：名字取源自己报的那个：这一路被删掉就整颗不出现
+                    // 那一路被禁用/删掉时 sourceLabel 回 null（注册表把它筛掉了）：芯片整颗不出现
+                    onlineLabel = Online.sourceLabel("chuizi"),
+                    askOnline = { w -> withContext(Dispatchers.IO) { Online.searchChuizi(w, MUSIC_ONLINE_SONGS) } },
+                    onPlayOnline = { v -> playMusicOnline(v) },
+                    onQueueOnline = { v -> queueMusicOnline(v) },
+                    onDownloadOnline = { v -> downloadMusicOnline(v) },
+                    downloadingKey = musicOnlineDownloading,
+                    // 在线条目按页地址收（和歌手那两屏同一颗）
+                    onToggleOnlineFavorite = { v ->
+                        favRepo.toggle(v.pageUrl)
+                        favorites = favRepo.all()
+                    },
+                    onlinePlayingId = musicOnlinePlayingId(),
                     onBack = { leavePage() },
                     bottomInset = !showBar,
                 )
@@ -3089,6 +3222,24 @@ private fun App(
                 )
             }
             }
+        }
+        musicQualityAsk?.let { (v, qs, one) ->
+            QualitySheet(
+                title = "音质",
+                renditions = qs,
+                onPick = { r -> downloadMusicOnlineAt(v, r, one) },
+                onDismiss = { musicQualityAsk = null },
+            )
+        }
+        apiQualityAsk?.let { s ->
+            QualitySheet(
+                title = "音质",
+                renditions = s.qualities.map {
+                    Rendition(apiLabelOf(it), Playable(url = ""), apiBytesOf(it.size))
+                },
+                onPick = { r -> downloadApiSongAt(s, r) },
+                onDismiss = { apiQualityAsk = null },
+            )
         }
         qualityAsk?.let { (t, qs) ->
             QualitySheet(

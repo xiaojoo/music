@@ -20,6 +20,7 @@ class VideoSourcesTest {
         assertTrue("B 站给的是画面", BiliSource(Fetcher { _, _ -> "{}" }).givesVideo)
         assertTrue("快手给的是画面", KuaishouSource(Poster { _, _, _ -> "{}" }).givesVideo)
         assertTrue("抖音给的是画面", DouyinSource(DetailPage { error("不该被调到") }, CardFeed { emptyList() }).givesVideo)
+        assertFalse("锤子音乐也不该顶上视频那一栏", ChuiziSource(Fetcher { _, _ -> "{}" }).givesVideo)
     }
 
     /**
