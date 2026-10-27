@@ -743,16 +743,20 @@ private fun SkeletonBanner() {
 }
 
 /**
- * 「精选视频」的骨架：两张和 PickCard 同宽同图比的格（图区 + 两行字的位子），
- * 给两张不是随手数的 —— 一屏正好露出 1.98 张（卡 173dp + 缝 9dp + 左右内衬 20dp）。
+ * 「精选视频」的骨架：三张和 PickCard 同宽同图比的格（图区 + 两行字的位子）。
+ * 三张对得上一屏真实露出的样子 —— 卡 173dp + 缝 9dp + 左右内衬 20dp，前两整张之后右边还剩一条第三张的边。
  */
 @Composable
 private fun SkeletonPicks() {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = Tokens.Dimen.ScreenPad),
-        horizontalArrangement = Arrangement.spacedBy(9.dp)
+    /* 用 LazyRow 不用 Row：Row 装不下三张的时候会把 spacedBy 那 9dp 挤成 0（第二、三张直接贴上），
+       真那一排本来就是 LazyRow —— 照它那一套参数（内衬 20dp、缝 9dp）摆，格子和缝才和到手以后一格不差。 */
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = Tokens.Dimen.ScreenPad),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        userScrollEnabled = false
     ) {
-        repeat(2) {
+        items(3) {
             Column(
                 modifier = Modifier
                     .width(PickCardW)
