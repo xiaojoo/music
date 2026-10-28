@@ -239,6 +239,7 @@ fun ApiSearchPage(
                 /* 锤子音乐那一路：行、两颗、口径全部照「我的」那一屏搜到的在线那一段（同一只 MusicRow），
                    第二行也是"歌手 · 时长 · 站点名"——站点没给的格子不写，不拿"未知"占位。 */
                 api.chuizi -> LazyColumn(
+                    state = PageScrolls.list("cz"),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 12.dp)
                 ) {
@@ -262,6 +263,7 @@ fun ApiSearchPage(
                     }
                 }
                 else -> LazyColumn(
+                    state = PageScrolls.list("api"),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 12.dp)
                 ) {

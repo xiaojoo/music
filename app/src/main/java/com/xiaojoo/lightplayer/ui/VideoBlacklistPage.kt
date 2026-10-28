@@ -91,7 +91,7 @@ fun VideoBlacklistPage(
             return
         }
 
-        LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
+        LazyColumn(state = PageScrolls.list(), modifier = Modifier.fillMaxWidth().weight(1f)) {
             items(rows, key = { it.key + "|" + it.pageUrl }) { row ->
                 Box(modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad)) {
                     BlacklistRow(row, sourceLabel) { onRemove(row) }

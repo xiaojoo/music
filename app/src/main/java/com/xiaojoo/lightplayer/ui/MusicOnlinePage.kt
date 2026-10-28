@@ -127,6 +127,7 @@ fun MusicOnlinePage(
 
     Column(modifier = Modifier.fillMaxSize()) {
         LazyVerticalGrid(
+            state = PageScrolls.grid(),
             columns = GridCells.Fixed(3),
             modifier = Modifier.fillMaxSize(),
             horizontalArrangement = Arrangement.spacedBy(11.dp),

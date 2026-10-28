@@ -45,7 +45,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -175,8 +174,13 @@ fun HomeFeed(
     /* 数据到手那一下把这一列拉回顶上。横幅那一格空的时候是零高，它长起来会把已经看见的东西顶出去，
        而 LazyColumn 的滚动位置是按「当前第一格」保的 —— 华为那台量到正好停在横幅上面（横幅整个在视口外），
        Redmi 那台量到的是对的：同一份代码两台各走一头，只能把落点钉死。 */
-    val listState = rememberLazyListState()
-    LaunchedEffect(banner.isEmpty()) { listState.scrollToItem(0) }
+    val listState = PageScrolls.list("home")
+    LaunchedEffect(banner.isEmpty()) {
+        // 只在横幅在/没在**换档**那一下钉回顶上。第一次进这一屏（包括从子页按返回拿回位置）不动 ——
+        // 原来这里无条件 `scrollToItem(0)`，那一颗就是「返回回到最上面」的本体
+        val prev = PageScrolls.mark("home:banner", banner.isEmpty())
+        if (prev != null && prev != banner.isEmpty()) listState.scrollToItem(0)
+    }
 
     PinnedSearchRefresh(
         pill = { SearchPill("搜索音乐", 10.dp, onClick = onSearch) },
@@ -227,7 +231,7 @@ fun HomeFeed(
                        用 layoutInfo 而不是"哨兵项一进组合就发请求"——后者每接上一批都会让新的哨兵进组合，
                        人停在栏尾就会一路把五批全要完；这里每接一批 totalItemsCount 变大，门槛自己往后退，
                        要停下来等人才继续。 */
-                    val pickState = rememberLazyListState()
+                    val pickState = PageScrolls.list("picks-row")
                     // 真卡量出来的高（px）：等待格要跟着它，点才落在那张卡的心里（见 RailLoadingCard）
                     val pickCardH = remember { mutableIntStateOf(0) }
                     LaunchedEffect(pickState, cards.size) {
@@ -269,7 +273,7 @@ fun HomeFeed(
                 item(key = "art:row") {
                     // 内衬和缝照「精选视频」那一栏同一对数（ScreenPad / 9dp）。格子宽度不跟那一栏：
                     // 这一栏的卡照他给的参考图一是"一张多字"的宽卡（屏宽 91.4%，右边正露着下一张的一条边）
-                    val artState = rememberLazyListState()
+                    val artState = PageScrolls.list("art-row")
                     val artCardH = remember { mutableIntStateOf(0) }
                     /* 站点那一页是 19 篇，一张卡要单问一页 HTML 才拿到那三行歌名 —— 所以一批 6 张，
                        滑到栏尾（最后一张露出来）再要下一批，和「精选视频」那一栏同一个节奏。
@@ -312,6 +316,7 @@ fun HomeFeed(
                 item(key = "board:row") {
                     // 内衬和缝跟「文章」「精选视频」同一对数（ScreenPad / 9dp），卡宽也同一个算式
                     LazyRow(
+                        state = PageScrolls.list("board-row"),
                         modifier = Modifier.fillMaxWidth(),
                         contentPadding = PaddingValues(horizontal = Tokens.Dimen.ScreenPad),
                         horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -717,8 +722,8 @@ fun HotMusicPage(
     // 要固定在顶部"）。这条栏的底色是**海报底边那一块的颜色**、不是页底那一档灰（他接着点的
     // "固定的时候还是保持海报的背景颜色"，再一句"是显示底部背景的颜色……不是重新弄一张图片"）
     // —— 见 [PinnedBarBackdrop]。
-    // 同一处调用点换成另一张表时 `rememberSaveable` 会把上一张表滚到哪一起带过来 —— 按表分开存
-    val listState = key(heroKicker, title) { rememberLazyListState() }
+    // 按表分开存：这一屏的身份就是 `PageScrolls` 的 key（`board:url` / `home-hot`），换一张表拿回那一张自己的位置
+    val listState = PageScrolls.list()
     val scrolledPx by remember(listState) {
         derivedStateOf {
             if (listState.firstVisibleItemIndex > 0) Int.MAX_VALUE

@@ -120,6 +120,7 @@ import androidx.media3.common.Player
 import com.xiaojoo.lightplayer.ui.NowPlayingBar
 import com.xiaojoo.lightplayer.ui.MusicSourcePage
 import com.xiaojoo.lightplayer.ui.OnlinePlayPending
+import com.xiaojoo.lightplayer.ui.PageScrolls
 import com.xiaojoo.lightplayer.ui.SourceRow
 import com.xiaojoo.lightplayer.ui.VideoFilter
 import com.xiaojoo.lightplayer.ui.filterVideos
@@ -2706,7 +2707,26 @@ private fun App(
         { t -> favRepo.toggle(t.uri.toString()); favorites = favRepo.all() }
     }
     val queueLocal: (Track) -> Unit = remember(controller) { { t -> queueAppend(t) } }
-    val playLocalList: (List<Track>, Int) -> Unit = remember { { l, i -> startPlaylist(l, i) } }
+    /* 列表里点到**在线**那一条（「最近播放」和收藏里那些行存的是**页地址**，不是当时那条会过期的直链）：
+       按页地址把条目找回来，再走站点那一路现取址播 —— 本机那一串还是原来那条路，一个字没改。
+       找不回来（站点那一串换了、库里也没存）就明说一句：一行按下去没反应是最难查的那种坏。
+       key 挂在 controller 上：这颗 lambda 要调 `playOnline` / `playMusicOnline`，
+       不留 key 会把第一次组合那份闭包冻进去（同上面 `toggleLocalFav` 那条教训）。 */
+    val playListRow: (List<Track>, Int) -> Unit = remember(controller) {
+        { l, i ->
+            val t = l.getOrNull(i)
+            if (t != null && Online.isOnline(t)) {
+                // 历史那一行的地址自带身份就直接拆；视频那一栏存的是光页地址，回列表/库里查
+                val v = Online.videoFromHistoryUri(t.uri, t.name, t.artist, t.durationMs, t.isVideo)
+                    ?: onlineVideoOf(t.uri.toString())
+                when {
+                    v == null -> apiToast("这一条在站点那一串里已经找不回了")
+                    t.isVideo -> playOnline(v)
+                    else -> playMusicOnline(v)
+                }
+            } else if (t != null) startPlaylist(l, i)
+        }
+    }
 
     /* 每一屏左上角那颗 ← ：15 处就地写的 `{ leavePage() }` 收成一颗。
        `App` 那个方法体顶在 JVM 64KB 上限，就地一颗 lambda 就是一个捕获类。 */
@@ -2869,14 +2889,26 @@ private fun App(
 
        判据是"真开始出声"，不是"换了条目"：冷启动会把上一串队列**暂停**地装回来（见下面那条
        LaunchedEffect），按换条目记的话每次开 app 都会把第一首塞进历史。
-       在线直链不记：那是带签名的地址，两天后点这一行解不开 —— 和队列恢复不收在线条目同一条道理。 */
+       在线那一条**也记**（他 10-29 点的），但记的不是那条直链 —— 直链带签名、几小时就死，
+       存进去第二天就是一行坏行；存的是 `RequestMetadata.mediaUri` 那个**页地址**
+       （`Online.mediaItem` 建条目时把 `video.pageUrl` 放进去的），点这一行按页地址找回条目再取一次址。 */
     DisposableEffect(audioPlayer) {
         val p = audioPlayer ?: return@DisposableEffect onDispose { }
-        fun localUriOf(pl: Player): Uri? =
-            pl.currentMediaItem?.localConfiguration?.uri
+        /* 历史要存的那一个地址：
+           - 在线那一条 → `online:源身份/站内id?page=页地址`（mediaId 带前两级、RequestMetadata 带页地址，
+             都是建条目时放进去的，见 `Online.mediaItem`）；那条直链本身不存，它几小时就死；
+           - 本机那一条 → 原来的 content://。 */
+        fun historyUriOf(pl: Player): Uri? {
+            val item = pl.currentMediaItem ?: return null
+            val page = item.requestMetadata.mediaUri
+            val id = item.mediaId
+            if (page != null && id?.startsWith(Online.ID_PREFIX) == true && !id.contains("url/"))
+                return Uri.parse(Online.ID_PREFIX + id.removePrefix(Online.ID_PREFIX) + "?page=" + Uri.encode(page.toString()))
+            return item.localConfiguration?.uri
                 ?.takeIf { it.scheme != "http" && it.scheme != "https" }
+        }
         fun notePlayed() {
-            val uri = localUriOf(p) ?: return
+            val uri = historyUriOf(p) ?: return
             val md = p.mediaMetadata
             PlayHistory.record(
                 context,
@@ -2910,7 +2942,7 @@ private fun App(
             }
 
             override fun onPlaybackStateChanged(state: Int) {
-                val uri = localUriOf(p) ?: return
+                val uri = historyUriOf(p) ?: return
                 if (state == Player.STATE_READY) PlayHistory.updateDuration(context, uri, p.duration)
             }
         }
@@ -2972,6 +3004,8 @@ private fun App(
     // 壳层底色：迷你条左右两侧的空隙不能让窗口深色底透出来。装扮换的就是这一层
     Column(modifier = Modifier.fillMaxSize().background(Tokens.SkinBase)) {
         Box(modifier = Modifier.weight(1f)) {
+            // 每一屏那一列的滚动位置挂在这一屏的身份上（见 `PageScrolls`）：进子页再返回，位置还在
+            PageScrolls.page = page ?: "tab:$tab"
             /* 本地背景图只有这一层：各页的根底读 Tokens.Backdrop，铺了图就变透明，
                于是图只在"图压在底色上"这一次混合，不会页一页底各叠一层把图洗白 */
             Skin.image.value?.let {
@@ -3257,7 +3291,7 @@ private fun App(
                     favorites = favorites,
                     onToggleFavorite = toggleLocalFav,
                     onQueueAdd = queueLocal,
-                    onPlayList = playLocalList,
+                    onPlayList = playListRow,
                     onBack = goBack,
                     bottomInset = !showBar,
                 )
@@ -3267,7 +3301,7 @@ private fun App(
                     onKeyword = { localSearchQuery = it },
                     songs = audioTracks,
                     videos = videoTracks,
-                    onPlayList = playLocalList,
+                    onPlayList = playListRow,
                     favorites = favorites,
                     onToggleFavorite = toggleLocalFav,
                     onQueueAdd = queueLocal,
@@ -3313,7 +3347,7 @@ private fun App(
                     onRequestPermission = onAskMediaPermission,
                     // 多选态里第一下返回退多选、不是退这一页（和后面那颗 BackHandler 同一只 exitMulti）
                     onBack = { if (multiSel) exitMulti() else leavePage() },
-                    onPlayList = playLocalList,
+                    onPlayList = playListRow,
                     onAddToPlaylist = { pendingAdd = it },
                     onQueueAdd = queueLocal,
                     favorites = favorites,
@@ -3401,7 +3435,7 @@ private fun App(
                     onVideoDownload = { openPage("download") },
                     onRecognize = { openPage("recognize") },
                     onOpenPlaylist = { p -> openPage("pl:" + p.id) },
-                    onPlayList = playLocalList,
+                    onPlayList = playListRow,
                     onToggleFavorite = toggleLocalFav,
                     sourceLabel = sourceLabelOf,
                     downloadingKey = musicOnlineDownloading,
@@ -3532,7 +3566,7 @@ private fun App(
                     history = history,
                     songs = audioTracks,
                     videos = videoTracks,
-                    onPlayList = playLocalList,
+                    onPlayList = playListRow,
                     onOpenHistory = { t ->
                         if (t != null) histTab = t
                         page = "history"

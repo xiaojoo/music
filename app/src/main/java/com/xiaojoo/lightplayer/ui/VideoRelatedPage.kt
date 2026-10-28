@@ -175,7 +175,7 @@ fun VideoRelatedPage(
         )
 
         if (r != null && !searching) {
-            LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            LazyColumn(state = PageScrolls.list(), modifier = Modifier.fillMaxWidth().weight(1f)) {
                 items(r.groups, key = { it.matchKey }) { g ->
                     val first = g.items.first()
                     Row(

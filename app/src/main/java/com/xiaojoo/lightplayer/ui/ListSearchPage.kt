@@ -156,6 +156,7 @@ fun ListSearchPage(
                     modifier = Modifier.align(Alignment.Center)
                 )
                 else -> LazyColumn(
+                    state = PageScrolls.list(),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 12.dp)
                 ) {

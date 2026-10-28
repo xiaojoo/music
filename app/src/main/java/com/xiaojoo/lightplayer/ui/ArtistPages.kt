@@ -128,7 +128,7 @@ fun ArtistListPage(
             ) { LineIcon(IconKind.Search, size = 21.dp, color = Tokens.InkStrong) }
         }
 
-        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+        LazyColumn(state = PageScrolls.list(), modifier = Modifier.fillMaxWidth()) {
             item(key = "title") {
                 Text(
                     "歌手", color = Tokens.InkStrong, fontSize = 34.sp, fontWeight = FontWeight.Bold,
@@ -307,6 +307,7 @@ fun ArtistSearchPage(
                     modifier = Modifier.align(Alignment.Center)
                 )
                 else -> LazyColumn(
+                    state = PageScrolls.list(),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 12.dp)
                 ) {
@@ -519,7 +520,7 @@ fun ArtistSongsPage(
         }
 
         key(sort) {
-            LazyColumn(modifier = Modifier.fillMaxWidth()) {
+            LazyColumn(state = PageScrolls.list("songs:$sort"), modifier = Modifier.fillMaxWidth()) {
                 items(sorted, key = { it.key }) { v ->
                     SongRow(
                         video = v,
@@ -862,7 +863,7 @@ fun ArticlePage(
                 }
             }
         }
-        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+        LazyColumn(state = PageScrolls.list(), modifier = Modifier.fillMaxWidth()) {
             if (songs.isNotEmpty()) {
                 item(key = "art:head") { FilterHead("歌曲 ${songs.size}") }
                 // 一律补零成两位：1..9 是一位、10 以上是两位的话标题会跳一条竖线，

@@ -581,6 +581,7 @@ fun MineScreen(
         onRefresh = onRefresh,
     ) {
         LazyColumn(
+            state = PageScrolls.list(),
             modifier = Modifier.fillMaxSize()
         ) {
             // 这颗胶囊自带 10dp 下内衬，补 4dp 凑成这一页原来那条 14dp 的顶缝（卡片没挪窝）
@@ -990,7 +991,7 @@ fun PlaylistListPage(
                 modifier = Modifier.align(Alignment.Center)
             )
         }
-        LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
+        LazyColumn(state = PageScrolls.list(), modifier = Modifier.fillMaxWidth().weight(1f)) {
             if (playlists.isEmpty()) {
                 item {
                     Text(
@@ -1410,6 +1411,7 @@ fun TrackListPage(
             )
         } else {
             LazyColumn(
+                state = PageScrolls.list(),
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()

@@ -18,6 +18,12 @@ object PlayHistory {
     /** 媒体库那一行的地址前缀（只有这一族的行要问它还在不在） */
     private const val MEDIA_ROW = "content://media/external/"
 
+    /**
+     * 同一首歌认人用的那一把 key。在线那一条只认 `online:源身份/站内id` 那一段 ——
+     * 后面那截页地址可能带不同的 query，拿整串比的话同一首歌会留两行（真机撞过）。
+     */
+    private fun rowKey(uri: String) = if (uri.startsWith("online:")) uri.substringBefore('?') else uri
+
     fun record(context: Context, track: Track) {
         val item = JSONObject().apply {
             put("uri", track.uri.toString())
@@ -32,10 +38,11 @@ object PlayHistory {
         // 同一首重复播放只留最新的一条
         val kept = ArrayList<JSONObject>()
         kept.add(item)
+        val mine = rowKey(item.optString("uri"))
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             if (kept.size >= MAX) break
-            if (o.optString("uri") != item.optString("uri")) kept.add(o)
+            if (rowKey(o.optString("uri")) != mine) kept.add(o)
         }
         val out = JSONArray()
         kept.forEach { out.put(it) }
