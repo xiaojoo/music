@@ -325,6 +325,16 @@ internal fun MusicRow(
            所以管长边的是高：0.62·s + 1.875 = 13.74 → s = 19.14dp，那一下宽落在 0.56·19.14 + 1.875 = 12.59dp。
            代价：它比右边那颗队列（墨宽 13.74）窄 1.15dp，两颗之间的白缝 26.34dp，比同宽的 27dp 少 0.66dp（≈2px）；
            墨中心 y 在画框 0.49，比中线高 0.19dp（0.5px），在量化底噪里，不另补。 */
+        /* 取址在飞的那一行：右端先摆**横着**三点。两颗数都从右边那两颗来，不是另编：
+           ① 整条动画的墨宽 = 存盘那颗**自己那一份尺寸**（它的画框 19.14dp，见上面那段账），
+              三点按横排那一族「点 9 : 缝 8」分这一格 → 点 4dp、缝 3.56dp；
+           ② 它右边那道缝 = 12.88dp = (ColBox 39.5 − 墨方 13.74)/2，补上存盘那颗自己那半格盒内衬
+              ⇒ 两点墨之间正好是相邻两颗之间那个 **26.34dp**（真机 72px，和存盘↔队列同一串）。
+           摆在存盘那颗的**左边**：右端那一列的墨右沿是队列那颗定的（`rightShift` 那条基准），不能挪。 */
+        if (OnlinePlayPending.key == video.key) {
+            OnlineDots(color = Tokens.Ink, size = 4.dp, gap = 3.56.dp)
+            Spacer(modifier = Modifier.width(12.88.dp))
+        }
         RowIcon(IconKind.Download, if (downloading) Tokens.Accent else Tokens.InkFaint,
             size = 19.14.dp, onClick = onDownload)
         RowIcon(IconKind.PlayQueue, Tokens.InkFaint, onClick = onQueue)

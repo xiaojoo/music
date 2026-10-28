@@ -119,6 +119,7 @@ import com.xiaojoo.lightplayer.ui.LyricWriter
 import androidx.media3.common.Player
 import com.xiaojoo.lightplayer.ui.NowPlayingBar
 import com.xiaojoo.lightplayer.ui.MusicSourcePage
+import com.xiaojoo.lightplayer.ui.OnlinePlayPending
 import com.xiaojoo.lightplayer.ui.SourceRow
 import com.xiaojoo.lightplayer.ui.VideoFilter
 import com.xiaojoo.lightplayer.ui.filterVideos
@@ -638,6 +639,8 @@ private fun App(
     var chuiziBoards by remember {
         mutableStateOf<List<Pair<BoardTab, List<MusicVideo>>>>(emptyList())
     }
+    /** 那三张表在问、还没回来：首页那一栏摆两张骨架格（他 10-29 点的） */
+    var chuiziBoardsLoading by remember { mutableStateOf(false) }
     /** 站点「文章」那一排：卡（连歌）按批往这里添，滑到栏尾再要下一批 */
     val articles = remember { ArticlePager(scope) }
     /** 现在开着的那一篇（歌跟着卡片一起问回来的，点进去不再问第二次） */
@@ -1768,19 +1771,25 @@ private fun App(
      */
     fun withApiLink(s: ApiSong, q: ApiQuality? = null, then: (Playable) -> Unit) {
         scope.launch {
-            val q = q ?: s.qualities.firstOrNull()
-            if (q == null) {
-                apiToast("接口没报这一条的档位")
-                return@launch
+            try {
+                val q = q ?: s.qualities.firstOrNull()
+                if (q == null) {
+                    apiToast("接口没报这一条的档位")
+                    return@launch
+                }
+                val src = api.selected ?: return@launch
+                val out = withContext(Dispatchers.IO) { runCatching { Online.apiUrlOf(src, s, q) } }
+                val p = out.getOrNull()
+                if (p == null) {
+                    apiToast("取址失败：" + apiMessage(out.exceptionOrNull() ?: Exception("接口没给地址")))
+                    return@launch
+                }
+                then(p)
+            } finally {
+                // 上面那三道 return@launch 都不进 `then`，收这一颗只能放在这里：
+                // 交给调用点收的话，档位没报/源没选/取址失败那三种就永远收不掉
+                OnlinePlayPending.key = null
             }
-            val src = api.selected ?: return@launch
-            val out = withContext(Dispatchers.IO) { runCatching { Online.apiUrlOf(src, s, q) } }
-            val p = out.getOrNull()
-            if (p == null) {
-                apiToast("取址失败：" + apiMessage(out.exceptionOrNull() ?: Exception("接口没给地址")))
-                return@launch
-            }
-            then(p)
         }
     }
 
@@ -1857,13 +1866,17 @@ private fun App(
         }
     }
 
-    fun playApiSong(s: ApiSong) = withApiLink(s) { p ->
-        val item = Online.mediaItem(s.asMusicVideo(), p)
-        val t = Online.trackOf(item, isVideo = false)
-        if (t == null) apiToast("这条接口条目没造出可播条目")
-        else {
-            apiPlaying = s.key
-            playItems(listOf(item), listOf(t), toVideo = false)
+    fun playApiSong(s: ApiSong) {
+        // 行上那一颗等的是这一趟取址；收在 `withApiLink` 的 finally 里（那三道早退都不进 then）
+        OnlinePlayPending.key = s.asMusicVideo().key
+        withApiLink(s) { p ->
+            val item = Online.mediaItem(s.asMusicVideo(), p)
+            val t = Online.trackOf(item, isVideo = false)
+            if (t == null) apiToast("这条接口条目没造出可播条目")
+            else {
+                apiPlaying = s.key
+                playItems(listOf(item), listOf(t), toVideo = false)
+            }
         }
     }
 
@@ -1942,20 +1955,27 @@ private fun App(
      */
     fun playMusicOnline(v: MusicVideo) {
         scope.launch {
-            when (val out = withContext(Dispatchers.IO) { Online.resolve(v) }) {
-                is ResolveOutcome.Ready -> {
-                    val item = Online.mediaItem(v, out.playable)
-                    val t = Online.trackOf(item, isVideo = false)
-                    if (t == null) {
-                        android.widget.Toast.makeText(context, "这条在线条目没造出可播条目", android.widget.Toast.LENGTH_SHORT).show()
-                    } else {
-                        playItems(listOf(item), listOf(t), toVideo = false)
+            // 按下去到取址回来这一段，那一行右边摆竖三点（站点慢的时候这一秒到几秒原来没回显）
+            OnlinePlayPending.key = v.key
+            try {
+                when (val out = withContext(Dispatchers.IO) { Online.resolve(v) }) {
+                    is ResolveOutcome.Ready -> {
+                        val item = Online.mediaItem(v, out.playable)
+                        val t = Online.trackOf(item, isVideo = false)
+                        if (t == null) {
+                            android.widget.Toast.makeText(context, "这条在线条目没造出可播条目", android.widget.Toast.LENGTH_SHORT).show()
+                        } else {
+                            playItems(listOf(item), listOf(t), toVideo = false)
+                        }
                     }
+                    is ResolveOutcome.Failed ->
+                        android.widget.Toast.makeText(context, "取址失败：${out.failure.message}", android.widget.Toast.LENGTH_SHORT).show()
+                    else ->
+                        android.widget.Toast.makeText(context, "源没接上：${v.sourceId}", android.widget.Toast.LENGTH_SHORT).show()
                 }
-                is ResolveOutcome.Failed ->
-                    android.widget.Toast.makeText(context, "取址失败：${out.failure.message}", android.widget.Toast.LENGTH_SHORT).show()
-                else ->
-                    android.widget.Toast.makeText(context, "源没接上：${v.sourceId}", android.widget.Toast.LENGTH_SHORT).show()
+            } finally {
+                // 到手、失败、源没接上，三种都收：不然那一行一直转
+                OnlinePlayPending.key = null
             }
         }
     }
@@ -2405,16 +2425,22 @@ private fun App(
      * （10-28 之前写成在这句 `launch` 外面叫，索引还没到手，等于一次也没跑过）。
      */
     fun fetchChuiziBoards() {
-        if (chuiziBoards.isNotEmpty()) return
+        if (chuiziBoards.isNotEmpty() || chuiziBoardsLoading) return
+        chuiziBoardsLoading = true
         scope.launch {
-            chuiziBoards = Online.CHUIZI_BOARDS.map { tab ->
-                tab to withContext(Dispatchers.IO) {
-                    runCatching { Online.chuiziBoard(tab.url, 60) }.getOrDefault(emptyList())
-                }
-            }.filter { it.second.isNotEmpty() }
-            articles.start(withContext(Dispatchers.IO) {
-                runCatching { Online.chuiziArticles() }.getOrDefault(emptyList())
-            })
+            try {
+                chuiziBoards = Online.CHUIZI_BOARDS.map { tab ->
+                    tab to withContext(Dispatchers.IO) {
+                        runCatching { Online.chuiziBoard(tab.url, 60) }.getOrDefault(emptyList())
+                    }
+                }.filter { it.second.isNotEmpty() }
+                articles.start(withContext(Dispatchers.IO) {
+                    runCatching { Online.chuiziArticles() }.getOrDefault(emptyList())
+                })
+            } finally {
+                // 三家全空也要收：不然那一栏的骨架格会一直扫光
+                chuiziBoardsLoading = false
+            }
         }
     }
 
@@ -2520,7 +2546,11 @@ private fun App(
     /* 在线那几屏行上那几颗动作（播 / 加队列 / 存盘 / 收藏 / 这条收藏了没有）：原来是每一屏各写一遍
        lambda，十七处加起来把 `App` 顶在 JVM 单方法 64KB 的字节数上限上（10-28 接首页文章那一排就是
        编不过，报 `Method too large`）。这里造一次、各处只递引用 —— 屏的签名一个字没动，
-       改的只有调用点。收藏那两颗读 `favorites`，所以跟着它换。 */
+       改的只有调用点。收藏那两颗读 `favorites`，所以跟着它换。
+       ⚠ 这颗 `val playOnline` 和上面那支 `fun playOnline(video, open)` **同名**（10-29 撞过一次：
+       往那支函数里加"取址在飞"那颗，真机上按下去一点反应没有 —— 在线歌那 11 处调用点绑的是这一颗，
+       走的是 `playMusicOnline`；那支函数只剩视频那一路带 `open =` 的调用点会进）。
+       要加"点一行在线歌"的公共行为，加在 [playMusicOnline] 那一支。 */
     val playOnline: (MusicVideo) -> Unit = remember { { v -> playMusicOnline(v) } }
     val queueOnline: (MusicVideo) -> Unit = remember { { v -> queueMusicOnline(v) } }
     val downloadOnlineSong: (MusicVideo) -> Unit = remember { { v -> downloadMusicOnline(v) } }
@@ -3388,6 +3418,7 @@ private fun App(
                     onArticleMore = { articles.next() },
                     articlesLoading = articles.loading,
                     boards = chuiziBoards,
+                    boardsLoading = chuiziBoardsLoading,
                     onOpenBoard = { openPage("board:" + it.url) },
                     onPlayBoard = playAllOnline,
                     onRefresh = { refreshHome() },

@@ -41,6 +41,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.graphicsLayer
@@ -867,6 +868,22 @@ private fun loadCover(url: String): ImageBitmap? = runCatching {    val c = URL(
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
         ?.asImageBitmap()
 }.getOrNull()
+
+/**
+ * 在线起播那一段（取址在飞）的那一行的 key；null = 没有在飞的。
+ *
+ * 点一行在线歌到真出声之间要先问一次站点取址（网易云两档各问一次、锤子/B 站/接口站各一次），
+ * 站点慢的时候这一段是一秒到几秒，行上原来什么回显都没有（他 10-29 点的）。
+ *
+ * 为什么摆在这一层、不从 `App` 一路递参数下来：读它的是 `MusicRow` / `SongRow` 那一族，
+ * 调用点 11 处、跨 5 个屏（首页热门、在线整屏、地址源页、搜索页那两路、歌手页和文章详情那两屏），
+ * 一颗参数递一遍会把 `App` 那个方法体再顶近 JVM 64KB 上限（同一晚已经撞过两次）；
+ * 而这一颗只是"眼前这一行正在办"的瞬时回显，没有第二个人读它、也不跨开机存盘。
+ * 写的人 = `playOnline` / `playApiSong`（取址回来那一刻，成功失败都收）；读的人 = 那两行。
+ */
+internal object OnlinePlayPending {
+    var key by mutableStateOf<String?>(null)
+}
 
 /** 三个点依次亮起来回滚：这一条还没拉到手时的占位，不给任何画面。
  *  首页/「我的」下拉刷新那一行也吃这一颗（深底用默认白，浅底把 color 交进来），不再另画一份。

@@ -626,6 +626,13 @@ private fun SongRow(
                 modifier = Modifier.padding(top = 3.dp)
             )
         }
+        // 取址在飞的那一行：右端先摆横着三点，两颗数照 `MusicRow` 里那一处（整条 = 存盘那颗的画框 19.14dp，
+        // 按「点 9 : 缝 8」分成点 4dp / 缝 3.56dp；右边那道 12.88dp 补上邻那颗那半格盒内衬
+        // ⇒ 两点墨之间 = 相邻两颗那个 26.34dp）；摆在最左，右端那一列的墨右沿基准不动
+        if (OnlinePlayPending.key == video.key) {
+            OnlineDots(color = Tokens.Ink, size = 4.dp, gap = 3.56.dp)
+            Spacer(modifier = Modifier.width(12.88.dp))
+        }
         RowIcon(
             if (favorite) IconKind.Favorite else IconKind.FavoriteLine,
             if (favorite) Tokens.Accent else Tokens.InkFaint,

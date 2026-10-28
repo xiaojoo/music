@@ -152,6 +152,8 @@ fun HomeFeed(
      * 空的那张不摆（这一路被关掉就是整排不摆，不摆一张空卡骗人）。
      */
     boards: List<Pair<BoardTab, List<MusicVideo>>> = emptyList(),
+    /** 三张表在问、一张都还没到手：那一栏摆两张骨架格（他 10-29 点的，和「精选视频」那一族同一套） */
+    boardsLoading: Boolean = false,
     onOpenBoard: (BoardTab) -> Unit = {},
     onPlayBoard: (List<MusicVideo>) -> Unit = {},
     /** 往下拽那一趟：旧数据原样摆着，重问第一批，到手才整面换掉 */
@@ -299,6 +301,12 @@ fun HomeFeed(
                 }
             }
 
+            // 一批都还没到：栏头照给，下面摆两张同尺寸骨架格（和「精选视频」那一族同一套参数）
+            else if (articlesLoading) {
+                item(key = "art:sk:head") { SectionHead("音乐文章", "站点的编辑合集", modifier = headPad) }
+                item(key = "art:sk:row") { SkeletonArticles() }
+            }
+
             if (boards.isNotEmpty()) {
                 item(key = "board:head") { SectionHead("排行榜", "站点的三张表", modifier = headPad) }
                 item(key = "board:row") {
@@ -316,6 +324,11 @@ fun HomeFeed(
                         }
                     }
                 }
+            }
+            // 三张表一张都还没到：栏头照给，下面摆两张同尺寸骨架格
+            else if (boardsLoading) {
+                item(key = "board:sk:head") { SectionHead("排行榜", "站点的三张表", modifier = headPad) }
+                item(key = "board:sk:row") { SkeletonBoards() }
             }
 
             if (hotRows.isNotEmpty()) {
@@ -1011,6 +1024,145 @@ private val WaitDot = 5.5.dp
 private val WaitGap = 5.dp
 
 /**
+ * 「音乐文章」的骨架：一张和真卡同宽的卡（屏宽 91.4%）+ 右边露着第二条的一条边 ——
+ * 一屏本来就露出这些，摆两张对得上到手以后的样子（和「精选视频」摆三张同一条理由）。
+ * 里面按真卡那几块摆：那一方封面、右边那三行歌名、标题、描述、最底那行来路和首数；
+ * 每一档的高度取真那一格的字号（17sp / 12sp / 11sp / 16sp），不另编。
+ */
+@Composable
+private fun SkeletonArticles() {
+    val cardW = with(LocalConfiguration.current) { (screenWidthDp * 0.914f).dp }
+    val coverDp = cardW * 0.444f
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = Tokens.Dimen.ScreenPad),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        userScrollEnabled = false,
+    ) {
+        items(2) {
+            Column(
+                modifier = Modifier
+                    .width(cardW)
+                    .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
+                    .background(Tokens.Surface)
+            ) {
+                Row(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
+                    SkeletonBox(modifier = Modifier.size(coverDp), corner = Tokens.Dimen.ThumbCorner)
+                    // 右边那三行：真那一格是**贴底**排的（底边和封面平齐，块里面还留 14dp 内衬），
+                    // 骨架把那一列撑到封面同一个高，三行才落在同一条线上 —— 不撑的话数据一到这三条会往下跳
+                    Column(
+                        modifier = Modifier.weight(1f).height(coverDp)
+                            .padding(start = 8.dp, bottom = 14.dp),
+                        verticalArrangement = Arrangement.Bottom,
+                    ) {
+                        repeat(3) { i ->
+                            SkeletonBox(
+                                modifier = Modifier.padding(top = if (i == 0) 0.dp else 9.dp)
+                                    .fillMaxWidth(if (i == 2) 0.62f else 1f).height(16.dp),
+                                corner = 3.dp,
+                            )
+                        }
+                    }
+                }
+                SkeletonBox(
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 18.dp)
+                        .fillMaxWidth(0.86f).height(17.dp),
+                    corner = 3.dp,
+                )
+                SkeletonBox(
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)
+                        .fillMaxWidth().height(12.dp),
+                    corner = 3.dp,
+                )
+                SkeletonBox(
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp)
+                        .fillMaxWidth(0.72f).height(12.dp),
+                    corner = 3.dp,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SkeletonBox(modifier = Modifier.width(48.dp).height(11.dp), corner = 3.dp)
+                    Spacer(modifier = Modifier.weight(1f))
+                    SkeletonBox(modifier = Modifier.width(30.dp).height(11.dp), corner = 3.dp)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 「排行榜」的骨架：和真卡同宽（屏宽 91.4%）、三张正方封面通到卡的左右边、中间那道 9dp 缝、
+ * 下面那行标题 + 那颗圆钮 + 右边那格首数、再三行歌名（每行左边那一格序号 + 两行字）。
+ * 摆两张对得上一屏真实露出的样子（真卡右边本来就露着下一张的一条边）。
+ */
+@Composable
+private fun SkeletonBoards() {
+    val cardW = with(LocalConfiguration.current) { (screenWidthDp * 0.914f).dp }
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = Tokens.Dimen.ScreenPad),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        userScrollEnabled = false,
+    ) {
+        items(2) {
+            Column(
+                modifier = Modifier
+                    .width(cardW)
+                    .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
+                    .background(Tokens.Surface)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    repeat(3) {
+                        SkeletonBox(
+                            modifier = Modifier.weight(1f).aspectRatio(1f),
+                            corner = Tokens.Dimen.CardCorner,
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 17.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SkeletonBox(modifier = Modifier.width(90.dp).height(18.dp), corner = 3.dp)
+                    // 那颗圆钮：真那一格是 34dp 的圆底 + 里面一支三角，骨架只给那一块圆底
+                    SkeletonBox(
+                        modifier = Modifier.padding(start = 10.dp).size(34.dp),
+                        corner = 17.dp,
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    SkeletonBox(modifier = Modifier.width(38.dp).height(12.dp), corner = 3.dp)
+                }
+                repeat(3) { i ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 14.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        SkeletonBox(modifier = Modifier.width(14.dp).height(15.dp), corner = 3.dp)
+                        Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+                            SkeletonBox(
+                                modifier = Modifier.fillMaxWidth(if (i == 2) 0.55f else 0.8f).height(16.dp),
+                                corner = 3.dp,
+                            )
+                            SkeletonBox(
+                                modifier = Modifier.padding(top = 4.dp).fillMaxWidth(0.35f).height(12.dp),
+                                corner = 3.dp,
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(18.dp))
+            }
+        }
+    }
+}
+
+/**
  * 横滑两排栏尾的等待格：**宽只有一点那么宽**（不占一张卡的位，他 10-28 点的），
  * 高三样按本排真卡来，点摆在这一格的正中。
  * 高度由调用点从真卡身上量来（`onSizeChanged`）再递进来：卡高随标题/说明的行数变，
@@ -1143,45 +1295,75 @@ internal fun articleTintHue(pixels: IntArray, step: Int = 1): Float? {
 }
 
 /**
- * 卡底那一层（他 2026-10-28 晚第二句给的参考图那张）：**淡到接近白的整幅底，色相跟着这张卡的封面走**。
- * 两个数是照参考图上量到的：图上那张绿封面配的底是 (236,239,228) → (237,241,224)，
- * 即饱和 0.06~0.07、明度 0.94；这边取 0.06 / 0.955→0.93，斜着铺三段。
+ * 封面 → 主色相：**在屏上真露得出来的那块中心正方上，按 32×32 的格子逐点读**（1024 格）。
  *
- * 所以封面和底之间看不出接缝（同一个色相），一排卡各贴各的封面、看着张张不同。
- * 封面还没到（或黑白封面、取不出色相）时走中性那一档：饱和 0，就是一张浅灰白的底。
+ * 只取中心正方：封面那格是正方、`ContentScale.Crop`，站点给的图是 1200×800 这类横图，
+ * 左右各有一条根本看不见 —— 拿整张取色会把没露出来的部分算进来
+ * （10-28 实测：说唱那一张整张算出来 39°、露出来那块是 84°，卡底和市场看到的海报对不上）。
+ *
+ * 逐点读而不是整块拷，是因为这一步在**主线程**：1200×800 那张整块拷 64 万格进 IntArray 要 1.67ms
+ * （还要临时 2.5MB），先 `createScaledBitmap` 缩到 64 格再拷也要 1.47ms（缩那一下就是 1.4ms，省不掉），
+ * 32×32 逐点是 0.41~0.82ms（首次 1.64ms 是 JIT）；读数对得上：同一张封面整块 47.11154° ↔ 格子 47.100952°。
+ * 格子不能再稀：真机对过 16×16 在一张绿封面上读出 74.53°、32×32 是 90.53° —— 偏 16° 是看得出来的两档黄绿。
  */
-private fun articleBackdrop(thumb: Bitmap?): Brush {
-    // 只取**屏上真露得出来的那一块**：封面那格是正方、`ContentScale.Crop`，
-    // 站点给的图是 1200×800 这类横图，左右各有一条根本看不见 —— 拿整张取色会把没露出来的部分算进来
-    // （10-28 实测：说唱那一张整张算出来 39°、露出来那块是 84°，卡底和市场看到的海报对不上）。
-    val hue = thumb?.let { bmp ->
-        val side = minOf(bmp.width, bmp.height)
-        val px = IntArray(side * side)
-        bmp.getPixels(px, 0, side, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
-        articleTintHue(px, step = maxOf(1, px.size / 4096))
+private const val HUE_GRID = 32
+
+private fun coverHue(bmp: Bitmap): Float? {
+    val side = minOf(bmp.width, bmp.height)
+    val x0 = (bmp.width - side) / 2
+    val y0 = (bmp.height - side) / 2
+    val px = IntArray(HUE_GRID * HUE_GRID)
+    var i = 0
+    for (g in 0 until HUE_GRID) {
+        // 取每格中心，不取格边：格边会连着两格，边界像素会偏
+        val y = y0 + ((g * 2 + 1) * side) / (HUE_GRID * 2)
+        for (h in 0 until HUE_GRID) {
+            val x = x0 + ((h * 2 + 1) * side) / (HUE_GRID * 2)
+            px[i++] = bmp.getPixel(x, y)
+        }
     }
-    val sat = if (hue == null) 0f else 0.06f
-    val h = hue ?: 0f
-    return Brush.linearGradient(
-        listOf(
-            Color.hsv((h - 14f + 360f) % 360f, sat, 0.955f),
-            Color.hsv(h, sat, 0.945f),
-            Color.hsv((h + 14f) % 360f, sat, 0.93f),
-        )
-    )
+    return articleTintHue(px)
 }
 
 /**
- * 首页「音乐文章」那一排的一张卡，形状照他 2026-10-28 给的参考图一：
+ * 一张文章卡上的三档深浅（他 10-28 深夜第三句在截图上标的三颗：③ 封面、② 歌单那块面板、① 标题和描述那一块）。
+ *
+ * 三档**共用一个色相** —— 就是这张卡封面的那个色相；分别的只有明度和饱和。
+ * 面板那一档 10-29 从 0.02 提到 0.12：他原话「歌词也不是都是白色背景啊，也是根据海报主题色，做一个浅色啊」
+ * —— 0.02 那档在屏幕上就是白的（黄封面那张渲出来 (255,254,250)），浅色得能看出是**这张海报**的浅色。
+ * 原来那版还是一个色相在一张卡里从 −14° 扫到 +14°，左上和右下就不是一个颜色 ⇒ 他读成"几种颜色"，现在不扫了。
+ * 封面取不出色相（黑白图、或图还没到手）时饱和一律压成 0，三档退成三档灰，深浅关系不变。
+ */
+private class ArticleTones(val panel: Color, val card: Color, val band: Color)
+
+private fun articleTones(thumb: Bitmap?): ArticleTones {
+    val hue = thumb?.let { coverHue(it) }
+    val h = hue ?: 0f
+    val k = if (hue == null) 0f else 1f
+    return ArticleTones(
+        panel = Color.hsv(h, 0.12f * k, 1f),
+        card = Color.hsv(h, 0.06f * k, 0.955f),
+        band = Color.hsv(h, 0.10f * k, 0.905f),
+    )
+}
+
+
+/**
+ * 首页「音乐文章」那一排的一张卡：
  * 上面一行是「左边那一方封面 + 右边这一篇前三首的序号和歌名」，下面才是这篇的名字、那一句描述，
  * 最底一行是来路和首数。
  *
  * 那张图是网页截图（848px 宽那张卡里量出来的），所以只搬**比例**，不搬它的绝对数：
  * - 卡宽 = 屏宽 91.4%（775/848）—— 图里左边正露着上一张的一条边，这个"露出一条"是它的原样；
  * - 封面 = 卡宽 44.4%（344/775）正方，卡内衬 = 卡宽 4.9%（38/775）；
- * - 歌单那一列底下垫着一层更浅的圆角面板（图上 (245,248,241) 压在 (236,239,228) 的底上，
- *   边到卡内衬线），面板里的行比他后来点的大一号、松一档（16sp / 21sp、行间 9dp = 行距 30dp）。
+ * - 歌单那一列的行比他后来点的大一号、松一档（16sp / 21sp、行间 9dp = 行距 30dp）。
  * 字号里只有标题和描述这一对比例（28:18 = 1.55）是从图上读的，绝对值仍走我们这一族（17sp / 12sp）。
+ *
+ * 底色跟着这张卡的封面走，一张卡里分三档深浅（见 [articleTones]，那三档就是他在截图上标的三颗）：
+ * 面板最浅、卡底中间、标题和描述那一块最深，封面自己是第四档也是唯一那档有饱和的图。
+ * 海报和它右边那块歌曲块**贴死不留缝**（原来那 8dp 撤了）：海报只圆上面两颗角、底下两颗方着，
+ * 歌曲块四颗角里只圆右上那一颗（左上那颗圆着会在和海报的接缝上咬出一个缺口），
+ * 而且两块**底边平齐**（歌曲块贴海报的底排，不再竖直居中 —— 它比海报矮，那一档差在顶上）。
  *
  * 那三行歌名是真数据：卡片和它里面的歌是**一起问回来的**（见 `Online.chuiziArticleCards`，
  * 一排只摆 6 张 = 6 次），没问到的那几首就不摆行 —— 不拿「···」占位，也不编。
@@ -1194,22 +1376,33 @@ private fun ArticleCard(pack: ArticlePack, onClick: () -> Unit) {
     // 屏宽 91.4%：cardW 自己不用绝对 dp 写死，换一台屏它还是露那一条边
     val cardW = with(LocalConfiguration.current) { (screenWidthDp * 0.914f).dp }
     val coverDp = cardW * 0.444f
-    // 封面按算出来的那块尺寸读一次，图和卡底那一层共用这一张 —— 卡底要它的色相，不能等排版完
+    // 封面按算出来的那块尺寸读一次，图和卡底那三档共用这一张 —— 三档要它的色相，不能等排版完
     val coverPx = with(LocalDensity.current) { coverDp.toPx() }.toInt()
     val cover = remoteCover(pack.article.coverUrl, coverPx)
-    val backdrop = remember(cover) { articleBackdrop(cover?.asAndroidBitmap()) }
+    val tones = remember(cover) { articleTones(cover?.asAndroidBitmap()) }
     Column(
         modifier = Modifier
             .width(cardW)
             .clip(RoundedCornerShape(Tokens.Dimen.CardCorner))
-            .background(backdrop)
+            .background(tones.card)
             .tap(onClick = onClick)
     ) {
         Row(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
+            // 两块共用的形状：角只圆上面两颗，底下两颗方着（他 10-28 深夜点的）
+            val coverShape = RoundedCornerShape(
+                topStart = Tokens.Dimen.ThumbCorner, topEnd = Tokens.Dimen.ThumbCorner,
+                bottomStart = 0.dp, bottomEnd = 0.dp
+            )
+            val panelShape = RoundedCornerShape(
+                // 只有右上那一颗是圆的：左下右下是方的（贴海报、接深色带），左上也不要圆角
+                // —— 它和海报贴死，那颗圆角会在接缝上咬出一个缺口（他 10-29 点的）
+                topStart = 0.dp, topEnd = 5.dp, bottomStart = 0.dp, bottomEnd = 0.dp
+            )
+            // 海报：只圆上面两颗角，底下两颗方着；不投影子（他 10-29 深夜把前两轮那几层全撤了）
             Box(
                 modifier = Modifier
                     .size(coverDp)
-                    .clip(RoundedCornerShape(Tokens.Dimen.ThumbCorner))
+                    .clip(coverShape)
                     .background(Tokens.Track)
             ) {
                 cover?.let {
@@ -1220,15 +1413,15 @@ private fun ArticleCard(pack: ArticlePack, onClick: () -> Unit) {
                 }
             }
             // 右边那三行：序号 + 歌名。站点页里那段结构化数据给几条就摆几条，一条没读到就整列不摆。
-            // 底下那层浅色面板照参考图：白 0.55 压在淡色底上正好是图上那档 (245,248,241)，圆角 5dp
+            // 底下垫三档里最浅的一档（他标的那颗②），是**海报那个色相的浅色**、不是白；边到卡内衬线；
+            // 左边和海报**贴死不留缝**（原来那 8dp 撤了），**底边和海报底边平齐**（原来是 `CenterVertically`）。
             if (pack.songs.isNotEmpty()) {
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(start = 8.dp)
-                        .align(Alignment.CenterVertically)
-                        .clip(RoundedCornerShape(5.dp))
-                        .background(Color.White.copy(alpha = 0.55f))
+                        .align(Alignment.Bottom)
+                        .clip(panelShape)
+                        .background(tones.panel)
                         .padding(horizontal = 10.dp, vertical = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
@@ -1242,28 +1435,31 @@ private fun ArticleCard(pack: ArticlePack, onClick: () -> Unit) {
                 }
             }
         }
-        Text(
-            pack.article.title, color = Tokens.InkStrong, fontSize = 17.sp, lineHeight = 22.sp,
-            fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 18.dp)
-        )
-        if (pack.article.note.isNotBlank()) {
+        // 他标的那颗①：标题、那一句描述、最底那行来路和首数 —— 整块走三档里最深的一档，通到卡的左右边
+        Column(modifier = Modifier.fillMaxWidth().background(tones.band)) {
             Text(
-                pack.article.note, color = Tokens.InkStrong.copy(alpha = 0.82f),
-                fontSize = 12.sp, lineHeight = 17.sp,
-                maxLines = 2, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)
+                pack.article.title, color = Tokens.InkStrong, fontSize = 17.sp, lineHeight = 22.sp,
+                fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 18.dp)
             )
-        }
-        if (pack.songs.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("锤子音乐", color = Tokens.InkStrong.copy(alpha = 0.82f), fontSize = 11.sp)
-                Spacer(modifier = Modifier.weight(1f))
-                Text("${pack.songs.size} 首", color = Tokens.InkStrong.copy(alpha = 0.82f), fontSize = 11.sp)
+            if (pack.article.note.isNotBlank()) {
+                Text(
+                    pack.article.note, color = Tokens.InkStrong.copy(alpha = 0.82f),
+                    fontSize = 12.sp, lineHeight = 17.sp,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)
+                )
+            }
+            if (pack.songs.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("锤子音乐", color = Tokens.InkStrong.copy(alpha = 0.82f), fontSize = 11.sp)
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text("${pack.songs.size} 首", color = Tokens.InkStrong.copy(alpha = 0.82f), fontSize = 11.sp)
+                }
             }
         }
     }
