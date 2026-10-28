@@ -687,18 +687,36 @@ object Online {
      * 那一行就点不动（真机撞过：首页点「爱练」进了历史，从历史再点它只弹"找不回"）。
      * 身份写在地址里，点那一行不需要回任何列表。
      */
-    fun historyUri(video: MusicVideo): Uri =
-        Uri.parse(ID_PREFIX + video.key + "?page=" + Uri.encode(video.pageUrl))
+    fun historyUri(video: MusicVideo): Uri = Uri.parse(historyUriText(video))
 
-    /** 上面那一个地址拆回来。不是这个形状就回 null，让调用方退回"按页地址查列表"那一条老路 */
-    fun videoFromHistoryUri(uri: Uri, name: String, artist: String?, durationMs: Long, video: Boolean): MusicVideo? {
-        val s = uri.toString()
-        if (!s.startsWith(ID_PREFIX)) return null
-        val rest = s.removePrefix(ID_PREFIX)
+    /**
+     * 纯字符串那一份（`historyUri` 就是 `Uri.parse` 它）：拆回来那一半也必须是纯字符串的，
+     * 不然这一对往返只能上真机量 —— 拆成两颗之后 [videoFromHistoryUriText] 能在 JVM 自检里直接对。
+     * 编解码配一对：`URLEncoder` / `URLDecoder`（`Uri.encode` 会把空格留成 `%20`、
+     * `URLDecoder` 却把 `+` 当空格，两边不配对就会把带空格的页地址拆坏）。
+     */
+    fun historyUriText(video: MusicVideo): String =
+        ID_PREFIX + video.key + "?page=" + java.net.URLEncoder.encode(video.pageUrl, "UTF-8")
+
+    /**
+     * 上面那一个地址拆回来。不是这个形状就回 null，让调用方退回"按页地址查列表"那一条老路。
+     * 只拆字符串：`Uri` 在 JVM 自检里是抛异常的桩。
+     */
+    fun videoFromHistoryUriText(
+        raw: String,
+        name: String,
+        artist: String?,
+        durationMs: Long,
+        video: Boolean,
+    ): MusicVideo? {
+        if (!raw.startsWith(ID_PREFIX)) return null
+        val rest = raw.removePrefix(ID_PREFIX)
         val key = rest.substringBefore('?')
         val sourceId = key.substringBefore('/')
         val remoteId = key.substringAfter('/', "")
-        val page = Uri.decode(rest.substringAfter('?', "").removePrefix("page="))
+        val page = runCatching {
+            java.net.URLDecoder.decode(rest.substringAfter('?', "").removePrefix("page="), "UTF-8")
+        }.getOrDefault("")
         if (sourceId.isBlank() || remoteId.isBlank() || page.isBlank()) return null
         return MusicVideo(
             sourceId = sourceId,
@@ -710,6 +728,16 @@ object Online {
             music = !video,
         )
     }
+
+    /** Uri 形状那一颗：给界面用（历史行手里拿的是 `Uri`） */
+    fun videoFromHistoryUri(uri: Uri, name: String, artist: String?, durationMs: Long, video: Boolean): MusicVideo? =
+        videoFromHistoryUriText(uri.toString(), name, artist, durationMs, video)
+
+    /** 历史行那一个地址里的页地址（拆不出身份的老行、和"同一首歌换形状重写"那一步都吃它） */
+    fun historyPageOf(raw: String): String =
+        if (!raw.startsWith(ID_PREFIX)) raw else runCatching {
+            java.net.URLDecoder.decode(raw.substringAfter('?', "").removePrefix("page="), "UTF-8")
+        }.getOrDefault("")
 }
 
 /** 一屏四栏的分法：两族各按播放数降序，前 3 张「最火」、第 4 条往后「相关」。见 `Online.zonesOf` */

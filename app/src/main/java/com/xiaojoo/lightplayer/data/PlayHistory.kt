@@ -24,6 +24,18 @@ object PlayHistory {
      */
     private fun rowKey(uri: String) = if (uri.startsWith("online:")) uri.substringBefore('?') else uri
 
+    /**
+     * 同一首歌认人：整段 `online:源/站内id` 相同，**或页地址相同**。
+     * 后一半是给老行自愈用的 —— 中间那一版把在线条目存成光页地址（拆不回身份，点那一行只能弹"找不回"），
+     * 下一回再播到这一首，那条老行被新形状顶掉，不会两行并排摆着。
+     * 两边页地址都空（拆不出来的坏行）不算相同，不然两行坏行会互相吃掉。
+     */
+    private fun sameSong(a: String, b: String): Boolean {
+        if (rowKey(a) == rowKey(b)) return true
+        val pa = Online.historyPageOf(a)
+        return pa.isNotBlank() && pa == Online.historyPageOf(b)
+    }
+
     fun record(context: Context, track: Track) {
         val item = JSONObject().apply {
             put("uri", track.uri.toString())
@@ -38,11 +50,11 @@ object PlayHistory {
         // 同一首重复播放只留最新的一条
         val kept = ArrayList<JSONObject>()
         kept.add(item)
-        val mine = rowKey(item.optString("uri"))
+        val mine = item.optString("uri")
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             if (kept.size >= MAX) break
-            if (rowKey(o.optString("uri")) != mine) kept.add(o)
+            if (!sameSong(o.optString("uri"), mine)) kept.add(o)
         }
         val out = JSONArray()
         kept.forEach { out.put(it) }
