@@ -32,6 +32,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,12 +54,34 @@ import androidx.compose.ui.unit.sp
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import com.xiaojoo.lightplayer.videosource.ApiSource
 import com.xiaojoo.lightplayer.videosource.ApiSong
+import com.xiaojoo.lightplayer.videosource.MusicVideo
+
+
+/**
+ * 首页那颗搜索框那一屏的状态：词、两条路各自的结果、在飞、报错、现在按的是哪一路。
+ *
+ * 摆在这一页（而不是 `App` 里八颗 `remember`）是给 `App` 那个 JVM 64KB 的方法体让位 ——
+ * 搬走的只是**格子**：谁去问、按下去做什么还在 `App`（`runApiSearch` / `pickApiLane`）。
+ */
+class ApiSearchState {
+    var keyword by mutableStateOf("")
+    /** false = 问 [selected] 那一份地址源，true = 问锤子音乐那一站 */
+    var chuizi by mutableStateOf(false)
+    var sources by mutableStateOf<List<ApiSource>>(emptyList())
+    var selected: ApiSource? by mutableStateOf(null)
+    var results by mutableStateOf<List<ApiSong>>(emptyList())
+    var chuiziHits by mutableStateOf<List<MusicVideo>>(emptyList())
+    var busy by mutableStateOf(false)
+    var error: String? by mutableStateOf(null)
+}
 
 /** 抽屉里那两块白卡片的高度，和「新建歌单」那一层同一只（Shell 里量的 51dp） */
 private val FieldH = 51.dp
 
 /**
- * 首页那颗搜索框点进来的那一屏：**问的是接口，不是本机曲库**。
+ * 首页那颗搜索框点进来的那一屏：**问的是站点，不是本机曲库**。两条路一排芯片摆在一起：
+ * 锤子音乐那一站（代码里接好的，被关掉就不摆那颗）和每一份「地址源」—— 一次只按一颗，
+ * 换一颗就把上一颗的行撤干净再问（见调用点 `pickApiLane`）。
  *
  * 顶栏那一条（← + 词 + ✕，不套胶囊、不再摆放大镜）和列表页的搜索态是同一份几何 ——
  * 他要的是"在本地视频那个搜索视频的基础上改"，所以改的是**问谁**，不是长什么样。
@@ -72,24 +96,30 @@ private val FieldH = 51.dp
  */
 @Composable
 fun ApiSearchPage(
-    keyword: String,
-    onKeyword: (String) -> Unit,
-    sources: List<ApiSource>,
-    /** 当前按哪一份描述问。没选过就是列表第一颗 */
-    selected: ApiSource?,
+    /** 这一屏自己的格子（见 [ApiSearchState]）：词、两路的结果、在飞、报错 */
+    api: ApiSearchState,
+    /** 选一份地址源（换过去就把锤子那一路的行撤掉，见调用点 `pickApiLane`） */
     onSelect: (ApiSource) -> Unit,
     /** 交回来的那份描述名字撞了就说 false，抽屉自己把话写在卡片下面 */
     onAddSource: (ApiSource) -> Boolean,
-    /** 键盘那颗「搜索」 */
+    onSelectChuizi: () -> Unit,
+    /** 键盘那颗「搜索」：按下去才问，不跟着击键发 */
     onSubmit: () -> Unit,
-    busy: Boolean,
-    error: String?,
-    results: List<ApiSong>,
     playingKey: String?,
     downloadingKey: String?,
     onPlay: (ApiSong) -> Unit,
     onQueue: (ApiSong) -> Unit,
     onDownload: (ApiSong) -> Unit,
+    /**
+     * 锤子音乐那一路的名字：和「我的」那一屏第三颗芯片同一个来路（`Online.sourceLabel("chuizi")`）——
+     * 那一路被关掉/删掉时是 null，这颗芯片整颗不出现（不摆一颗按下去永远空白的路）。
+     */
+    chuiziLabel: String?,
+    chuiziPlayingId: String?,
+    chuiziDownloadingKey: String?,
+    onPlayChuizi: (MusicVideo) -> Unit,
+    onQueueChuizi: (MusicVideo) -> Unit,
+    onDownloadChuizi: (MusicVideo) -> Unit,
     onBack: () -> Unit,
     /** 迷你条没露出来的时候，导航条那一段由这一屏自己留（和别的子页同一个开关） */
     bottomInset: Boolean,
@@ -126,12 +156,12 @@ fun ApiSearchPage(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(modifier = Modifier.weight(1f)) {
-                    if (keyword.isEmpty()) {
+                    if (api.keyword.isEmpty()) {
                         Text("搜歌名或歌手", color = Tokens.InkFaint, fontSize = 16.sp)
                     }
                     BasicTextField(
-                        value = keyword,
-                        onValueChange = onKeyword,
+                        value = api.keyword,
+                        onValueChange = { api.keyword = it },
                         singleLine = true,
                         cursorBrush = SolidColor(Tokens.InkStrong),
                         textStyle = MaterialTheme.typography.bodyMedium.copy(
@@ -156,7 +186,7 @@ fun ApiSearchPage(
                     modifier = Modifier
                         .size(Tokens.Dimen.IconHit)
                         .offset(x = Tokens.Dimen.searchCloseShift(Tokens.Dimen.ScreenPad) + hitSkew)
-                        .tap { if (keyword.isEmpty()) onBack() else onKeyword("") },
+                        .tap { if (api.keyword.isEmpty()) api.keyword = "" else onBack() },
                     contentAlignment = Alignment.CenterEnd
                 ) {
                     LineIcon(
@@ -176,28 +206,66 @@ fun ApiSearchPage(
         ) {
             // 第一颗永远是「添加地址源」：它不是选项，点它是开抽屉，不参与选中变色
             SourceChip("添加地址源", on = false) { addOpen = true }
-            sources.forEach { s ->
-                SourceChip(s.name, on = s.name == selected?.name) { onSelect(s) }
+            // 锤子音乐那一颗排在地址源前面：它是代码里接好的那一路，不用用户去抽屉里添
+            val cz = chuiziLabel
+            if (cz != null) SourceChip(cz, on = api.chuizi) { onSelectChuizi() }
+            api.sources.forEach { s ->
+                SourceChip(s.name, on = !api.chuizi && s.name == api.selected?.name) { onSelect(s) }
             }
         }
+        /* 两路共用下面这一块：换一路的时候另一路的行整列撤干净（见调用点 `pickApiLane`），
+           所以这里只管"现在这一路有几条、空的时候说什么"。 */
+        val hits = if (api.chuizi) api.chuiziHits.size else api.results.size
+        val err = api.error
         Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
             when {
                 // 还没回来的那一段：屏幕正中一枚转圈的弧，和音乐那一屏的在线同一件东西
-                busy && results.isEmpty() -> SpinArc(Modifier.align(Alignment.Center))
-                error != null && results.isEmpty() -> Text(
-                    error, color = FailRed, fontSize = 12.sp, modifier = Modifier.align(Alignment.Center)
+                api.busy && hits == 0 -> SpinArc(Modifier.align(Alignment.Center))
+                err != null && hits == 0 -> Text(
+                    err, color = FailRed, fontSize = 12.sp, modifier = Modifier.align(Alignment.Center)
                 )
-                results.isEmpty() -> Text(
-                    if (selected == null) "先点「添加地址源」" else "输入歌名，按键盘上那颗搜索",
+                hits == 0 -> Text(
+                    // 一句真话：这一路没得问才说"先去添"。锤子那颗芯片在的时候不能只说添地址源——
+                    // 上面明明摆着一颗按得动的芯片，那句话就成了假话（他 10-28 对空屏摆 0 是同一条口径）
+                    when {
+                        api.chuizi || api.selected != null -> "输入歌名，按键盘上那颗搜索"
+                        chuiziLabel != null -> "这一路还没有地址源：点上面「$chuiziLabel」，或点「添加地址源」"
+                        else -> "先点「添加地址源」"
+                    },
                     color = Tokens.InkFaint,
                     fontSize = 12.sp,
                     modifier = Modifier.align(Alignment.Center),
                 )
+                /* 锤子音乐那一路：行、两颗、口径全部照「我的」那一屏搜到的在线那一段（同一只 MusicRow），
+                   第二行也是"歌手 · 时长 · 站点名"——站点没给的格子不写，不拿"未知"占位。 */
+                api.chuizi -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 12.dp)
+                ) {
+                    itemsIndexed(api.chuiziHits, key = { _, v -> "cz-" + v.key }) { i, v ->
+                        if (i > 0) Hairline()
+                        Row(modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad)) {
+                            MusicRow(
+                                video = v,
+                                playing = "online:" + v.key == chuiziPlayingId,
+                                onClick = { onPlayChuizi(v) },
+                                onQueue = { onQueueChuizi(v) },
+                                onDownload = { onDownloadChuizi(v) },
+                                downloading = chuiziDownloadingKey == v.key,
+                                sub = listOfNotNull(
+                                    v.artist.takeIf { it.isNotBlank() },
+                                    MediaLibrary.fmtDuration(v.durationMs).takeIf { v.durationMs > 0 },
+                                    chuiziLabel,
+                                ).joinToString(" · ").ifBlank { null },
+                            )
+                        }
+                    }
+                }
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 12.dp)
                 ) {
-                    itemsIndexed(results, key = { _, s -> s.key }) { i, s ->
+                    itemsIndexed(api.results, key = { _, s -> s.key }) { i, s ->
                         if (i > 0) Hairline()
                         Row(modifier = Modifier.padding(horizontal = Tokens.Dimen.ScreenPad)) {
                             MusicRow(

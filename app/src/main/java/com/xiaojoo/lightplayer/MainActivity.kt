@@ -106,6 +106,7 @@ import com.xiaojoo.lightplayer.data.Pinned
 import com.xiaojoo.lightplayer.data.PinnedRepository
 import com.xiaojoo.lightplayer.ui.AddToPlaylistDialog
 import com.xiaojoo.lightplayer.ui.ApiSearchPage
+import com.xiaojoo.lightplayer.ui.ApiSearchState
 import com.xiaojoo.lightplayer.ui.AppearancePage
 import com.xiaojoo.lightplayer.ui.DeleteConfirmDialog
 import com.xiaojoo.lightplayer.ui.DownloadPage
@@ -611,13 +612,15 @@ private fun App(
      * 地址**没有默认值** —— 仓库是公开的，代码里一个字都不写域名（见 CustomApiSource 的类注释）。
      */
     val apiSettings = remember { OnlineSettings(context, "api_search") }
-    /** 一串地址源 + 当前按哪一份问。刚装上是一个都没有（代码里不预置域名），所以第一颗是「添加地址源」 */
-    var apiSources by remember { mutableStateOf(apiSettings.apiSources()) }
-    var apiSelected by remember { mutableStateOf(apiSources.firstOrNull()) }
-    var apiKeyword by remember { mutableStateOf("") }
-    var apiResults by remember { mutableStateOf<List<ApiSong>>(emptyList()) }
-    var apiBusy by remember { mutableStateOf(false) }
-    var apiError by remember { mutableStateOf<String?>(null) }
+    /* 首页那颗搜索框那一屏的格子整叠搬进 `ApiSearchState`（在 ApiSearchPage.kt）：`App` 那个方法体
+       顶在 JVM 64KB 上限，八颗就地 `remember` 就是八块地。词、两路各自的结果、在飞、报错、按哪一路
+       都在里面 —— 一串地址源刚装上是一个都没有（代码里不预置域名），所以芯片那一排第一颗是「添加地址源」。 */
+    val api = remember {
+        ApiSearchState().apply {
+            sources = apiSettings.apiSources()
+            selected = sources.firstOrNull()
+        }
+    }
     var apiPlaying by remember { mutableStateOf<String?>(null) }
     var apiDownloading by remember { mutableStateOf<String?>(null) }
     /** 右上角那颗齿轮开的是「在线音乐源」那一整屏（page = "music-source"），不再是抽屉 */
@@ -1770,7 +1773,7 @@ private fun App(
                 apiToast("接口没报这一条的档位")
                 return@launch
             }
-            val src = apiSelected ?: return@launch
+            val src = api.selected ?: return@launch
             val out = withContext(Dispatchers.IO) { runCatching { Online.apiUrlOf(src, s, q) } }
             val p = out.getOrNull()
             if (p == null) {
@@ -1786,18 +1789,44 @@ private fun App(
      * 那是接口不是本机索引，敲一个字打一次既慢、结果又会在字打一半时跳空。
      */
     fun runApiSearch() {
-        val kw = apiKeyword.trim()
-        if (kw.isBlank() || apiBusy) return
-        val src = apiSelected ?: return
-        apiBusy = true
-        apiError = null
+        val kw = api.keyword.trim()
+        if (kw.isBlank() || api.busy) return
+        if (api.chuizi) {
+            // 一次 30 条是站点那一页自己给的数（实测一次回 30），不跟它要更多
+            api.busy = true
+            api.error = null
+            scope.launch {
+                val r = withContext(Dispatchers.IO) { runCatching { Online.searchChuizi(kw, MUSIC_ONLINE_SONGS) } }
+                api.busy = false
+                api.chuiziHits = r.getOrDefault(emptyList())
+                api.error = r.exceptionOrNull()?.let { apiMessage(it) }
+            }
+            return
+        }
+        val src = api.selected ?: return
+        api.busy = true
+        api.error = null
         scope.launch {
             val s = src
             val r = withContext(Dispatchers.IO) { runCatching { Online.apiSearch(s, kw) } }
-            apiBusy = false
-            apiResults = r.getOrDefault(emptyList())
-            apiError = r.exceptionOrNull()?.let { apiMessage(it) }
+            api.busy = false
+            api.results = r.getOrDefault(emptyList())
+            api.error = r.exceptionOrNull()?.let { apiMessage(it) }
         }
+    }
+
+    /**
+     * 换一路问（或在这一路里换一份地址源）。两路的行不共存：换过去这一刻另一路那一列整列撤 ——
+     * 词没变、路变了，把上一路的歌挂在这一路的标题下面就是假话。撤完词还在就立刻重问一次。
+     */
+    fun pickApiLane(chuizi: Boolean, src: ApiSource? = api.selected) {
+        if (api.chuizi == chuizi && (chuizi || src === api.selected)) return
+        api.chuizi = chuizi
+        if (!chuizi && src != null) api.selected = src
+        api.results = emptyList()
+        api.chuiziHits = emptyList()
+        api.error = null
+        if (api.keyword.isNotBlank()) runApiSearch()
     }
 
     /**
@@ -1805,12 +1834,27 @@ private fun App(
      * 新加的源直接选上 —— 加它就是为了用它，再加一次「点一下芯片」没道理。
      */
     fun addApiSource(src: ApiSource): Boolean {
-        if (apiSources.any { it.name == src.name }) return false
-        apiSources = apiSources + src
-        apiSettings.saveApiSources(apiSources)
-        apiSelected = src
-        apiError = null
+        if (api.sources.any { it.name == src.name }) return false
+        api.sources = api.sources + src
+        apiSettings.saveApiSources(api.sources)
+        api.selected = src
+        api.error = null
         return true
+    }
+
+    /* 这一屏的几颗去处收成 lambda 变量：`App` 那个方法体顶在 JVM 64KB 上限，就地每多写一颗 lambda
+       就多一个捕获类（同一晚为文章分批、历史监听各撞过一次）。三颗按行操作的在下面 `downloadApiSong`
+       之后 —— 本地函数得先见到定义才能被引到。 */
+    val selectApiSource: (ApiSource) -> Unit = remember { { src -> pickApiLane(chuizi = false, src = src) } }
+    val selectChuiziLane: () -> Unit = remember { { pickApiLane(chuizi = true) } }
+    val askApiLane: () -> Unit = remember { { runApiSearch() } }
+    val addApiLaneSource: (ApiSource) -> Boolean = remember {
+        { src ->
+            // 新添的那份直接选上（抽屉那三格交出来就是为了用它）
+            val ok = addApiSource(src)
+            if (ok) pickApiLane(chuizi = false, src = api.selected)
+            ok
+        }
     }
 
     fun playApiSong(s: ApiSong) = withApiLink(s) { p ->
@@ -1862,6 +1906,10 @@ private fun App(
             else -> return 0L
         }
     }
+
+    val playApiLane: (ApiSong) -> Unit = remember { { s -> playApiSong(s) } }
+    val queueApiLane: (ApiSong) -> Unit = remember { { s -> queueApiSong(s) } }
+    val downloadApiLane: (ApiSong) -> Unit = remember { { s -> downloadApiSong(s) } }
 
     /** 选择器上点了接口那一档：拿这一档去换址再存（原来那颗固定取接口报的第一档） */
     fun downloadApiSongAt(s: ApiSong, r: Rendition) {
@@ -2630,6 +2678,10 @@ private fun App(
     val queueLocal: (Track) -> Unit = remember(controller) { { t -> queueAppend(t) } }
     val playLocalList: (List<Track>, Int) -> Unit = remember { { l, i -> startPlaylist(l, i) } }
 
+    /* 每一屏左上角那颗 ← ：15 处就地写的 `{ leavePage() }` 收成一颗。
+       `App` 那个方法体顶在 JVM 64KB 上限，就地一颗 lambda 就是一个捕获类。 */
+    val goBack: () -> Unit = remember { { leavePage() } }
+
     fun playPlaylistAt(p: Playlist, index: Int) {
         val tracks = MediaLibrary.resolve(context, p.uris)
         if (tracks.isNotEmpty()) startPlaylist(tracks, index.coerceIn(0, tracks.lastIndex))
@@ -2909,7 +2961,7 @@ private fun App(
                         favPlRepo.toggle(p.id)
                         favoritedPlaylists = favPlRepo.all()
                     },
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     onOpen = { p -> openPage("pl:" + p.id, from = "playlists") },
                     onPlayAll = ::playPlaylist,
                     onRename = { id, n ->
@@ -2944,7 +2996,7 @@ private fun App(
             } else if (page == "video-related") {
                 VideoRelatedPage(
                     initialQuery = videoRelatedQuery,
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     onPlay = { v -> playOnline(v) }
                 )
             } else if (page == "video-blacklist") {
@@ -2952,7 +3004,7 @@ private fun App(
                     rows = blacklist,
                     sourceLabel = sourceLabelOf,
                     onRemove = { removeBlacklisted(it) },
-                    onBack = { leavePage() }
+                    onBack = goBack
                 )
             } else if (page == "home-hot" || page?.startsWith("board:") == true) {
                 // 「热门音乐」和站点那三张表是同一屏形状：表名当大标题、那一批当内容。
@@ -2976,7 +3028,7 @@ private fun App(
                     onPlay = playOnline,
                     onQueue = queueOnline,
                     onDownload = downloadOnlineSong,
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     bottomInset = !showBar,
                 )
             } else if (page?.startsWith("article:") == true) {
@@ -2984,7 +3036,7 @@ private fun App(
                     pack = articleOpen,
                     playingId = musicOnlinePlayingId(),
                     isFavorite = isFavOnline,
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     onPlay = playOnline,
                     onQueue = queueOnline,
                     onToggleFavorite = toggleOnlineFavOf,
@@ -2994,26 +3046,24 @@ private fun App(
                 )
             } else if (page == "api-search") {
                 ApiSearchPage(
-                    keyword = apiKeyword,
-                    onKeyword = { apiKeyword = it },
-                    sources = apiSources,
-                    selected = apiSelected,
-                    onSelect = {
-                        apiSelected = it
-                        apiError = null
-                        if (apiKeyword.isNotBlank()) runApiSearch()
-                    },
-                    onAddSource = { addApiSource(it) },
-                    onSubmit = { runApiSearch() },
-                    busy = apiBusy,
-                    error = apiError,
-                    results = apiResults,
+                    api = api,
+                    onSelect = selectApiSource,
+                    onAddSource = addApiLaneSource,
+                    onSelectChuizi = selectChuiziLane,
+                    onSubmit = askApiLane,
                     playingKey = apiPlaying,
                     downloadingKey = apiDownloading,
-                    onPlay = { s -> playApiSong(s) },
-                    onQueue = { s -> queueApiSong(s) },
-                    onDownload = { s -> downloadApiSong(s) },
-                    onBack = { leavePage() },
+                    onPlay = playApiLane,
+                    onQueue = queueApiLane,
+                    onDownload = downloadApiLane,
+                    // 那一路被禁用/删掉时这个名字是 null：整颗芯片不出现（和「我的」那一屏同一口径）
+                    chuiziLabel = Online.sourceLabel("chuizi"),
+                    chuiziPlayingId = musicOnlinePlayingId(),
+                    chuiziDownloadingKey = musicOnlineDownloading,
+                    onPlayChuizi = playOnline,
+                    onQueueChuizi = queueOnline,
+                    onDownloadChuizi = downloadOnlineSong,
+                    onBack = goBack,
                     bottomInset = !showBar,
                 )
             } else if (page == "download") {
@@ -3053,7 +3103,7 @@ private fun App(
                     onClearUrl = { clearDlUrl() },
                     onStart = { startVideoDownload() },
                     onClear = { videoDownloads.clearFinished() },
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     bottomInset = !showBar,
                 )
                 // 长按那一行问的那一框。数现从队列里按 id 读回来 —— 长按到按确认之间那一行还在走，
@@ -3100,7 +3150,7 @@ private fun App(
                         recError = null
                         android.widget.Toast.makeText(context, "已存到本机", android.widget.Toast.LENGTH_SHORT).show()
                     },
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     bottomInset = !showBar,
                 )
             } else if (page == "music-source") {
@@ -3127,7 +3177,7 @@ private fun App(
                 ArtistListPage(
                     artists = onlineArtists,
                     busy = musicHotBusy,
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     onOpen = { a -> openPage("artist:" + a.name, from = "artists") },
                     onSearch = { openPage("artist-search", from = "artists") },
                 )
@@ -3137,7 +3187,7 @@ private fun App(
                     songs = onlineSongs,
                     query = artistQuery,
                     onQuery = { artistQuery = it },
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     onOpen = { a -> openPage("artist:" + a.name, from = "artists") },
                     onPlay = playOnline,
                     onQueue = queueOnline,
@@ -3154,7 +3204,7 @@ private fun App(
                 ArtistSongsPage(
                     artist = onlineArtists.firstOrNull { it.name == artistName },
                     name = artistName,
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     onPlay = playOnline,
                     onQueue = queueOnline,
                     // 在线条目按**页地址**收藏：直链带有效期，存进去两天就解不开了
@@ -3178,7 +3228,7 @@ private fun App(
                     onToggleFavorite = toggleLocalFav,
                     onQueueAdd = queueLocal,
                     onPlayList = playLocalList,
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     bottomInset = !showBar,
                 )
             } else if (page == "local-search") {
@@ -3205,21 +3255,21 @@ private fun App(
                         favorites = favRepo.all()
                     },
                     onlinePlayingId = musicOnlinePlayingId(),
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     bottomInset = !showBar,
                 )
             } else if (page == "appearance") {
                 AppearancePage(
                     onPickImage = { bgPicker.launch("image/*") },
                     onClearImage = { Skin.clearImage(context) },
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     bottomInset = !showBar,
                 )
             } else if (page == "player-art") {
                 PlayerArtPage(
                     onPickImage = { artPicker.launch("image/*") },
                     onClearImage = { Skin.clearArt(context) },
-                    onBack = { leavePage() },
+                    onBack = goBack,
                     bottomInset = !showBar,
                 )
             } else if (page != null) {
