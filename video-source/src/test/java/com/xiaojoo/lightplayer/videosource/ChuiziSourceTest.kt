@@ -8,6 +8,11 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
+ * cz_articles.html / cz_article.html 同样**只留形状**（10-28 照真页的结构缩着做）：一张卡是
+ * `<a href="/article/{串}">` + 封面 `<img>` + `<h2>` + `<p>`，文章那一页的 `ld+json` 是一个**数组**
+ * （第一项 `Article`、后面每项一条 `MusicRecording`）。链接、图床串、号（`cz-collection-*` /
+ * `cz000N`）、标题里那句「15首」都是编的，歌名歌手一律「夹具歌 N / 夹具歌手 X」。
+ *
  * cz_search.json / cz_song.html / cz_err.json 是 2026-10-27 照真报文**只留形状**做的：
  * 字段名、层级、值的类型、那三档 `qualities`、`nextCursor` 那串 base64 都是站点当天真给的样子
  * （量录见 [ChuiziSource] 的类注释），但歌名/歌手/专辑一律写成「夹具歌 N」、号一律 `cz000N`、
@@ -31,6 +36,11 @@ class ChuiziSourceTest {
     private fun router(): (String) -> String = { url ->
         when {
             url.contains("/song/cz0001") -> resource("cz_song.html")
+            // 文章那两份要先认：`/article/cz-collection-one` 里也含 "/article"
+            url.contains("/article/cz-collection") -> resource("cz_article.html")
+            url.endsWith("chuizi.org/article") -> resource("cz_articles.html")
+            // 四张浏览表和搜索同一份条目形状（真报文逐字段对过），所以共用那一份夹具
+            url.contains("/api/v1/latest") || url.contains("/api/v1/charts/") -> resource("cz_search.json")
             url.contains("q=err") -> resource("cz_err.json")
             url.contains("/api/v1/search") -> resource("cz_search.json")
             else -> throw AssertionError("源问了没准备过的接口：$url")
@@ -159,6 +169,84 @@ class ChuiziSourceTest {
     }
 
     private suspend fun s0() = ChuiziSource(Recording(router())).search("夹具", 30)[0]
+
+    @Test
+    fun `浏览那四页各问自己的口`() = runBlocking {
+        val f = Recording(router())
+        val s = ChuiziSource(f)
+        assertEquals(3, s.list("https://chuizi.org/latest", 50).size)
+        s.list("https://chuizi.org/chart/download-weekly", 12)
+        s.list("https://chuizi.org/chart/download-monthly?utm=1", 12)   // 带尾巴也认（界面上递的是干净的）
+        s.list("https://chuizi.org/chart/popular", 12)
+        assertEquals(
+            listOf(
+                "/api/v1/latest?limit=50",
+                "/api/v1/charts/download-weekly?limit=12",
+                "/api/v1/charts/download-monthly?limit=12",
+                "/api/v1/charts/popular?limit=12",
+            ),
+            f.urls.map { it.substringAfter("chuizi.org") },
+        )
+    }
+
+    @Test
+    fun `浏览那一句的条数照样截在上限`() = runBlocking {
+        val f = Recording(router())
+        ChuiziSource(f).list("https://chuizi.org/latest", 500)
+        assertTrue(f.urls.single(), f.urls.single().endsWith("/api/v1/latest?limit=100"))
+    }
+
+    @Test
+    fun `摊不出一串的页报认不得，不编一个口去问`() = runBlocking {
+        val f = Recording(router())
+        try {
+            ChuiziSource(f).list("https://chuizi.org/music")
+            fail("这一页摊不出条目，必须报而不是回一个空串当「没搜到」")
+        } catch (e: SourceFailureException) {
+            assertTrue(e.failure.toString(), e.failure is SourceFailure.Unsupported)
+        }
+        assertTrue("报认不得就不该问出去：${f.urls}", f.urls.isEmpty())
+    }
+
+    @Test
+    fun `文章那一排扒成卡片`() = runBlocking {
+        val got = ChuiziSource(Recording(router())).articles(10)
+        assertEquals("页里那条 /song/ 的链接不算一张卡", 2, got.size)
+        val a = got[0]
+        assertEquals("夹具合集一 — 15首必听", a.title)
+        // 描述带 HTML 实体：界面上要读回 `&`，不能露出 `&amp;`
+        assertTrue("实际 ${a.note}", a.note.endsWith("夹具歌手 B 等人的作品。"))
+        assertTrue(a.note, !a.note.contains("&amp;"))
+        // 封面是裸 http 的图床：release 包不写明文白名单，必须升 https
+        assertEquals("https://images.example.com/one.jpg?w=1200&q=80", a.coverUrl)
+        assertEquals("https://chuizi.org/article/cz-collection-one", a.pageUrl)
+        // 首数从标题那句「N首」读；下一篇标题里没这句 → 0（界面按 0 不写那一格，不拿别的数冒充）
+        assertEquals(15L, a.songCount)
+        assertEquals(0L, got[1].songCount)
+    }
+
+    @Test
+    fun `一篇文章里的歌读那段数组`() = runBlocking {
+        val got = ChuiziSource(Recording(router())).articleSongs("https://chuizi.org/article/cz-collection-one")
+        // 第四项 name 是空串（站点自己给的一条坏的）：不摆按了没名字的行
+        assertEquals(2, got.size)
+        assertEquals("chuizi/cz0001", got[0].key)
+        assertEquals("夹具歌 1", got[0].title)
+        // `byArtist` 在这一段里是**对象**（歌页那一段是数组），两种都得读得开
+        assertEquals("夹具歌手 A", got[0].artist)
+        assertEquals("夹具歌手 B/夹具歌手 C", got[1].artist)
+        assertEquals("https://chuizi.org/song/cz0002", got[1].pageUrl)
+        // 那一段不给时长也不给封面：留 0 / null，界面按"没有"处理
+        assertEquals(0L, got[0].durationMs)
+        assertNull(got[0].artworkUrl)
+        assertTrue("文章里的歌也是歌，不许顶进视频那一栏", got[0].music)
+    }
+
+    @Test
+    fun `文章页没有那段数组就回空，不抛`() = runBlocking {
+        val f = Recording { "<html><body>一段结构化数据都没有</body></html>" }
+        assertTrue(ChuiziSource(f).articleSongs("https://chuizi.org/article/cz-x").isEmpty())
+    }
 
     @Test
     fun `粘一条歌页读那段 MusicRecording`() = runBlocking {

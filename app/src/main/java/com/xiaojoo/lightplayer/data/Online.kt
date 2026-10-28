@@ -8,6 +8,7 @@ import androidx.media3.common.MediaMetadata
 import com.xiaojoo.lightplayer.videosource.AggregateSearcher
 import com.xiaojoo.lightplayer.videosource.ApiQuality
 import com.xiaojoo.lightplayer.videosource.ApiSong
+import com.xiaojoo.lightplayer.videosource.ChuiziArticle
 import com.xiaojoo.lightplayer.videosource.ApiSource
 import com.xiaojoo.lightplayer.videosource.BiliSource
 import com.xiaojoo.lightplayer.videosource.ChuiziSource
@@ -468,6 +469,40 @@ object Online {
         if (blocked("chuizi")) emptyList() else chuizi.search(query, limit)
 
     /**
+     * 站点导航那一排里我们接进来的三张表。**三张都不做首页卡片** —— 他 10-28 两次的口：
+     * 先"本周榜/本月榜不用单独做成卡片，放到热门音乐里面，全部上面加两个选项"，
+     * 再"热门音乐、最新入库，不要重复啊" —— 首页那一块卡片位只留「热门音乐」一个入口，
+     * 这三张表都是那一屏「全部」那行芯片**上面**的芯片，选哪颗那一屏就摆哪一张表。
+     * 副注那一句写的是**那张表自己按什么排**（最新入库按入库时间、两张榜按下载量 —— 站点给的口
+     * 就这么命名，不替它翻译）。地址在源里对过一次（见 `ChuiziSource.BROWSE`）。
+     */
+    val CHUIZI_BOARDS = listOf(
+        BoardTab("最新入库", "按入库时间", "https://chuizi.org/latest"),
+        BoardTab("本周榜", "按下载量", "https://chuizi.org/chart/download-weekly"),
+        BoardTab("本月榜", "按下载量", "https://chuizi.org/chart/download-monthly"),
+    )
+
+    /** 一张浏览表。这一路被关掉/删掉就回空 —— 首页那一块跟着不摆，不摆一张空卡片骗人 */
+    suspend fun chuiziBoard(url: String, limit: Int): List<MusicVideo> =
+        if (blocked("chuizi")) emptyList() else chuizi.list(url, limit)
+
+    /**
+     * 站点「文章」那一页的**整份索引**：一次请求，19 张卡（10-28 真量：页上就是 19 条链接，
+     * 每条都有标题、一句描述、封面）。这里只拿卡片信息，**不带歌** —— 歌是每张卡一页 HTML，
+     * 19 张就是 19 次请求，所以那一段改成滑到哪批问哪批（见 [chuiziArticlePack]）。
+     */
+    suspend fun chuiziArticles(): List<ChuiziArticle> =
+        if (blocked("chuizi")) emptyList() else chuizi.articles(100)
+
+    /**
+     * 一张卡要的那几首歌。歌要在进那一屏之前就问：他给的参考图是"卡上就摆 01/02/03 三行真歌名"，
+     * 没有歌那三行就是空的。问回来的歌同时给点进去那一屏用，点进去不再问第二次。
+     * 一篇文章一页 HTML；问不到就回空歌单（卡还是照摆，只是不摆那三行）。
+     */
+    suspend fun chuiziArticlePack(a: ChuiziArticle): ArticlePack =
+        ArticlePack(a, runCatching { chuizi.articleSongs(a.pageUrl) }.getOrDefault(emptyList()))
+
+    /**
      * 「自定义接口」搜索那一屏那一面单独的墙。它**不在上面那个 registry 里** ——
      * 不参与聚合搜索、也不被「视频地址源」/「在线音乐源」那两屏读到（他 10-15 点的：不使用之前的源）。
      * 地址由那一屏自己带进来，空着就当场说"还没填接口地址"，这里不备默认值。
@@ -650,3 +685,18 @@ data class ZoneSplit(
 ) {
     val isEmpty: Boolean get() = hotMusic.isEmpty() && hotVideo.isEmpty() && moreMusic.isEmpty() && moreVideo.isEmpty()
 }
+
+
+/**
+ * 首页一块浏览表的表头：[title] 是栏头那三个字，[note] 是栏头下面那一句（写这张表**按什么排**），
+ * [url] 是站点那一页的地址 —— 源里按它认出口（见 `ChuiziSource.BROWSE`），界面上不另拼。
+ */
+data class BoardTab(val title: String, val note: String, val url: String)
+
+
+/**
+ * 首页「文章」那一排的一张卡：站点那份卡片信息（标题 / 一句描述 / 封面 / 首数）+ 这一篇里我们
+ * 读回来的那几首歌。[songs] 可能比 [ChuiziArticle.songCount] 少（站点页里那段结构化数据只列它
+ * 自己写进去的那些），所以卡上那三行和那一屏都以 [songs] 为准，首数那一格也写它的条数。
+ */
+data class ArticlePack(val article: ChuiziArticle, val songs: List<MusicVideo>)

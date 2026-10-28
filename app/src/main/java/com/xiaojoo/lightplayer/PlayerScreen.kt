@@ -185,9 +185,6 @@ fun PlayerScreen(
             override fun onPlaybackStateChanged(state: Int) {
                 playbackState = state
                 durationMs = audio?.duration?.takeIf { it > 0 } ?: 0L
-                if (durationMs > 0) {
-                    currentUri?.let { PlayHistory.updateDuration(context, it, durationMs) }
-                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -201,21 +198,8 @@ fun PlayerScreen(
                 artist = audio?.mediaMetadata?.artist?.toString()
                 currentUri = item?.localConfiguration?.uri
                 trackWarning = audio?.let { unsupportedTrackOf(it) }
-                val uri = item?.localConfiguration?.uri
-                if (uri != null) {
-                    PlayHistory.record(
-                        context,
-                        Track(
-                            id = runCatching { android.content.ContentUris.parseId(uri) }.getOrDefault(0L),
-                            uri = uri,
-                            name = titleOf(audio, context) ?: "未知文件",
-                            artist = artist,
-                            durationMs = audio?.duration?.takeIf { it > 0 } ?: 0L,
-                            sizeBytes = 0L,
-                            isVideo = uri.isVideoUri()
-                        )
-                    )
-                }
+                // 历史不在这里记：这一屏只有切到「音乐」页签才在组合里，记在这儿等于别的屏点的歌都不算
+                // （2026-10-28 挪到 MainActivity 的壳层，见那边那条 DisposableEffect）
             }
 
             override fun onMediaMetadataChanged(metadata: androidx.media3.common.MediaMetadata) {
@@ -785,7 +769,7 @@ private fun titleOf(player: Player?, context: Context): String? {
 }
 
 @OptIn(UnstableApi::class)
-private fun displayName(context: Context, uri: Uri): String {
+internal fun displayName(context: Context, uri: Uri): String {
     if (uri.scheme == ContentResolver.SCHEME_CONTENT) {
         runCatching {
             context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)

@@ -14,19 +14,19 @@ import java.time.Instant
  *   `title` / `artistNames[]` / `durationSec`（**秒**，网易云那一份给的是毫秒，别照抄）/ `coverUrl` /
  *   `albumTitle` / `platforms[]` / `qualities[]` / `createdAt` / `updatedAt`。
  *   `limit` 认（3→3、20→20、50→50、100→100），**500 直接回错误**，所以这一路上限按 [MAX_LIMIT] 截。
- * - **没有默认列表**：`q=` 空着回 400 `bad_request`。所以 [search] 空词直接回空，不自己编一个词去问 ——
- *   这一路因此不进首页「热门音乐」那一栏，也不进「在线音乐源」那一屏的预览（那颗芯片上不写数：
- *   预览里它一条都不贡献，摆个 0 是假话）。
+ * - **搜索口没有默认列表**：`q=` 空着回 400 `bad_request`。所以 [search] 空词直接回空，不自己编一个词去问。
+ *   但站点导航那一排有现成的浏览页（最新入库 / 本周榜 / 本月榜 / 热门榜），10-28 逐条量到四条 JSON 口都通
+ *   （见 [list] 那张表）—— 所以这一路的**默认列表改吃 `/api/v1/latest`**，源页那一行不再标「没有默认列表」。
  * - **翻页不通**：它给的 `nextCursor` 是 base64 的 `{"v":1,"s":"18","id":"…"}`，原样回放
  *   （`cursor=` 也好 `after=` 也好）回 200 + **0 条**，用 `nextCursor=` 那一名还回 500；
  *   `offset=`、`page=` 它不理（量过：带不带都回同头 20 条，重叠 20/20）。所以 [page] 这一格用不上，
  *   一句问到底最多 100 条 —— 和快手那一路同一个写法（见 [MusicVideoSource.search] 那一段）。
  * - 取址 `GET /media/play/{id}?quality=<档>`：200 `audio/mpeg`、支持 Range（问 0-1 回 206），
  *   **什么头都不问**（Dalvik 默认头 200、连 UA 都不带给也 206，量过），所以这一路不带任何头。
- * - **`quality` 那一格是装饰**：同一首的 128kbps / 320kbps / flac 三档回的是**同一串字节**
- *   （都 4,768,365 字节；flac 那一档头四个字节还是 `ID3`，不是 `fLaC`；`x-audio-quality` 只是把
- *   问它的那一句原样报回来）。所以这一路**不实现 [qualities]** —— 回空就是界面不出档位选择器，
- *   摆三档让人挑一个"其实没有"的东西等于白按一次（见 [MusicVideoSource.qualities] 那一条）。
+ * - **`quality` 那一格是装饰**：同一首的 128kbps / 320kbps / flac 三档回的是**同一串字节** ——
+ *   10-28 各下一整首比过：都 10,110,173 字节、sha256 逐位相同，ffprobe 三行读数一样
+ *   （codec=mp3、320.2kbps、48kHz、252.59s），「FLAC 无损」那颗的头是 `ID3` 不是 `fLaC`。
+ *   所以 [qualities] 只回**一行「默认音质」**（他先要"每一颗存盘都弹"，看到三行同串之后又点"收成一行"）。
  *   [resolve] 照它自己播放器那句写 [QUALITY]；播放页那一格音质读的是 Media3 报出来的真格式，不吃站点这一句。
  * - 站点**没有单曲详情口**（`/api/v1/media/{id}` 回 404，量过），地址就是按号拼出来的 —— 可号会失效：
  *   2026-10-27 华为真机点了一条「多想还小 (DJ阿卓、DJ阿龙版)」，那一句回 **502 Bad Gateway**，
@@ -79,13 +79,36 @@ class ChuiziSource(
             "$base/api/v1/search?q=${enc(query)}&limit=${limit.coerceIn(1, MAX_LIMIT)}",
             headers(),
         ).requireOk().optJSONObject("data")?.optJSONArray("items") ?: return emptyList()
-        return ArrayList<MusicVideo>(items.length()).also { out ->
+        return songsOf(items)
+    }
+
+    /**
+     * 站点导航那一排里能摊成一串的页 → 它的 JSON 口。2026-10-28 逐条量过（四条都 200，
+     * 条目形状和 [search] 那一份**一字不差**，所以共用 [songsOf]）：`/latest`、
+     * `/chart/download-weekly`、`/chart/download-monthly`、`/chart/popular`。
+     * 认带 `?` 尾巴的那一条；别的地址一律 `Unsupported` —— 这一路只有这四张表摊得出条目，
+     * 文章那一排在 [articles] 那一边（它没有 JSON 口）。
+     */
+    override suspend fun list(url: String): List<MusicVideo> = list(url, MAX_LIMIT)
+
+    /** 同一句带条数：首页那一块只展示一部分，「更多」点进去那一屏要一整屏 */
+    suspend fun list(url: String, limit: Int): List<MusicVideo> {
+        val key = url.substringBefore('?').trimEnd('/').removePrefix(base).trim('/')
+        val api = BROWSE[key]
+            ?: throw SourceFailureException(SourceFailure.Unsupported("$id 这一页摊不出一串：$key"))
+        val items = fetch.get("$base$api?limit=${limit.coerceIn(1, MAX_LIMIT)}", headers())
+            .requireOk().optJSONObject("data")?.optJSONArray("items") ?: return emptyList()
+        return songsOf(items)
+    }
+
+    /** 一份 `items[]` → 条目（搜索和那四张表同一份形状） */
+    private fun songsOf(items: JSONArray): List<MusicVideo> =
+        ArrayList<MusicVideo>(items.length()).also { out ->
             for (i in 0 until items.length()) {
                 val o = items.optJSONObject(i) ?: continue
                 songOf(o)?.let { out.add(it) }
             }
         }
-    }
 
     /**
      * 粘进来的一条歌页地址 → 条目。号从地址尾巴上取，其余读那一段 `application/ld+json`。
@@ -149,10 +172,81 @@ class ChuiziSource(
         return Playable(url = url)
     }
 
+    /**
+     * 「文章」那一排 = 站点的编辑合集（一篇装十几首歌，卡上写「粤语经典金曲合集 — 15首必听港乐」）。
+     *
+     * 它**没有 JSON 口**：`/api/v1/articles`、`/article`、`/posts`、`/editor-picks` 四条猜的路径
+     * 10-28 全回 404，所以只能扒 `/article` 那一页的 HTML —— 一张卡是一个 `<a href="/article/{串}">`，
+     * 里面有封面 `<img>`、`<h2>` 标题、`<p>` 一句描述。条数从标题里那句「N首」读（站点自己写在标题上），
+     * 读不到就是 0，界面按 0 不写那一格，不拿别的数冒充。
+     */
+    suspend fun articles(limit: Int): List<ChuiziArticle> {
+        val out = ArrayList<ChuiziArticle>(limit)
+        for (card in fetch.get("$base/article", headers()).split("<a href=\"/article/").drop(1)) {
+            if (out.size >= limit) break
+            val slug = card.substringBefore('"').trim('/')
+            if (slug.isBlank() || '/' in slug) continue      // 只认 /article/{串}，页里别的链接不算一张卡
+            val title = CARD_H2.find(card)?.groupValues?.get(1)?.htmlUnescape()?.trim().orEmpty()
+            if (title.isBlank()) continue
+            out.add(
+                ChuiziArticle(
+                    title = title,
+                    note = CARD_P.find(card)?.groupValues?.get(1)?.htmlUnescape()?.trim().orEmpty(),
+                    coverUrl = secure(CARD_IMG.find(card)?.groupValues?.get(1)?.htmlUnescape()),
+                    pageUrl = "$base/article/$slug",
+                    songCount = SONG_COUNT.find(title)?.groupValues?.get(1)?.toLongOrNull() ?: 0L,
+                )
+            )
+        }
+        return out
+    }
+
+    /**
+     * 一篇文章里的歌：那一页的 `application/ld+json` 是一个**数组** —— 第一项是 `Article`，
+     * 后面每项一条 `MusicRecording`（`name` / `byArtist`（那一份是对象）/ `url`）。10-28 量的那页
+     * 15 首全在这一段里，所以点一篇文章只问一页，不为每首歌多问一次接口。
+     *
+     * 时长和封面这一段不给（单条歌页才有）—— 留 0 / null，界面按"没有"处理，不猜。
+     */
+    suspend fun articleSongs(url: String): List<MusicVideo> {
+        val block = LD_JSON.findAll(fetch.get(url, headers())).map { it.groupValues[1].trim() }
+            .firstOrNull { it.startsWith("[") && it.contains("\"MusicRecording\"") }
+            ?: return emptyList()
+        val arr = jsonArrayOf(block, "这一页里的文章数据不是 JSON 数组")
+        val out = ArrayList<MusicVideo>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (o.optString("@type") != "MusicRecording") continue
+            val sid = o.optString("url").substringBefore('?').trimEnd('/').substringAfterLast('/')
+            val name = o.optString("name").trim()
+            if (sid.isBlank() || name.isBlank()) continue
+            out.add(
+                MusicVideo(
+                    sourceId = id, remoteId = sid, title = name,
+                    artist = o.optJSONArray("byArtist").namesOf()
+                        .ifBlank { o.optJSONObject("byArtist")?.optString("name").orEmpty() },
+                    durationMs = 0L, pageUrl = "$base/song/$sid", music = true,
+                )
+            )
+        }
+        return out
+    }
+
+    private fun jsonArrayOf(text: String, why: String): JSONArray = try {
+        JSONArray(text)
+    } catch (e: org.json.JSONException) {
+        throw SourceFailureException(SourceFailure.Parse("$why：${e.message}"))
+    }
+
+    /** 文章那两页是 HTML，标题/描述里带 `&amp;` `&#39;` 这一类实体，界面上要读回字符 */
+    private fun String.htmlUnescape(): String = listOf(
+        "&amp;" to "&", "&lt;" to "<", "&gt;" to ">", "&quot;" to "\"", "&#39;" to "'", "&nbsp;" to " ",
+    ).fold(this) { s, (from, to) -> s.replace(from, to) }
+
     /** 一条搜索项 → 条目。`durationSec` 是秒，乘 1000 才进我们那个毫秒字段 */
     private fun songOf(o: JSONObject): MusicVideo? {
         val sid = o.optString("id").takeIf { it.isNotBlank() } ?: return null
-        val name = o.optString("title").ifBlank { return null }
+        val name = o.optString("title").trim().ifBlank { return null }
         return MusicVideo(
             sourceId = id,
             remoteId = sid,
@@ -216,6 +310,20 @@ class ChuiziSource(
         /** 它自己播放器带的那一档。三档同字节（见类注释），带这一格只为和播放器同一句 */
         const val QUALITY = "320kbps"
 
+        /** 站点导航那一排里摊得出一串的四页：页路径 → JSON 口（10-28 逐条量过都 200） */
+        val BROWSE = mapOf(
+            "latest" to "/api/v1/latest",
+            "chart/download-weekly" to "/api/v1/charts/download-weekly",
+            "chart/download-monthly" to "/api/v1/charts/download-monthly",
+            "chart/popular" to "/api/v1/charts/popular",
+        )
+
+        /** 文章那一页的一张卡：封面 / 标题 / 一句描述 / 标题里那句「N首」 */
+        val CARD_IMG = Regex("<img src=\"([^\"]+)\"")
+        val CARD_H2 = Regex("<h2[^>]*>([^<]*)</h2>")
+        val CARD_P = Regex("<p[^>]*>([^<]*)</p>")
+        val SONG_COUNT = Regex("(\\d+)\\s*首")
+
         /** 页里那一段结构化数据：`<script type="application/ld+json">{…}</script>` */
         val LD_JSON = Regex(
             "<script type=\"application/ld\\+json\">(.*?)</script>",
@@ -257,3 +365,16 @@ private fun String.toDoubleOrZero(): Double = toDoubleOrNull() ?: 0.0
 
 private fun String.toEpochMillisOrZero(): Long = takeIf { it.isNotBlank() }
     ?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrDefault(0L) } ?: 0L
+
+
+/**
+ * 「文章」那一排的一张卡（站点的编辑合集）。[songCount] 是从标题那句「N首」读出来的，
+ * 读不到是 0 —— 界面按 0 不写那一格。[coverUrl] 是站点用的那张图，已经升过 https。
+ */
+data class ChuiziArticle(
+    val title: String,
+    val note: String,
+    val coverUrl: String?,
+    val pageUrl: String,
+    val songCount: Long,
+)

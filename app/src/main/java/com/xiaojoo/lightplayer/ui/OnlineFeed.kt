@@ -53,6 +53,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -868,27 +869,44 @@ private fun loadCover(url: String): ImageBitmap? = runCatching {    val c = URL(
 }.getOrNull()
 
 /** 三个点依次亮起来回滚：这一条还没拉到手时的占位，不给任何画面。
- *  首页/「我的」下拉刷新那一行也吃这一颗（深底用默认白，浅底把 color 交进来），不再另画一份。 */
+ *  首页/「我的」下拉刷新那一行也吃这一颗（深底用默认白，浅底把 color 交进来），不再另画一份。
+ *  [vertical]：首页那两排横滑（精选视频 / 音乐文章）栏尾等待用的是竖排三点（他 10-28 点的）。
+ *  [size] / [gap]：点和点之间的缝默认跟着点一起缩（竖排那一颗他 10-28 又点了要小一圈）。 */
 @Composable
-internal fun OnlineDots(modifier: Modifier = Modifier, color: Color = Color.White) {
+internal fun OnlineDots(
+    modifier: Modifier = Modifier,
+    color: Color = Color.White,
+    vertical: Boolean = false,
+    size: Dp = 9.dp,
+    gap: Dp = 8.dp,
+) {
     val t = rememberInfiniteTransition(label = "online-dots")
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        for (i in 0 until 3) {
-            val a by t.animateFloat(
-                initialValue = 0.22f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 900, delayMillis = i * 180, easing = LinearEasing),
-                    repeatMode = RepeatMode.Restart,
-                ),
-                label = "dot-$i",
-            )
-            Box(
-                modifier = Modifier
-                    .size(9.dp)
-                    .clip(CircleShape)
-                    .background(color.copy(alpha = a)),
-            )
+    val alphas = (0 until 3).map { i ->
+        t.animateFloat(
+            initialValue = 0.22f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 900, delayMillis = i * 180, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "dot-$i",
+        )
+    }
+    val bead: @Composable (Float) -> Unit = { a ->
+        Box(
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(color.copy(alpha = a)),
+        )
+    }
+    if (vertical) {
+        Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(gap), horizontalAlignment = Alignment.CenterHorizontally) {
+            alphas.forEach { bead(it.value) }
+        }
+    } else {
+        Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(gap), verticalAlignment = Alignment.CenterVertically) {
+            alphas.forEach { bead(it.value) }
         }
     }
 }

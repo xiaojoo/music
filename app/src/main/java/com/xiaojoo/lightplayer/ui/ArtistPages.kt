@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import com.xiaojoo.lightplayer.data.ArticlePack
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import com.xiaojoo.lightplayer.videosource.Artist
 import com.xiaojoo.lightplayer.videosource.MusicVideo
@@ -544,6 +545,14 @@ private fun SongRow(
     /** 搜索结果跨好几位歌手，第二行要把人名写出来；名下那一屏身后大标题已经是他，不重复写 */
     showArtist: Boolean = false,
     /**
+     * 行首那一格写序号（文章那一屏）：非空就把封面换成编号。编号**靠左**，不再居中占 42dp。
+     * 传进来的一律是补零的两位（01/02…）：一行的位数齐，标题才在同一条竖线上；
+     * 两道缝的账见 [NumCol] / [NumGap]（他 10-28 点的：「屏幕沿↔序号」= 「序号↔歌名」）。
+     */
+    number: String = "",
+    /** 这一行就是现在在放的那一首：标题换主色（在线那一族同一口径） */
+    playing: Boolean = false,
+    /**
      * 存盘那颗（他 10-27 点名要那颗的屏给：歌手页那两芯片搜出来那一屏）。
      * null = 这一屏不给存（一位歌手名下那一屏就是这种）—— 不摆，摆一颗按不动的是死控件。
      */
@@ -562,26 +571,41 @@ private fun SongRow(
             // 右端内衬和列表页同一个数（ColEndPad）：盒 39.5dp、归一后的墨 12.5dp 居中，
             // 自带 (39.5−12.5)/2 = 13.5dp → 墨右沿离屏幕 6.6+13.5 = 20.1dp，两页逐位对齐
             .padding(start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ColEndPad)
-            .padding(vertical = 11.dp),
+            /* 上下各 3dp = 「我的」那一屏音乐列表同一颗（TrackLine 递给 PressableRow 的 verticalPad）。
+               行高不是这个数撑的：右端那两颗的命中盒 IconHit 48dp 才是，54dp 一行、和曲库那一条逐位相同。
+               原来给 11dp，行距 70dp，比曲库那一条松 43px（真机 14:52 量的）。 */
+            .padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         var edge by remember { mutableIntStateOf(0) }
-        Box(
-            modifier = Modifier
-                // 和迷你条那一格同一个数（BarCover side = 42dp）
-                .size(42.dp)
-                .onSizeChanged { edge = minOf(it.width, it.height) }
-                .clip(RoundedCornerShape(Tokens.Dimen.ThumbCorner))
-                .background(Tokens.Track)
-        ) {
-            remoteCover(video.artworkUrl, edge)?.let {
-                Image(bitmap = it, contentDescription = null, modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop)
+        if (number.isNotEmpty()) {
+            Box(modifier = Modifier.width(NumCol)) {
+                Text(number, color = Tokens.InkFaint, fontSize = 14.sp, maxLines = 1)
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    // 和迷你条那一格同一个数（BarCover side = 42dp）
+                    .size(42.dp)
+                    .onSizeChanged { edge = minOf(it.width, it.height) }
+                    .clip(RoundedCornerShape(Tokens.Dimen.ThumbCorner))
+                    .background(Tokens.Track)
+            ) {
+                remoteCover(video.artworkUrl, edge)?.let {
+                    Image(bitmap = it, contentDescription = null, modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop)
+                }
             }
         }
-        Column(modifier = Modifier.weight(1f).padding(start = 11.dp)) {
+        Column(
+            modifier = Modifier.weight(1f).padding(
+                start = if (number.isNotEmpty()) NumGap else 11.dp
+            )
+        ) {
             Text(
-                matchInk(video.title, q), color = Tokens.InkStrong, fontSize = 15.sp, lineHeight = 20.sp,
+                matchInk(video.title, q),
+                color = if (playing) Tokens.Accent else Tokens.InkStrong,
+                fontSize = 15.sp, lineHeight = 20.sp,
                 maxLines = 2, overflow = TextOverflow.Ellipsis
             )
             Text(
@@ -684,5 +708,230 @@ private fun Face(url: String?, name: String) {
                 fontWeight = FontWeight.Medium
             )
         }
+    }
+}
+
+
+/**
+ * 站点「文章」那一排点进去的一整屏，形状照他 2026-10-28 给的那张专辑页（参考图二）：
+ * 海报 → 篇名 → 那一句描述（点一下展开）→ 两颗药丸（收藏 / 全部播放）→ 编号行。
+ *
+ * 海报不照图里那样缩成居中一方：他 10-28 晚点名要**整宽铺到屏幕第一像素、状态栏也压在它上面**，
+ * 和歌手名下那一屏同一套。图里那 59.9% 的数作废。同一晚又点名把篇名那一段（篇名 / 人名 / 描述 /
+ * 两颗药丸）**整叠浮在海报下沿** —— 于是那一叠不再占列表之上的位置，列表从海报底下就开始。
+ *
+ * 其余仍走我们这一族的数，两处是从那张图上量的：
+ * - 两颗药丸 80/845 = 9.5% → 38dp 高，中间那道缝 21px = 9.0dp（和卡片栏那对缝同一个数）；
+ *   左右内衬 48px = 20.4dp —— 和 ScreenPad 同一颗，不另编。
+ * 行是歌手名下那一屏同一只 [SongRow]，只把行首那一格换成编号（`number`）：编号靠左压在
+ * ScreenPad 那条线上，右边那道缝按 [NumGap] 补掉数字自己的空白 —— 于是「屏幕沿↔序号墨」=
+ * 「序号墨↔歌名墨」（他 10-28 点的）。右端心 / 队列那一列和歌手名下那一屏逐位相同。
+ *
+ * 图里那几样没搬，各有各的原因：黑胶唱片是纯装饰；「专辑册」「评论」「赞赏」和右上角那颗分享
+ * 这一路接口里没有对应数据，摆一颗按不动的是死控件；歌手名前面那三枚叠起来的圆头像是**歌手**的脸，
+ * 站点这一页只给歌名和人名、没有头像地址 —— 所以那一行只有字，不拿歌的封面冒充人脸。
+ * 收藏那颗括号里的数写的是**这一篇里已经进我收藏的几首**（真读得出来的数），不是图里那个收藏人数。
+ */
+@Composable
+fun ArticlePage(
+    pack: ArticlePack?,
+    playingId: String?,
+    isFavorite: (MusicVideo) -> Boolean,
+    onBack: () -> Unit,
+    onPlay: (MusicVideo) -> Unit,
+    onQueue: (MusicVideo) -> Unit,
+    onToggleFavorite: (MusicVideo) -> Unit,
+    onPlayAll: (List<MusicVideo>) -> Unit,
+    onFavoriteAll: (List<MusicVideo>) -> Unit,
+    bottomInset: Boolean,
+) {
+    val article = pack?.article
+    val songs = pack?.songs ?: emptyList()
+    val favCount = songs.count { isFavorite(it) }
+    // 描述那一句：默认两行截断，点它展开（图里那句后面挂的就是「…更多」）
+    var noteOpen by remember(pack) { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Tokens.Backdrop)
+            .then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
+    ) {
+        if (article == null) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("这一篇还没读回来", color = Tokens.InkFaint, fontSize = 13.sp)
+            }
+            return@Column
+        }
+        // 海报那一块：整宽、从屏幕第一像素铺起（状态栏压在它上面），返回那颗浮在它的左上角
+        // —— 和歌手名下那一屏同一套（那一屏钉在 340dp，这一屏也钉同一个数，不另编一档）
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(ArticleHero)
+                .background(Tokens.Track)
+        ) {
+            var edge by remember { mutableIntStateOf(0) }
+            Box(
+                modifier = Modifier.fillMaxSize().onSizeChanged { edge = minOf(it.width, it.height) }
+            ) {
+                remoteCover(article.coverUrl, edge)?.let {
+                    Image(
+                        bitmap = it, contentDescription = null,
+                        modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                    )
+                }
+            }
+            /* 四段：顶上黑纱（给状态栏那几颗和返回那颗垫一下）→ 露图那一段全透 →
+               **从篇名起头一路缓洗到页底色**（他 10-28 晚点的：底边别太硬，但不是把海报垫高来过渡，
+               是过渡从文字开始那一档起头）。0.5 = 篇名那一行的顶：(420 − 191 − 18)/420 = 0.502。
+               于是篇名压在原图上（那一段 Δbg 实测 162~236），往下每一行比上一行多洗一点，
+               到海报下沿正好落回页底色 —— 边界没了，代价是那叠字的下半不再坐在纯图上。 */
+            Box(
+                modifier = Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.25f),
+                        0.3f to Color.Transparent,
+                        0.5f to Color.Transparent,
+                        1f to Tokens.Backdrop,
+                    )
+                )
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = Tokens.Dimen.ScreenPad)
+                    .size(Tokens.Dimen.IconHit)
+            ) {
+                Box(
+                    modifier = Modifier.size(Tokens.Dimen.IconHit).tap(onClick = onBack),
+                    contentAlignment = Alignment.CenterStart
+                ) { LineIcon(IconKind.ArrowLeft, size = 22.dp, color = Color.White) }
+            }
+            // 浮在海报下沿的那一叠：篇名 → 那几位歌手 → 那一句描述（点它展开）→ 两颗药丸
+            // （他 10-28 晚点的：这段放到海报上面。歌手名下那一屏那叠名字是同一个做法）
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .padding(start = Tokens.Dimen.ScreenPad, end = Tokens.Dimen.ScreenPad, bottom = 18.dp)
+            ) {
+                Text(
+                    article.title, color = Tokens.InkStrong, fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis
+                )
+                // 那几位歌手：这一篇里真出现过的名字，去重、按出现的先后
+                val names = songs.map { it.artist.trim() }.filter { it.isNotEmpty() }.distinct()
+                if (names.isNotEmpty()) {
+                    Text(
+                        names.joinToString("/"), color = Tokens.InkStrong, fontSize = 14.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 14.dp)
+                    )
+                }
+                if (article.note.isNotBlank()) {
+                    Text(
+                        article.note + if (!noteOpen && article.note.length > NOTE_FOLD) " …更多" else "",
+                        // 墨色比曲库那一族的次要行提一档（InkFaint → Ink）：这一句坐在海报洗过来
+                        // 那半截上（Δbg 84~116），原来那一档灰压上去读不动 —— 他 10-28 晚点名要深
+                        color = Tokens.Ink, fontSize = 12.sp, lineHeight = 17.sp,
+                        maxLines = if (noteOpen) Int.MAX_VALUE else 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
+                            .tap(enabled = article.note.length > NOTE_FOLD) { noteOpen = !noteOpen }
+                    )
+                }
+                // 两颗药丸：一首都没读回来的时候整排不摆 —— 「全部播放」按下去没东西放是死控件
+                if (songs.isNotEmpty()) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(top = 18.dp)) {
+                        Pill(Modifier.weight(1f), IconKind.Favorite,
+                            if (favCount > 0) "收藏($favCount)" else "收藏") { onFavoriteAll(songs) }
+                        Spacer(modifier = Modifier.width(PillGap))
+                        Pill(Modifier.weight(1f), IconKind.Play, "全部播放") { onPlayAll(songs) }
+                    }
+                }
+            }
+        }
+        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+            if (songs.isNotEmpty()) {
+                item(key = "art:head") { FilterHead("歌曲 ${songs.size}") }
+                // 一律补零成两位：1..9 是一位、10 以上是两位的话标题会跳一条竖线，
+                // 而且那两道缝的补法按位数不同（见 NumCol 的账），两位一套就够
+                itemsIndexed(songs, key = { _, v -> "art:" + v.key }) { n, v ->
+                    SongRow(
+                        video = v,
+                        favorite = isFavorite(v),
+                        showArtist = true,
+                        number = "%02d".format(n + 1),
+                        playing = "online:" + v.key == playingId,
+                        onClick = { onPlay(v) },
+                        onQueue = { onQueue(v) },
+                        onFavorite = { onToggleFavorite(v) },
+                    )
+                }
+            } else {
+                item(key = "art:empty") {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(top = 40.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("这一篇里的歌还没读回来", color = Tokens.InkFaint, fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* 海报那一块的高 = 上面露图那一段 + 浮着的那一叠。那一叠真机量到 191dp（篇名墨顶到药丸下沿），
+   上面露 229dp —— 和歌手名下那一屏露的那一档（340 − 110 = 230dp）同一档，不另编。
+   底边那道过渡不靠把这一块垫高：从篇名那一档（0.5）起头、到这块的下沿（1.0）落回页底色，
+   走的是那一叠自己那 191dp。 */
+private val ArticleHero = 420.dp
+
+/** 两颗药丸中间那道缝：同一张图上 21px = 9.0dp */
+internal val PillGap = 9.dp
+
+/** 描述超过这么长才给「…更多」那一下点；短的句子不摆一个点不动的东西 */
+private const val NOTE_FOLD = 42
+
+/* 序号那一格的两道缝（真机量的，Redmi 1dp=2.75px）：
+   14sp 的「01」步进 42px、墨只跨 24px（57..80）—— 末尾那 18px 是数字自己的空白，看不见。
+   格宽按步进给 16dp（给墨宽 8.7dp 会把「01」挤成两行，10-28 第一版就撞上了），
+   于是标题那一侧要补掉这段空白：
+     屏幕沿↔序号墨 = 55 + 2 = 57px
+     序号墨↔歌名墨 = 格 44 + 内衬 P + 汉字左伸 2 − 墨 24
+   要两道相等 → P = (57 − 44 + 24 − 2)px = 35px = 12.7dp。
+   直接给 ScreenPad 20dp 的话这一道是 27.6dp，比左边宽 6.9dp —— 眼睛看的是墨，不是步进框。 */
+private val NumCol = 16.dp
+/* 取 15dp 而不是按某一行算死的 12.7dp：数字自己的墨宽不等（真机 14sp 量到「01」25px、
+   「02」32px、「03」34px —— 1 比别的数字窄一档），步进框却是等宽的，所以那一道缝必然随
+   第二位数字摆 10px。15dp 是这一段的中间值：最窄的「01」读 22.5dp、常见的 02/03 读 19.3dp，
+   两边各差 1.8dp / 1.4dp，都不到肉眼分得出来的量。 */
+private val NumGap = 15.dp
+
+/**
+ * 一颗药丸：白底、整圆角、内容（图标 + 字）居中 —— 图里那两颗就是居中，不贴左。
+ * 高 38dp = 那张图的 80/845 = 9.5% 乘这台屏宽。
+ */
+@Composable
+internal fun Pill(modifier: Modifier, kind: IconKind, text: String, onClick: () -> Unit) {
+    Row(
+        modifier = modifier
+            .height(38.dp)
+            .clip(RoundedCornerShape(19.dp))
+            .background(Tokens.Surface)
+            .tap(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        LineIcon(kind, size = 17.dp, color = Tokens.InkStrong)
+        Text(
+            text, color = Tokens.InkStrong, fontSize = 15.sp,
+            modifier = Modifier.padding(start = 9.dp)
+        )
     }
 }

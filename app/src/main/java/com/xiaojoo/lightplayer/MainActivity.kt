@@ -1,6 +1,7 @@
 package com.xiaojoo.lightplayer
 
 import android.Manifest
+import android.content.ContentUris
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.app.Activity
@@ -47,6 +48,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
+import com.xiaojoo.lightplayer.data.ArticlePack
+import com.xiaojoo.lightplayer.data.BoardTab
 import com.xiaojoo.lightplayer.data.MediaLibrary
 import com.xiaojoo.lightplayer.data.Appearance
 import com.xiaojoo.lightplayer.data.FavoritePlaylistRepository
@@ -80,6 +83,7 @@ import com.xiaojoo.lightplayer.recognizer.wavMono16
 import com.xiaojoo.lightplayer.videosource.ApiQuality
 import com.xiaojoo.lightplayer.videosource.ApiSong
 import com.xiaojoo.lightplayer.videosource.ApiSource
+import com.xiaojoo.lightplayer.videosource.ChuiziArticle
 import com.xiaojoo.lightplayer.videosource.DownloadTarget
 import com.xiaojoo.lightplayer.videosource.MagnetFile
 import com.xiaojoo.lightplayer.videosource.MagnetLink
@@ -128,6 +132,7 @@ import com.xiaojoo.lightplayer.ui.BottomBar
 import com.xiaojoo.lightplayer.ui.FilterPage
 import com.xiaojoo.lightplayer.ui.TrackListPage
 import com.xiaojoo.lightplayer.ui.Tokens
+import com.xiaojoo.lightplayer.ui.ArticlePage
 import com.xiaojoo.lightplayer.ui.ArtistListPage
 import com.xiaojoo.lightplayer.ui.ArtistSearchPage
 import com.xiaojoo.lightplayer.ui.ArtistSongsPage
@@ -138,6 +143,7 @@ import com.xiaojoo.lightplayer.ui.LocalSearchPage
 import com.xiaojoo.lightplayer.ui.MineScreen
 import com.xiaojoo.lightplayer.ui.PlaylistListPage
 import com.xiaojoo.lightplayer.ui.VideoFeed
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -332,6 +338,59 @@ private const val MUSIC_ONLINE_SONGS = 30
  * 四张的报文一共 1.6MB（热歌榜 618KB、新歌榜 330KB、飙升榜 312KB、原创榜 338KB）。
  */
 private const val HOT_MUSIC_PER_BOARD = 50
+
+/**
+ * 首页「音乐文章」那一排一批摆几张卡。站点那一页一共 19 篇，一张卡要扒一页 HTML 才拿到那三行歌名，
+ * 所以**按批问**（一批 6 次请求），滑到栏尾再要下一批 —— 和「精选视频」那一栏同一个节奏。
+ */
+private const val ARTICLE_PAGE_SIZE = 6
+
+/**
+ * 「音乐文章」那一排的分批：站点那份索引（19 条，一次请求）先整份到手，卡再一批 [ARTICLE_PAGE_SIZE] 张地往里添。
+ *
+ * 一批 = 6 页 HTML（索引里只有标题/封面，卡上那三行真歌名要各问一页）。在飞的时候再叫是空转；
+ * 索引取完就没得问了，到头不再请求。已到手的按 `pageUrl` 认人 —— 那一排没有稳定 id，页面地址就是它的身份。
+ *
+ * 写成类而不是 `App` 里三个 `remember` + 一个本地函数：10-28 那一版就是这样把 `App` 又顶过了
+ * JVM 64KB 方法上限（Method too large）。
+ */
+private class ArticlePager(private val scope: CoroutineScope) {
+    /** 已到手的卡（连歌）：一首歌都没问到的那种不进来，空的一排不摆 */
+    var cards by mutableStateOf<List<ArticlePack>>(emptyList())
+        private set
+
+    /** 下一批在路上：栏尾那一格竖三点亮着（一次只让一批在飞） */
+    var loading by mutableStateOf(false)
+        private set
+
+    private var index: List<ChuiziArticle> = emptyList()
+
+    /** 歌一首都没读到、因此不摆的那种（站点的教程/公告贴）。记下它是为了下一批别再把它捞回来问一遍 ——
+        它进不了 `cards`，只按"没到手"筛的话每一批都会把它重新挑进去，永远问不完。 */
+    private val noSongs = mutableSetOf<String>()
+
+    /** 整份索引到手：装上并立刻要第一批 */
+    fun start(list: List<ChuiziArticle>) {
+        index = list
+        next()
+    }
+
+    fun next() {
+        if (loading) return
+        val batch = index
+            .filter { a -> a.pageUrl !in noSongs && cards.none { it.article.pageUrl == a.pageUrl } }
+            .take(ARTICLE_PAGE_SIZE)
+        if (batch.isEmpty()) return
+        loading = true
+        scope.launch {
+            val packs = withContext(Dispatchers.IO) { batch.map { Online.chuiziArticlePack(it) } }
+            noSongs += packs.filter { it.songs.isEmpty() }.map { it.article.pageUrl }
+            cards = cards + packs.filter { it.songs.isNotEmpty() }
+            loading = false
+        }
+    }
+}
+
 
 @Composable
 private fun App(
@@ -569,6 +628,19 @@ private fun App(
     var musicHotBusy by remember { mutableStateOf(false) }
     /** 「获取」那一趟的一句话：拿到几条、或为什么不通。写在抽屉里，不弹吐司 */
     var musicHotNote by remember { mutableStateOf<String?>(null) }
+    /**
+     * 首页那三块浏览表（最新入库 / 本周榜 / 本月榜）：表头 + 那一表拉回来的条目。
+     * 锤子那一路被关掉或删掉时 [Online.chuiziBoard] 回空 → 这里就是空表 → 首页那几块整块不摆。
+     */
+    var chuiziBoards by remember {
+        mutableStateOf<List<Pair<BoardTab, List<MusicVideo>>>>(emptyList())
+    }
+    /** 站点「文章」那一排：卡（连歌）按批往这里添，滑到栏尾再要下一批 */
+    val articles = remember { ArticlePager(scope) }
+    /** 现在开着的那一篇（歌跟着卡片一起问回来的，点进去不再问第二次） */
+    var articleOpen by remember { mutableStateOf<ArticlePack?>(null) }
+    /** 整段起播在路上：那一颗按下去先锁住，N 首的换址没走完不许再点一次 */
+    var musicOnlinePlayingAll by remember { mutableStateOf(false) }
     /** 在线音乐那两屏（源页的热歌 + 播放页右滑第三页）正在存盘的那一条的 key。
      *  两屏共用一颗：一次只让一条在下，免得同一个歌名两次写到同一个文件上打架 */
     var musicOnlineDownloading by remember { mutableStateOf<String?>(null) }
@@ -2180,7 +2252,8 @@ private fun App(
     fun sourceRows(): List<SourceRow> = listOf(
         SourceRow("netease", "网易云", musicBaseUrl.trim().ifBlank { Online.MUSIC_DEFAULT_BASE } + "/"),
         // 这一路没有默认列表（空词实测回 400），预览那批里它一条都不贡献 —— 芯片上不写那个 0
-        SourceRow("chuizi", "锤子音乐", "https://chuizi.org/", hasDefaultList = false),
+        // 它的默认列表 = 站点那一排「最新入库」（10-28 量到那一口通；搜索口空词仍回 400，见 ChuiziSource）
+        SourceRow("chuizi", "锤子音乐", "https://chuizi.org/", hasDefaultList = true),
     ).filterNot { it.id in removedMusic }.map { it.copy(enabled = it.id !in goneMusic) }
 
     /**
@@ -2275,6 +2348,96 @@ private fun App(
     }
 
     /**
+     * 拉那三张浏览表（最新入库 / 本周榜 / 本月榜）：一次问三口，哪一口挂了少一颗芯片，不带走其余
+     * （和「热门音乐」那四张榜同一个写法）。它们都摆在「热门音乐」那一屏「全部」上面那一排芯片里，
+     * 不单开首页卡片（两处入口 = 重复，他 10-28 点的）。一次问满 60 条 = 那一屏一整屏要的数。
+     * 已经拉到过就不再问（这一路没有"换地址"那一颗，重拉走首页往下拽那一下）。
+     *
+     * 「音乐文章」的第一批也挂在这一趟后面：索引到手才问得到那 6 张卡的歌
+     * （10-28 之前写成在这句 `launch` 外面叫，索引还没到手，等于一次也没跑过）。
+     */
+    fun fetchChuiziBoards() {
+        if (chuiziBoards.isNotEmpty()) return
+        scope.launch {
+            chuiziBoards = Online.CHUIZI_BOARDS.map { tab ->
+                tab to withContext(Dispatchers.IO) {
+                    runCatching { Online.chuiziBoard(tab.url, 60) }.getOrDefault(emptyList())
+                }
+            }.filter { it.second.isNotEmpty() }
+            articles.start(withContext(Dispatchers.IO) {
+                runCatching { Online.chuiziArticles() }.getOrDefault(emptyList())
+            })
+        }
+    }
+
+    /** 点开一篇文章：卡片那趟已经把歌问回来了，这一句只是把这一篇交给那一屏 */
+    fun openArticle(pack: ArticlePack) {
+        articleOpen = pack
+        openPage("article:" + pack.article.pageUrl)
+    }
+
+    /**
+     * 整段起播一串在线条目（文章详情那屏那颗「▶ 全部播放」、排行榜卡上那枚圆钮）。
+     *
+     * 这一路本来没有"整段"这个口：列表上点一行只播那一首（在线条目要现换址，整段就得先逐首换）。
+     * 这里是**逐首现换址：第一首播起来，其余一边解一边往队尾接**。
+     * 反过来的写法（整串解完才交给播放器）真机上量过：12 首那一篇要等约 30 秒才出声，
+     * 屏幕上一个字都不动 —— 一张 60 首的表按同一速度是两分半，人只会以为没按到。
+     * 会员歌和失效号会换不到 —— 换不到的不占格子，最后用一句吐司报清"几首排进去了、几首没取到址"，
+     * 不写就是让人以为站点少给了歌。
+     */
+    fun playMusicOnlineAll(list: List<MusicVideo>) {
+        if (list.isEmpty() || musicOnlinePlayingAll) return
+        musicOnlinePlayingAll = true
+        scope.launch {
+            var got = 0
+            var miss = 0
+            list.forEach { v ->
+                val ok = when (val out = withContext(Dispatchers.IO) { Online.resolve(v) }) {
+                    is ResolveOutcome.Ready -> Online.mediaItem(v, out.playable)
+                    else -> null
+                }
+                val track = ok?.let { Online.trackOf(it, isVideo = false) }
+                if (ok == null || track == null) { miss++; return@forEach }
+                if (got == 0) {
+                    // 第一首：整串交给播放器（这一句负责接管音频那一路、把队列面板一起带过去）
+                    playItems(listOf(ok), listOf(track), toVideo = false)
+                } else {
+                    // 往后的：接到队尾。队列面板读的是 queueTracks，只动播放器那一侧会漏一格
+                    PlayerPool.audioPlayer()?.addMediaItem(ok)
+                    queueTracks = queueTracks + track
+                }
+                got++
+            }
+            musicOnlinePlayingAll = false
+            when {
+                got == 0 -> android.widget.Toast.makeText(context,
+                    "${list.size} 首都没取到地址", android.widget.Toast.LENGTH_SHORT).show()
+                miss > 0 -> android.widget.Toast.makeText(context,
+                    "排进 $got 首，另有 $miss 首没取到址", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** 收藏整篇（那颗「♥ 收藏(N)」）：走同一颗 [toggleOnlineFav] 的账，但**已经在收藏里的跳过** ——
+     *  不然再点一下就把它们一首首取消掉了。 */
+    fun favoriteAllOnline(list: List<MusicVideo>) {
+        if (list.isEmpty()) return
+        var added = 0
+        list.forEach { v -> if (v.pageUrl !in favorites) { favRepo.toggle(v.pageUrl); added++ } }
+        favorites = favRepo.all()
+        android.widget.Toast.makeText(context,
+            if (added == 0) "这一篇 ${list.size} 首都已经在收藏里" else "已收藏 $added 首（这一篇共 ${list.size} 首）",
+            android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** 在线条目按**页地址**收藏（直链带有效期，存地址两天就解不开）。三屏共用这一颗 */
+    fun toggleOnlineFav(v: MusicVideo) {
+        favRepo.toggle(v.pageUrl)
+        favorites = favRepo.all()
+    }
+
+    /**
      * 首页那一屏往下拽：**旧的先摆着不动**，把「精选视频」的批次账抹回 0（page=0 就是"下一批是重问的第一批，
      * 到手换掉整面墙"，见 [loadMusicPicks]），再问一次第一批 —— 所以拽这一下不会先把横幅和那一栏清空、
      * 也不会把落点从轮播图上挪走（他 10-26 点的就是这个）。新第一批到手才整面换掉。
@@ -2287,6 +2450,9 @@ private fun App(
         musicOnlinePickDone = false
         loadMusicPicks(next = false)
         fetchMusicHot()
+        // 往下拽那一下也要能重问那三块浏览表：清空了再拉（拉那一颗自己挡着"已经有了就不问"）
+        chuiziBoards = emptyList()
+        fetchChuiziBoards()
     }
 
     /**
@@ -2303,6 +2469,17 @@ private fun App(
         refreshLibrary()
     }
 
+    /* 在线那几屏行上那几颗动作（播 / 加队列 / 存盘 / 收藏 / 这条收藏了没有）：原来是每一屏各写一遍
+       lambda，十七处加起来把 `App` 顶在 JVM 单方法 64KB 的字节数上限上（10-28 接首页文章那一排就是
+       编不过，报 `Method too large`）。这里造一次、各处只递引用 —— 屏的签名一个字没动，
+       改的只有调用点。收藏那两颗读 `favorites`，所以跟着它换。 */
+    val playOnline: (MusicVideo) -> Unit = remember { { v -> playMusicOnline(v) } }
+    val queueOnline: (MusicVideo) -> Unit = remember { { v -> queueMusicOnline(v) } }
+    val downloadOnlineSong: (MusicVideo) -> Unit = remember { { v -> downloadMusicOnline(v) } }
+    val toggleOnlineFavOf: (MusicVideo) -> Unit = remember { { v -> toggleOnlineFav(v) } }
+    val isFavOnline: (MusicVideo) -> Boolean = remember(favorites) { { v -> v.pageUrl in favorites } }
+    val playAllOnline: (List<MusicVideo>) -> Unit = remember { { l -> playMusicOnlineAll(l) } }
+    val favAllOnline: (List<MusicVideo>) -> Unit = remember { { l -> favoriteAllOnline(l) } }
     /* 转环收不停在「路上那几格」上：拽出来的那一趟结束了（路上的标记全落下来）才收回。
        分开两份账是因为冷启动那一批本来就在路上 —— 拿它当"正在刷新"，首页一进来顶上就挂一枚。 */
     LaunchedEffect(homeRefreshing, musicOnlinePickBusy, musicHotBusy) {
@@ -2317,6 +2494,7 @@ private fun App(
     LaunchedEffect(tab, page) {
         if ((tab == AppTab.Home || page == "home-hot" || page == "music-source") && musicHot.isEmpty())
             fetchMusicHot()
+        if ((tab == AppTab.Home || page == "home-hot") && chuiziBoards.isEmpty()) fetchChuiziBoards()
     }
 
 
@@ -2442,6 +2620,15 @@ private fun App(
         }
         android.widget.Toast.makeText(context, "已加入播放列表 ${ts.size} 项", android.widget.Toast.LENGTH_SHORT).show()
     }
+
+    /* 本地条目的收藏 / 加队列 / 整段播放：五处屏上写的是字面一样的几行，收成一颗（同上：`App` 那个 64KB 的账）。
+       加队列那颗的 key 是 `controller`：那个 `val` 首帧还是 null（MediaController 是异步接上来的），
+       `remember {}` 不留 key 就会把 null 冻进去 —— 点「加入播放列表」会静默变成"从头起播这一条"。 */
+    val toggleLocalFav: (Track) -> Unit = remember {
+        { t -> favRepo.toggle(t.uri.toString()); favorites = favRepo.all() }
+    }
+    val queueLocal: (Track) -> Unit = remember(controller) { { t -> queueAppend(t) } }
+    val playLocalList: (List<Track>, Int) -> Unit = remember { { l, i -> startPlaylist(l, i) } }
 
     fun playPlaylistAt(p: Playlist, index: Int) {
         val tracks = MediaLibrary.resolve(context, p.uris)
@@ -2594,6 +2781,61 @@ private fun App(
         entriesOf(audioPlayer, audioPlayer?.currentMediaItemIndex ?: -1)
     }
 
+    /* 播放历史记在**壳层**，不记在播放页：那一屏只有切到「音乐」页签才在组合里，
+       从「我的」/首页/任何一屏打开的歌单点一首歌，历史一条都不记（2026-10-28 他点出来的：
+       放了一首又一首，历史里还停在上一次在音乐页换歌时那一首）。
+
+       判据是"真开始出声"，不是"换了条目"：冷启动会把上一串队列**暂停**地装回来（见下面那条
+       LaunchedEffect），按换条目记的话每次开 app 都会把第一首塞进历史。
+       在线直链不记：那是带签名的地址，两天后点这一行解不开 —— 和队列恢复不收在线条目同一条道理。 */
+    DisposableEffect(audioPlayer) {
+        val p = audioPlayer ?: return@DisposableEffect onDispose { }
+        fun localUriOf(pl: Player): Uri? =
+            pl.currentMediaItem?.localConfiguration?.uri
+                ?.takeIf { it.scheme != "http" && it.scheme != "https" }
+        fun notePlayed() {
+            val uri = localUriOf(p) ?: return
+            val md = p.mediaMetadata
+            PlayHistory.record(
+                context,
+                Track(
+                    id = runCatching { ContentUris.parseId(uri) }.getOrDefault(0L),
+                    uri = uri,
+                    name = (md.title ?: md.displayTitle)?.toString()?.takeIf { it.isNotBlank() }
+                        ?: displayName(context, uri),
+                    artist = md.artist?.toString()?.takeIf { it.isNotBlank() },
+                    durationMs = md.durationMs?.takeIf { it > 0 } ?: p.duration.coerceAtLeast(0L),
+                    sizeBytes = 0L,
+                    isVideo = QueueEntry.isVideoUri(uri.toString())
+                )
+            )
+            // 首页「最近播放」和那一屏列表读的都是这一份：记完当场换掉，不等切页签
+            history = PlayHistory.list(context)
+        }
+        val l = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) notePlayed()
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                // 自动接下一首时 playWhenReady 已经是 true、isPlaying 不再翻一次
+                if (p.playWhenReady) notePlayed()
+            }
+
+            override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) {
+                // 本地条目切条那一刻名字/歌手还没解析出来，到了再补记一次（同一条按 uri 认人，不会多一行）
+                if (p.isPlaying) notePlayed()
+            }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                val uri = localUriOf(p) ?: return
+                if (state == Player.STATE_READY) PlayHistory.updateDuration(context, uri, p.duration)
+            }
+        }
+        p.addListener(l)
+        onDispose { p.removeListener(l) }
+    }
+
     // 视频页按了「全屏播放」就要把 App 自己的底栏也收掉，所以这个开关得放在壳层
     var videoFullscreen by remember { mutableStateOf(false) }
     /** 「视频地址源」那一屏开没开。开的时候底部那行页签要藏掉，所以这个开关必须在壳层 */
@@ -2708,20 +2950,46 @@ private fun App(
             } else if (page == "video-blacklist") {
                 VideoBlacklistPage(
                     rows = blacklist,
-                    sourceLabel = { id -> Online.sourceLabel(id) },
+                    sourceLabel = sourceLabelOf,
                     onRemove = { removeBlacklisted(it) },
                     onBack = { leavePage() }
                 )
-            } else if (page == "home-hot") {
+            } else if (page == "home-hot" || page?.startsWith("board:") == true) {
+                // 「热门音乐」和站点那三张表是同一屏形状：表名当大标题、那一批当内容。
+                // 一处调用点（不是两支各写一遍）—— App 那方法顶在 JVM 64KB 上，多一份就红一次
+                val board = chuiziBoards.firstOrNull { "board:" + it.first.url == page }
                 HotMusicPage(
-                    hot = musicHot,
+                    hot = board?.second ?: musicHot,
+                    title = board?.first?.title ?: "热门音乐",
+                    orderNote = board?.first?.note ?: "按发布时间",
+                    // 表那一屏给横幅：小字写这一表是谁家的、按什么排（站点真报的那一句），
+                    // 铺底和右端那一方都用这一表第一条的封面 —— 表自己没有一张"表头图"，不编一张
+                    heroKicker = board?.first?.let { "锤子音乐 · ${it.note}" },
+                    heroCover = board?.second?.firstOrNull()?.artworkUrl,
+                    onPlayAll = playAllOnline,
+                    // 横幅底下那两颗和文章那一屏同一个来路（在线收藏那一份集合）
+                    isFavorite = isFavOnline,
+                    onFavoriteAll = favAllOnline,
                     playingId = musicOnlinePlayingId(),
-                    sourceLabel = { id -> Online.sourceLabel(id) },
+                    sourceLabel = sourceLabelOf,
                     downloadingKey = musicOnlineDownloading,
-                    onPlay = { v -> playMusicOnline(v) },
-                    onQueue = { v -> queueMusicOnline(v) },
-                    onDownload = { v -> downloadMusicOnline(v) },
+                    onPlay = playOnline,
+                    onQueue = queueOnline,
+                    onDownload = downloadOnlineSong,
                     onBack = { leavePage() },
+                    bottomInset = !showBar,
+                )
+            } else if (page?.startsWith("article:") == true) {
+                ArticlePage(
+                    pack = articleOpen,
+                    playingId = musicOnlinePlayingId(),
+                    isFavorite = isFavOnline,
+                    onBack = { leavePage() },
+                    onPlay = playOnline,
+                    onQueue = queueOnline,
+                    onToggleFavorite = toggleOnlineFavOf,
+                    onPlayAll = playAllOnline,
+                    onFavoriteAll = favAllOnline,
                     bottomInset = !showBar,
                 )
             } else if (page == "api-search") {
@@ -2766,7 +3034,7 @@ private fun App(
                     renditions = dlRends,
                     picked = dlPick,
                     onPick = { dlPick = it.label },
-                    sourceLabel = { id -> Online.sourceLabel(id) },
+                    sourceLabel = sourceLabelOf,
                     // 认完才按得动：还在问站点就让它灰着，这时按下去拿的是上一条的地址
                     canStart = (dlEntry != null || dlDirect || dlMagnetFiles.isNotEmpty()) && !dlBusy,
                     tasks = videoDownloads.tasks.toList(),
@@ -2812,13 +3080,13 @@ private fun App(
                     hits = recHits,
                     playingId = musicOnlinePlayingId(),
                     downloadingKey = musicOnlineDownloading,
-                    sourceLabel = { id -> Online.sourceLabel(id) },
+                    sourceLabel = sourceLabelOf,
                     micGranted = micGranted,
                     onRun = { runRecognize() },
                     onAskMic = { askMic.launch(android.Manifest.permission.RECORD_AUDIO) },
-                    onPlay = { v -> playMusicOnline(v) },
-                    onQueue = { v -> queueMusicOnline(v) },
-                    onDownload = { v -> downloadMusicOnline(v) },
+                    onPlay = playOnline,
+                    onQueue = queueOnline,
+                    onDownload = downloadOnlineSong,
                     baseUrl = recBase,
                     onBaseUrl = { recBase = it },
                     model = recModel,
@@ -2846,11 +3114,11 @@ private fun App(
                     // 整批递过去：芯片上那个数是这一路的真条数，这一屏底下那份预览自己截前 30 首
                     pool = musicHot,
                     playingId = musicOnlinePlayingId(),
-                    onPlay = { v -> playMusicOnline(v) },
+                    onPlay = playOnline,
                     onToggleSource = { id -> toggleMusicSource(id) },
                     onDelete = { id -> deleteMusicSource(id) },
-                    onQueue = { v -> queueMusicOnline(v) },
-                    onDownload = { v -> downloadMusicOnline(v) },
+                    onQueue = queueOnline,
+                    onDownload = downloadOnlineSong,
                     downloadingKey = musicOnlineDownloading,
                     onBack = { commitMusicBase(); leavePage() },
                     bottomInset = !showBar,
@@ -2871,15 +3139,12 @@ private fun App(
                     onQuery = { artistQuery = it },
                     onBack = { leavePage() },
                     onOpen = { a -> openPage("artist:" + a.name, from = "artists") },
-                    onPlay = { v -> playMusicOnline(v) },
-                    onQueue = { v -> queueMusicOnline(v) },
+                    onPlay = playOnline,
+                    onQueue = queueOnline,
                     // 和名下那一屏同一颗：在线条目按**页地址**收藏（直链带有效期，存地址两天就解不开）
-                    onToggleFavorite = { v ->
-                        favRepo.toggle(v.pageUrl)
-                        favorites = favRepo.all()
-                    },
-                    isFavorite = { v -> v.pageUrl in favorites },
-                    onDownload = { v -> downloadMusicOnline(v) },
+                    onToggleFavorite = toggleOnlineFavOf,
+                    isFavorite = isFavOnline,
+                    onDownload = downloadOnlineSong,
                     downloadingKey = musicOnlineDownloading,
                     bottomInset = !showBar,
                 )
@@ -2890,14 +3155,11 @@ private fun App(
                     artist = onlineArtists.firstOrNull { it.name == artistName },
                     name = artistName,
                     onBack = { leavePage() },
-                    onPlay = { v -> playMusicOnline(v) },
-                    onQueue = { v -> queueMusicOnline(v) },
+                    onPlay = playOnline,
+                    onQueue = queueOnline,
                     // 在线条目按**页地址**收藏：直链带有效期，存进去两天就解不开了
-                    onToggleFavorite = { v ->
-                        favRepo.toggle(v.pageUrl)
-                        favorites = favRepo.all()
-                    },
-                    isFavorite = { v -> v.pageUrl in favorites },
+                    onToggleFavorite = toggleOnlineFavOf,
+                    isFavorite = isFavOnline,
                 )
             } else if (page == "search") {
                 /* 列表屏那支放大镜点进来的独立一屏（原来是复用列表组件的搜索态，看着像没换页）。
@@ -2913,12 +3175,9 @@ private fun App(
                         (sourcePage == "favorites" && favTab == 1) ||
                         (sourcePage == "history" && histTab == 1),
                     favorites = favorites,
-                    onToggleFavorite = { t ->
-                        favRepo.toggle(t.uri.toString())
-                        favorites = favRepo.all()
-                    },
-                    onQueueAdd = { t -> queueAppend(t) },
-                    onPlayList = { tracks, index -> startPlaylist(tracks, index) },
+                    onToggleFavorite = toggleLocalFav,
+                    onQueueAdd = queueLocal,
+                    onPlayList = playLocalList,
                     onBack = { leavePage() },
                     bottomInset = !showBar,
                 )
@@ -2928,20 +3187,17 @@ private fun App(
                     onKeyword = { localSearchQuery = it },
                     songs = audioTracks,
                     videos = videoTracks,
-                    onPlayList = { tracks, index -> startPlaylist(tracks, index) },
+                    onPlayList = playLocalList,
                     favorites = favorites,
-                    onToggleFavorite = { t ->
-                        favRepo.toggle(t.uri.toString())
-                        favorites = favRepo.all()
-                    },
-                    onQueueAdd = { t -> queueAppend(t) },
+                    onToggleFavorite = toggleLocalFav,
+                    onQueueAdd = queueLocal,
                     // 第三颗范围芯片：名字取源自己报的那个：这一路被删掉就整颗不出现
                     // 那一路被禁用/删掉时 sourceLabel 回 null（注册表把它筛掉了）：芯片整颗不出现
                     onlineLabel = Online.sourceLabel("chuizi"),
                     askOnline = { w -> withContext(Dispatchers.IO) { Online.searchChuizi(w, MUSIC_ONLINE_SONGS) } },
-                    onPlayOnline = { v -> playMusicOnline(v) },
-                    onQueueOnline = { v -> queueMusicOnline(v) },
-                    onDownloadOnline = { v -> downloadMusicOnline(v) },
+                    onPlayOnline = playOnline,
+                    onQueueOnline = queueOnline,
+                    onDownloadOnline = downloadOnlineSong,
                     downloadingKey = musicOnlineDownloading,
                     // 在线条目按页地址收（和歌手那两屏同一颗）
                     onToggleOnlineFavorite = { v ->
@@ -2977,14 +3233,11 @@ private fun App(
                     onRequestPermission = onAskMediaPermission,
                     // 多选态里第一下返回退多选、不是退这一页（和后面那颗 BackHandler 同一只 exitMulti）
                     onBack = { if (multiSel) exitMulti() else leavePage() },
-                    onPlayList = { tracks, index -> startPlaylist(tracks, index) },
+                    onPlayList = playLocalList,
                     onAddToPlaylist = { pendingAdd = it },
-                    onQueueAdd = { t -> queueAppend(t) },
+                    onQueueAdd = queueLocal,
                     favorites = favorites,
-                    onToggleFavorite = { t ->
-                        favRepo.toggle(t.uri.toString())
-                        favorites = favRepo.all()
-                    },
+                    onToggleFavorite = toggleLocalFav,
                     pinned = pinned,
                     onPin = { t ->
                         pinned = Pinned.toggleIn(pinned, t.uri.toString())
@@ -3068,21 +3321,25 @@ private fun App(
                     onVideoDownload = { openPage("download") },
                     onRecognize = { openPage("recognize") },
                     onOpenPlaylist = { p -> openPage("pl:" + p.id) },
-                    onPlayList = { ts, i -> startPlaylist(ts, i) },
-                    onToggleFavorite = { t ->
-                        favRepo.toggle(t.uri.toString())
-                        favorites = favRepo.all()
-                    },
-                    sourceLabel = { id -> Online.sourceLabel(id) },
+                    onPlayList = playLocalList,
+                    onToggleFavorite = toggleLocalFav,
+                    sourceLabel = sourceLabelOf,
                     downloadingKey = musicOnlineDownloading,
-                    onPlayPick = { v -> playMusicOnline(v) },
+                    onPlayPick = playOnline,
                     // 横幅和「精选视频」那两列走视频那一路，且**留在首页**：起播之后由迷你条带过去
                     onPlayVideoPick = { v -> playOnline(v, open = false) },
                     onPicksMore = { loadMusicPicks(next = true) },
                     picksLoading = musicOnlinePickBusy && !musicOnlinePickDone,
-                    onQueuePick = { v -> queueMusicOnline(v) },
-                    onDownloadPick = { v -> downloadMusicOnline(v) },
+                    onQueuePick = queueOnline,
+                    onDownloadPick = downloadOnlineSong,
                     onMoreHot = { openPage("home-hot") },
+                    articles = articles.cards,
+                    onOpenArticle = { openArticle(it) },
+                    onArticleMore = { articles.next() },
+                    articlesLoading = articles.loading,
+                    boards = chuiziBoards,
+                    onOpenBoard = { openPage("board:" + it.url) },
+                    onPlayBoard = playAllOnline,
                     onRefresh = { refreshHome() },
                     refreshing = homeRefreshing,
                 )
@@ -3102,9 +3359,9 @@ private fun App(
                     // （「在线音乐源」那一屏），摆在这一屏就是一句说不出是谁的错
                     onlineError = musicOnlineSongsNote,
                     onlinePlayingId = musicOnlinePlayingId(),
-                    onOnlinePlay = { v -> playMusicOnline(v) },
-                    onOnlineQueue = { v -> queueMusicOnline(v) },
-                    onOnlineDownload = { v -> downloadMusicOnline(v) },
+                    onOnlinePlay = playOnline,
+                    onOnlineQueue = queueOnline,
+                    onOnlineDownload = downloadOnlineSong,
                     onlineDownloadingKey = musicOnlineDownloading,
                     // 这一屏不再给「重试」那颗，但滑到这一页 / 换歌还是要自动问一次（触发在 PlayerScreen）
                     onOnlineSongsFetch = { fetchMusicOnlineSongs() },
@@ -3122,10 +3379,7 @@ private fun App(
                     fullscreen = videoFullscreen,
                     onFullscreenChange = { videoFullscreen = it },
                     favorites = favorites,
-                    onToggleFavorite = { t ->
-                        favRepo.toggle(t.uri.toString())
-                        favorites = favRepo.all()
-                    },
+                    onToggleFavorite = toggleLocalFav,
                     onOpenQueue = { queueRoute = QueueRoute.Video },
                     onOpenOnline = { t -> openRelatedVideos(t) },
                     onAddUrl = { u -> addUrl(u) },
@@ -3197,7 +3451,7 @@ private fun App(
                     history = history,
                     songs = audioTracks,
                     videos = videoTracks,
-                    onPlayList = { tracks, index -> startPlaylist(tracks, index) },
+                    onPlayList = playLocalList,
                     onOpenHistory = { t ->
                         if (t != null) histTab = t
                         page = "history"
@@ -3436,3 +3690,11 @@ private fun onlineTrackOf(v: MusicVideo): Track = Track(
     sizeBytes = -1L,
     isVideo = true,
 )
+
+
+/**
+ * 界面那一行"这一条来自哪家"的那一格。五处调用点写的本来是同一个 lambda，抽成一份常量：
+ * 除了不重复五遍，更实在的是给 `App` 那个方法省下五份 lambda 的字节数 —— 它顶在 JVM
+ * 单方法 64KB 的字节数上限上（10-28 首页加榜单那几块时就编不过一次）。
+ */
+private val sourceLabelOf: (String) -> String? = { id -> Online.sourceLabel(id) }
