@@ -276,13 +276,9 @@ fun PlayerScreen(
         Skin.cover.value = cover
     }
 
+    /* 那一格只由这一屏自己写（onPage）、只在重新进来时读一次（initialPage）：
+       离开音乐页再回来，还停在你上次看的那一格（封面 / 歌词 / 在线）。 */
     val pagerState = rememberPagerState(initialPage = startPage, pageCount = { 3 })
-
-    /* 外面改了 startPage 要跟着翻：通知上那颗「歌词」落下来就是改它（播放页一直挂着时
-       initialPage 只在第一次组合有用，它不会回头看那个参数）。 */
-    LaunchedEffect(startPage) {
-        if (pagerState.currentPage != startPage) pagerState.scrollToPage(startPage)
-    }
 
     /* 画幅档开着：整屏背景是那张图，这一屏的字全走白的那一套。
        第三页（在线）不算：那一屏是列表，栏头那几行压在图上读不清，它照旧用页底那档灰。 */
