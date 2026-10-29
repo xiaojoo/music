@@ -2049,10 +2049,11 @@ private fun App(
                             base == null -> "读不回那首歌的名字"
                             asked?.exceptionOrNull() != null ->
                                 "没问到：${asked.exceptionOrNull()?.message ?: asked.exceptionOrNull()}"
-                            // 歌词接口目前只有网易云那一路有（`Online.musicLyric` 按 sourceId 筛）：
-                            // 别的路要说"这一路没问"，不能把它写成"网易云没给"
-                            lyric == null && v.sourceId != "netease" -> "歌词只问网易云那一路，这一路没问"
-                            lyric == null -> "网易云没给这首的歌词"
+                            // 词口按 sourceId 分派（`Online.musicLyric`）：没有那一口的路要说"没去问"，
+                            // 有那一口但站里空着的要说"这一路没给"，两句不能混成一句
+                            lyric == null && !Online.hasLyricApi(v.sourceId) ->
+                                "${sourceLabelOf(v.sourceId) ?: v.sourceId}没有歌词接口，没去问"
+                            lyric == null -> "${sourceLabelOf(v.sourceId) ?: "站点"}没给这首的歌词"
                             inTree == null && inDocs == null -> "两个落点都写不进（歌词文件夹、Documents）"
                             else -> null
                         }

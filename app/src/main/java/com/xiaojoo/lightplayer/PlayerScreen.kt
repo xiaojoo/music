@@ -70,6 +70,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.xiaojoo.lightplayer.data.Appearance
 import com.xiaojoo.lightplayer.data.MediaLibrary
+import com.xiaojoo.lightplayer.data.Online
 import com.xiaojoo.lightplayer.data.PlayHistory
 import com.xiaojoo.lightplayer.data.Track
 import com.xiaojoo.lightplayer.ui.IconKind
@@ -148,6 +149,8 @@ fun PlayerScreen(
     var artist by remember { mutableStateOf<String?>(null) }
     var cover by remember { mutableStateOf<ImageBitmap?>(null) }
     var currentUri by remember { mutableStateOf<Uri?>(null) }
+    // 眼前这一条在线条目的原样（网易云/锤子各有词口，要拿站内号去问）：跟着 currentUri 一起换
+    var onlineItem by remember { mutableStateOf<androidx.media3.common.MediaItem?>(null) }
     var repeatMode by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
     var modeSheet by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -197,6 +200,7 @@ fun PlayerScreen(
                 title = titleOf(audio, context)
                 artist = audio?.mediaMetadata?.artist?.toString()
                 currentUri = item?.localConfiguration?.uri
+                onlineItem = item
                 trackWarning = audio?.let { unsupportedTrackOf(it) }
                 // 历史不在这里记：这一屏只有切到「音乐」页签才在组合里，记在这儿等于别的屏点的歌都不算
                 // （2026-10-28 挪到 MainActivity 的壳层，见那边那条 DisposableEffect）
@@ -230,6 +234,7 @@ fun PlayerScreen(
         title = titleOf(c, context)
         artist = c.mediaMetadata.artist?.toString()
         currentUri = c.currentMediaItem?.localConfiguration?.uri
+        onlineItem = c.currentMediaItem
         onDispose { c.removeListener(playerListener) }
     }
 
@@ -246,14 +251,16 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(currentUri, lyricTreeUri) {
+    LaunchedEffect(currentUri, lyricTreeUri, onlineItem) {
         val uri = currentUri
         if (uri == null) {
             lyrics = emptyList()
             lyricSource = null
             return@LaunchedEffect
         }
-        val hit = withContext(Dispatchers.IO) { lyricFor(context, uri, lyricTreeUri, title, artist) }
+        val hit = withContext(Dispatchers.IO) {
+            lyricFor(context, uri, lyricTreeUri, title, artist, Online.videoOfItem(onlineItem))
+        }
         lyrics = hit.text?.let { Lrc.parse(it) }.orEmpty()
         lyricSource = hit.status
     }
@@ -585,11 +592,13 @@ private fun StripLine(text: String, active: Boolean, onArt: Boolean) {
 private fun LyricStrip(lines: List<LyricLine>, positionMs: Long, onArt: Boolean) {
     if (lines.isEmpty()) return
     val state = rememberLazyListState()
-    val current = Lrc.indexAt(lines, positionMs).coerceAtLeast(0)
+    /* 整段没有时间戳的那一族：这一条不跟读，所以**哪一行都不当"当前句"**（-1 = 全不点亮）。
+       拿 0 顶着用的话，正中那一格永远写着第一行（常是「作词：xxx」）还加粗，看着像在跟唱。 */
+    val current = if (Lrc.synced(lines)) Lrc.indexAt(lines, positionMs).coerceAtLeast(0) else -1
     val slot = Tokens.Dimen.LyricStripSlot
 
     LaunchedEffect(current, lines) {
-        state.animateScrollToItem(current)
+        if (current >= 0) state.animateScrollToItem(current)
     }
 
     LazyColumn(

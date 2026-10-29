@@ -8,6 +8,7 @@ import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
 import com.xiaojoo.lightplayer.data.Online
 import com.xiaojoo.lightplayer.videosource.NamedLyric
+import com.xiaojoo.lightplayer.videosource.MusicVideo
 import java.io.File
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
@@ -16,33 +17,70 @@ data class LyricLine(val timeMs: Long, val text: String)
 
 // 只认 [mm:ss.xx] 时间标签；[ar:xx] 这类元数据标签因为没有数字冒号结构会被自然跳过。
 object Lrc {
-    private val TAG = Regex("""\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]""")
+    /* 尾巴上那一段 `-1` / `+0.50` 是歌词工具写的偏移：正则读掉它、不应用（样本里它只挂在
+       `00:00.00` 那一行，差不了几秒）；不读掉的话整行匹配不上，那两首就这么没的词。 */
+    private val TAG = Regex("""\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?(?:[-+]\d{1,3}(?:\.\d{1,2})?)?]""")
+
+    /** 整段没有时间戳的那一族（锤子那站约五分之一）：行照摆，但这一条不跟读、不点亮、点不动 */
+    const val UNSYNCED = -1L
 
     fun parse(raw: String): List<LyricLine> {
         val out = ArrayList<LyricLine>()
         raw.lineSequence().forEach { line ->
             val tags = TAG.findAll(line).toList()
             if (tags.isEmpty()) return@forEach
-            val text = line.substring(tags.last().range.last + 1).trim()
-            if (text.isEmpty()) return@forEach
-            for (t in tags) {
-                val mm = t.groupValues[1].toLongOrNull() ?: continue
-                val ss = t.groupValues[2].toLongOrNull() ?: continue
-                val fracPart = t.groupValues[3]
-                val frac = when (fracPart.length) {
-                    0 -> 0L
-                    1 -> fracPart.toLong() * 100L
-                    2 -> fracPart.toLong() * 10L
-                    else -> fracPart.take(3).toLong()
-                }
-                out.add(LyricLine(((mm * 60 + ss) * 1000) + frac, text))
+            /* 每个标签吃**自己后面那一段**（到下一个标签开头为止）。
+               以前这里取的是"最后一个标签后面那一段"，于是逐字那一族整行被吃掉：
+               `[00:18.65]一[00:19.32]条…[00:23.52]` 最后一个标签后面是空的 → 这一句一个字都不剩，
+               海阔天空 / 我的祖国 / 灰色轨迹 这种逐字表在真机上就是整屏「暂无歌词」。 */
+            val segs = tags.mapIndexed { i, t ->
+                val end = if (i + 1 < tags.size) tags[i + 1].range.first else line.length
+                line.substring(t.range.last + 1, end)
+            }
+            if (segs.dropLast(1).any { it.isNotBlank() }) {
+                // 逐字：一行里每个字各带一个时间 → 这一行只出一条，时间取第一个标签
+                add(out, tags.first(), segs.joinToString("").trim())
+            } else {
+                // 几个时间戳共用后面同一句（副歌重复那一族）：每个时间各出一条
+                val text = segs.last().trim()
+                for (t in tags) add(out, t, text)
             }
         }
-        return out.sortedBy { it.timeMs }
+        return when {
+            out.isNotEmpty() -> out.sortedBy { it.timeMs }
+            else -> plain(raw)
+        }
     }
+
+    private fun add(out: MutableList<LyricLine>, tag: MatchResult, text: String) {
+        if (text.isEmpty()) return
+        val mm = tag.groupValues[1].toLongOrNull() ?: return
+        val ss = tag.groupValues[2].toLongOrNull() ?: return
+        val fracPart = tag.groupValues[3]
+        val frac = when (fracPart.length) {
+            0 -> 0L
+            1 -> fracPart.toLong() * 100L
+            2 -> fracPart.toLong() * 10L
+            else -> fracPart.take(3).toLong()
+        }
+        out.add(LyricLine(((mm * 60 + ss) * 1000) + frac, text))
+    }
+
+    /** 一个时间戳都没有：把文本行原样摊出来，时间全给 [UNSYNCED]（不编时间戳去假装跟读） */
+    private fun plain(raw: String): List<LyricLine> =
+        raw.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith('[') && !it.startsWith('@') }
+            .map { LyricLine(UNSYNCED, it) }
+            .toList()
+
+    /** 这一屏能不能跟读（没有时间戳的那一族不能） */
+    fun synced(lines: List<LyricLine>): Boolean =
+        lines.firstOrNull()?.timeMs?.let { it >= 0 } == true
 
     fun indexAt(lines: List<LyricLine>, positionMs: Long): Int {
         if (lines.isEmpty()) return -1
+        if (!synced(lines)) return -1
         if (positionMs < lines.first().timeMs) return -1
         var lo = 0
         var hi = lines.size - 1
@@ -261,11 +299,28 @@ object LyricCache {
  * ③ 都没有才拿"歌名 歌手"去网易云配一条（猜的，所以配到谁必须写出来）。
  *
  * ③ 只在**本地文件**上跑：在线那一条本来就有歌曲号，用不着猜。
+ *
+ * 在线那一条（①② 都落空之后）问的是**它自己那一路的词口**（`Online.musicLyric` 按 sourceId 分派：
+ * 网易云 `api/song/lyric`、锤子音乐单曲详情的 `data.lyrics`）。10-29 之前这一支是**直接早退**的
+ * —— 于是"存过盘的歌有词、只点在线播的那一首永远没词"，锤子那一路连站里明明带着词也没人去问。
+ * 问不到（那一路没有词口、或站里这一首就是空的）才回①②那一份结果，界面上由 status 说为什么没有。
  */
-suspend fun lyricFor(context: Context, audioUri: Uri, treeUri: Uri?, title: String?, artist: String?): LyricResult {
+suspend fun lyricFor(
+    context: Context,
+    audioUri: Uri,
+    treeUri: Uri?,
+    title: String?,
+    artist: String?,
+    online: MusicVideo? = null,
+): LyricResult {
     val file = LyricSource.read(context, audioUri, treeUri)
     if (file.text != null) return file
-    if (audioUri.scheme == "http" || audioUri.scheme == "https") return file
+    if (audioUri.scheme == "http" || audioUri.scheme == "https") {
+        val v = online ?: return file
+        val own = runCatching { Online.musicLyric(v) }.getOrNull()
+        return if (own == null) file
+        else LyricResult(own, "${Online.sourceLabel(v.sourceId) ?: v.sourceId}给的那一串")
+    }
     val query = Online.searchKeywordOf(title.orEmpty(), artist, fromLibrary = true)
     if (query.isBlank()) return LyricResult(null, file.status)
     LyricCache.load(context, query)?.let {

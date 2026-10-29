@@ -557,12 +557,43 @@ object Online {
         if (blocked("netease")) emptyList()
         else OnlineSort.Newest.sorted(musicSource().boards(perBoard))
 
+    /** 报得出歌词口的那两路：网易云有 `api/song/lyric`，锤子音乐把词挂在单曲详情的 `data.lyrics` 里。 */
+    private val lyricRoads = setOf("netease", "chuizi")
+
+    /** 界面要说"这一路没问"还是"问了没给"，吃的就是这一格 */
+    fun hasLyricApi(sourceId: String): Boolean = sourceId in lyricRoads
+
     /**
-     * 存盘那首歌的歌词。只有网易云这一路有歌词接口（B 站/抖音回的是画面，没有词），
-     * 别的源和被删掉的源都回 null —— 调用方据此写"这一路没有歌词"，不去猜。
+     * 存盘/播放那一行的歌词：按 `sourceId` 分派到它自己那一路的词口（10-29 之前只认网易云，
+     * 于是锤子那一路明明站里有词、界面却一直写"这一路没问"）。
+     * 别的路（B 站/抖音/快手/接口站）回的是画面或压根没有这一格 ⇒ null，调用方据此说"这一路没有歌词"，不去猜。
      */
-    suspend fun musicLyric(video: MusicVideo): String? =
-        if (video.sourceId != "netease" || blocked("netease")) null else musicSource().lyric(video)
+    suspend fun musicLyric(video: MusicVideo): String? = when {
+        video.sourceId !in lyricRoads || blocked(video.sourceId) -> null
+        video.sourceId == "netease" -> musicSource().lyric(video)
+        else -> runCatching { chuizi.lyric(video) }.getOrNull()
+    }
+
+    /**
+     * 眼前这一条在线条目拆回 `MusicVideo`（播放页要拿它去问词）。
+     * 认的是建条目时钉上的那两格：`mediaId = online:源/站内号`、`RequestMetadata.mediaUri = 页地址`
+     * （后者 10-29 才加的 —— 没有它就只剩一条几小时就死的直链，问不到任何歌）。
+     * 粘进来的那一批（号是 `url/…`）没有站内号 ⇒ null，界面上按"这一路没有歌词"说。
+     */
+    fun videoOfItem(item: MediaItem?): MusicVideo? {
+        val id = item?.mediaId ?: return null
+        if (!id.startsWith(ID_PREFIX) || id.contains("url/")) return null
+        val page = item.requestMetadata.mediaUri?.toString() ?: return null
+        val key = id.removePrefix(ID_PREFIX)
+        val md = item.mediaMetadata
+        return videoFromHistoryUriText(
+            raw = "$ID_PREFIX$key?page=" + java.net.URLEncoder.encode(page, "UTF-8"),
+            name = ((md.title ?: md.displayTitle)?.toString() ?: "").ifBlank { "在线条目" },
+            artist = md.artist?.toString(),
+            durationMs = md.durationMs ?: 0L,
+            video = false,
+        )?.copy(artworkUrl = md.artworkUri?.toString())
+    }
 
     /**
      * 本地那一栏的词从这儿来：文件旁边没有同名 .lrc 时，拿"歌名 歌手"去搜、配第一条像的。

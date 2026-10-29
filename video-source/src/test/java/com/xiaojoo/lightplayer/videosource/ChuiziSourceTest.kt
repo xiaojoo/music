@@ -47,6 +47,38 @@ class ChuiziSourceTest {
         }
     }
 
+    /** 锤子音乐的词挂在**单曲详情**那一份的 `data.lyrics` 上（站点没有单独的歌词口，四条猜的路径全 404） */
+    @Test
+    fun `歌词从单曲详情那一份里拿`() = runBlocking {
+        val f = Recording { url ->
+            assertTrue("词只从详情口问：$url", url.endsWith("/api/v1/songs/cz0001"))
+            resource("cz_song_detail.json")
+        }
+        val got = ChuiziSource(f).lyric(
+            MusicVideo("chuizi", "cz0001", "夹具歌 1", "夹具歌手 1", 0L, "https://chuizi.org/song/cz0001")
+        )
+        assertEquals(true, got?.startsWith("[00:00.00]"))
+        assertEquals(true, got?.contains("夹具词 2"))
+    }
+
+    @Test
+    fun `站里这一首没词回null`() = runBlocking {
+        val src = ChuiziSource(Recording { """{"data":{"id":"cz0001","lyrics":""}}""" })
+        assertNull(
+            src.lyric(MusicVideo("chuizi", "cz0001", "夹具歌 1", "", 0L, "https://chuizi.org/song/cz0001"))
+        )
+    }
+
+    @Test
+    fun `详情问不通或没有站内号都不硬给词`() = runBlocking {
+        // 号失效/接口挂了：fetch 抛出来也不能把一次失败变成"这首没词"
+        val boom = ChuiziSource(Recording { throw java.io.IOException("502") })
+        assertNull(boom.lyric(MusicVideo("chuizi", "cz0001", "夹具歌 1", "", 0L, "https://chuizi.org/song/cz0001")))
+        // 没有站内号（粘地址摊出来的那一批）：一句都不该发出去
+        val f = Recording { throw AssertionError("不该问站点") }
+        assertNull(f.let { ChuiziSource(it).lyric(MusicVideo("chuizi", "", "夹具歌 1", "", 0L, "x")) })
+    }
+
     @Test
     fun `空词不去问站点，直接回空`() = runBlocking {
         val f = Recording(router())

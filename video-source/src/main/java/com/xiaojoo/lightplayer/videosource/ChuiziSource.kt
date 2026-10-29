@@ -163,6 +163,22 @@ class ChuiziSource(
         return listOf(Rendition("默认音质", Playable(url = url), p?.totalBytes ?: 0L))
     }
 
+    /**
+     * 这一路的歌词。站点**没有单独的歌词口** —— `/api/v1/songs/{号}/lyric`、`/api/v1/lyric/{号}`、
+     * `/media/lyric/{号}`、`/api/v1/song/lyric?id={号}` 四条 10-29 逐条问过，全回 404 `not_found`。
+     * 词挂在**单曲详情**那一份里：`GET /api/v1/songs/{号}` → `data.lyrics` 就是一整段带时间戳的 LRC
+     * （真机量的那条：`[00:00.00] 作词 : …`）。所以问一首歌的词要多打一次详情口，不能从列表那一份里拿
+     * （列表不给 `lyrics` 这一格）。
+     * 站点自己没词就回空串 ⇒ 这里回 null，界面上那句"没给歌词"由调用方说。
+     */
+    suspend fun lyric(video: MusicVideo): String? {
+        val sid = video.remoteId.takeIf { it.isNotBlank() } ?: return null
+        val data = runCatching {
+            JSONObject(fetch.get("$base/api/v1/songs/${enc(sid)}", headers())).optJSONObject("data")
+        }.getOrNull()
+        return data?.optString("lyrics")?.takeIf { it.isNotBlank() }
+    }
+
     override suspend fun resolve(video: MusicVideo): Playable {
         val sid = video.remoteId.takeIf { it.isNotBlank() }
             ?: throw SourceFailureException(SourceFailure.Parse("这条锤子音乐条目没有歌曲号"))

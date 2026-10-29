@@ -49,6 +49,55 @@ class LrcTest {
     }
 
     @Test
+    fun 逐字那一行只出一条() {
+        // 真机形状（锤子 我的祖国 / 海阔天空）：一行里每个字各带一个时间，最后一个标签后面是空的
+        val lines = Lrc.parse("[00:18.65]一[00:19.32]条[00:19.86]大[00:20.91]河[00:23.52]")
+        assertEquals(1, lines.size)
+        assertEquals(18650L, lines[0].timeMs)
+        assertEquals("一条大河", lines[0].text)
+    }
+
+    @Test
+    fun 逐字的英文按原样拼回不丢空格() {
+        // 段与段之间不加东西：空格本来就写在上一段的尾巴上（"If " "I " "should "）
+        val lines = Lrc.parse("[00:03.64]If [00:05.20]I [00:08.35]should [00:09.82]stay[00:10.99],[00:13.42]")
+        assertEquals(1, lines.size)
+        assertEquals("If I should stay,", lines[0].text)
+    }
+
+    @Test
+    fun 逐字表里那行只有元数据的补句也留得住() {
+        val lines = Lrc.parse("[00:00.00] 作曲 : 我的祖国[00:01.00]")
+        assertEquals(1, lines.size)
+        assertEquals("作曲 : 我的祖国", lines[0].text)
+    }
+
+    @Test
+    fun 整段没有时间戳的按原样摊开且不跟读() {
+        val lines = Lrc.parse("@migu music@\n[ti:晴天]\n你是否记得那座城市的屋檐\n等风捎来你转身的弧线")
+        assertEquals(listOf("你是否记得那座城市的屋檐", "等风捎来你转身的弧线"), lines.map { it.text })
+        assertTrue(lines.all { it.timeMs == Lrc.UNSYNCED })
+        assertEquals(false, Lrc.synced(lines))
+        // 不跟读 = 任何时候都不点亮某一行，也就没有"点这句从第几秒播"
+        assertEquals(-1, Lrc.indexAt(lines, 999999L))
+    }
+
+    @Test
+    fun 标签尾巴上的偏移不吃但行要留() {
+        // 歌词工具写的 `[mm:ss.xx-偏移]`：偏移那一段不应把整行挡在门外（真站样本里两首中招）
+        val lines = Lrc.parse("[00:00.00-1] 作词 : 夹具歌手 1")
+        assertEquals(1, lines.size)
+        assertEquals(0L, lines[0].timeMs)
+        assertEquals("作词 : 夹具歌手 1", lines[0].text)
+    }
+
+    @Test
+    fun 带时间戳的那一族算能跟读() {
+        assertEquals(true, Lrc.synced(Lrc.parse("[00:05.00]a")))
+        assertEquals(false, Lrc.synced(emptyList()))
+    }
+
+    @Test
     fun 第一句之前不点亮任何行() {
         val lines = Lrc.parse("[00:05.00]a\n[00:08.00]b")
         assertEquals(-1, Lrc.indexAt(lines, 0L))

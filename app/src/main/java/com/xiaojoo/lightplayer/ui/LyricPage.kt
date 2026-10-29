@@ -100,6 +100,10 @@ fun LyricPage(
     var current by remember { mutableIntStateOf(-1) }
     var selected by remember { mutableIntStateOf(-1) }
     var browsing by remember { mutableStateOf(false) }
+    /* 整段没有时间戳的那一族：行照摆，但不跟读、不点亮、点行也不跳播（没有"这一句在第几秒"可用，
+       编一个出来就是假数据）。[Lrc.indexAt] 对它恒回 -1，所以点亮和自动跟随天然停住，
+       这里只剩按下去那一支要自己收住。 */
+    val synced = Lrc.synced(lines)
     // 每"用户碰一下这一屏"加一：回位那颗倒计时靠它重新起算
     var touchTick by remember { mutableIntStateOf(0) }
     /* 这一趟滚动是不是我们自己发起的自动跟随。
@@ -177,9 +181,11 @@ fun LyricPage(
                     active = i == current,
                     onArt = onArt,
                     onClick = {
-                        selected = i
-                        browsing = true
-                        touchTick += 1
+                        if (synced) {
+                            selected = i
+                            browsing = true
+                            touchTick += 1
+                        }
                     }
                 )
             }
